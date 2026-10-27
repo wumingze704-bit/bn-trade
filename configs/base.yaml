@@ -1,0 +1,19 @@
+market: usdm
+quote_asset: USDT
+data_window:
+  end_month: "2026-09"
+  months: 12
+  warmup_days: 10
+  holdout_months: 2
+fees:
+  usdm:
+    maker: 0.0002
+    taker: 0.0005
+  spot:
+    maker: 0.001
+    taker: 0.001
+display_tz: Asia/Shanghai
+paths:
+  data_root: ./data
+  artifact_root: ./artifacts
+seed: 42
