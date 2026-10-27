@@ -1,6 +1,8 @@
-# trade
+# bn-trade
 
-币安山寨币分钟级超短线量化工具。工程阶段与验收标准见 [docs/design.md](docs/design.md) 和 [docs/08-开发计划与验收.md](docs/08-开发计划与验收.md)。
+币安山寨币超短线做多量化工具。
+
+工程阶段与验收标准见 [docs/design.md](docs/design.md) 和 [docs/08-开发计划与验收.md](docs/08-开发计划与验收.md)。
 
 ## 环境
 
