@@ -5,22 +5,22 @@
 
 ## 1. 总览
 
-| 资源 | 用途 | 需要 API Key | 使用阶段 | 使用位置 |
-| :-- | :-- | :-- | :-- | :-- |
-| 历史数据仓库 data.binance.vision | 下载过去一年 1m K 线、逐笔、资金费率、合约指标，用于选币、训练、回测 | 否 | P1~P4、每月重训 | 本地或服务器 |
-| USDⓈ-M 合约 REST 公开行情 | 交易规则、K 线补齐、逐笔回补、服务器时间 | 否 | 选币（交易规则）、实盘 | 双端 |
-| USDⓈ-M 合约 REST 账户与交易 | 费率、杠杆、下单、撤单、查单、持仓、成交 | **是**（签名） | P5 以后 | 实盘服务器 |
-| USDⓈ-M 合约 WebSocket 行情 | 实时 1m K 线、逐笔、最优挂单 | 否 | P5 以后 | 实盘服务器 |
-| USDⓈ-M 合约用户数据流 | 订单成交与账户变动推送 | **是**（listenKey） | P5 以后 | 实盘服务器 |
-| USDⓈ-M 合约测试网 | `paper` 模式全流程演练 | 是（测试网单独的 Key） | P5、G4 | 实盘服务器 |
+| 资源                             | 用途                                                                         | 需要 API Key           | 使用阶段                        | 使用位置                          |
+| :------------------------------- | :--------------------------------------------------------------------------- | :--------------------- | :------------------------------ | :-------------------------------- |
+| 历史数据仓库 data.binance.vision | 下载最近 24 个月 1m K 线、逐笔、资金费率、合约指标，用于名单校验、训练、回测 | 否                     | P1~P4、每月重训、实盘订单流预热 | **服务器**（本地不访问，02 §5.2） |
+| USDⓈ-M 合约 REST 公开行情        | 交易规则、K 线补齐、逐笔回补、服务器时间                                     | 否                     | 名单校验（交易规则）、实盘      | 服务器                            |
+| USDⓈ-M 合约 REST 账户与交易      | 费率、杠杆、下单、撤单、查单、持仓、成交                                     | **是**（签名）         | P5 以后                         | 实盘服务器                        |
+| USDⓈ-M 合约 WebSocket 行情       | 实时 1m K 线、逐笔、最优挂单                                                 | 否                     | P5 以后                         | 实盘服务器                        |
+| USDⓈ-M 合约用户数据流            | 订单成交与账户变动推送                                                       | **是**（listenKey）    | P5 以后                         | 实盘服务器                        |
+| USDⓈ-M 合约测试网                | `paper` 模式全流程演练                                                       | 是（测试网单独的 Key） | P5、G4                          | 实盘服务器                        |
 
 ## 2. 域名与环境
 
-| 环境 | REST | WebSocket |
-| :-- | :-- | :-- |
-| 正式网 | `https://fapi.binance.com` | `wss://fstream.binance.com`（组合流：`/stream?streams=a/b/c`） |
-| 测试网 | `https://testnet.binancefuture.com` | 见官方文档测试网说明 |
-| 历史数据 | `https://data.binance.vision` | — |
+| 环境     | REST                                | WebSocket                                                      |
+| :------- | :---------------------------------- | :------------------------------------------------------------- |
+| 正式网   | `https://fapi.binance.com`          | `wss://fstream.binance.com`（组合流：`/stream?streams=a/b/c`） |
+| 测试网   | `https://testnet.binancefuture.com` | 见官方文档测试网说明                                           |
+| 历史数据 | `https://data.binance.vision`       | —                                                              |
 
 - 环境由 `live.yaml` 的 `mode` 决定：`paper` → 测试网；`shadow`、`live` → 正式网。代码中禁止出现“正式网与测试网混用”的路径（例如用测试网 Key 访问正式网）。
 - 币安合约 WebSocket 的接入地址可能按流类型（公共 / 行情 / 私有）拆分，以最新文档为准，地址集中在 `trade.live.exchange.endpoints` 一处配置。
@@ -32,54 +32,54 @@
 
 ### 3.1 公开行情（无需签名）
 
-| 接口 | 用途 | 调用时机 |
-| :-- | :-- | :-- |
-| `GET /fapi/v1/ping`、`GET /fapi/v1/time` | 连通性、服务器时间、时钟偏差 | 启动、端点测速、每 10 分钟校时 |
-| `GET /fapi/v1/exchangeInfo` | 交易对列表、上线时间、`tickSize`/`stepSize`/`minNotional` 过滤器、`rateLimits` | 选币、启动、每 6 小时 |
-| `GET /fapi/v1/klines` | 1m K 线（预热、WS 迟到时补齐） | 启动预热、补齐 |
-| `GET /fapi/v1/aggTrades` | 逐笔回补（`fromId`） | 逐笔缺口时 |
-| `GET /fapi/v1/ticker/bookTicker` | 最优买卖价（WS 不可用时兜底） | 兜底 |
-| `GET /fapi/v1/premiumIndex` | 标记价格、下次资金费时间 | 每 5 分钟 |
-| `GET /fapi/v1/fundingRate` | 历史资金费率 | 日报核算 |
+| 接口                                     | 用途                                                                           | 调用时机                       |
+| :--------------------------------------- | :----------------------------------------------------------------------------- | :----------------------------- |
+| `GET /fapi/v1/ping`、`GET /fapi/v1/time` | 连通性、服务器时间、时钟偏差                                                   | 启动、端点测速、每 10 分钟校时 |
+| `GET /fapi/v1/exchangeInfo`              | 交易对列表、上线时间、`tickSize`/`stepSize`/`minNotional` 过滤器、`rateLimits` | 选币、启动、每 6 小时          |
+| `GET /fapi/v1/klines`                    | 1m K 线（预热、WS 迟到时补齐）                                                 | 启动预热、补齐                 |
+| `GET /fapi/v1/aggTrades`                 | 逐笔回补（`fromId`）                                                           | 逐笔缺口时                     |
+| `GET /fapi/v1/ticker/bookTicker`         | 最优买卖价（WS 不可用时兜底）                                                  | 兜底                           |
+| `GET /fapi/v1/premiumIndex`              | 标记价格、下次资金费时间                                                       | 每 5 分钟                      |
+| `GET /fapi/v1/fundingRate`               | 历史资金费率                                                                   | 日报核算                       |
 
 ### 3.2 账户与交易（需签名，见 §5）
 
-| 接口 | 用途 |
-| :-- | :-- |
-| `GET /fapi/v1/commissionRate` | 读取账户实际手续费率，核对 VIP0（§4） |
-| `GET /fapi/v1/leverageBracket` | 杠杆分层与维持保证金率（06 §5.4 校验 3） |
-| `GET /fapi/v1/positionSide/dual`、`POST` 同路径 | 查询 / 设置单向持仓模式 |
-| `POST /fapi/v1/marginType` | 设置逐仓 ISOLATED |
-| `POST /fapi/v1/leverage` | 设置杠杆（5x） |
-| 账户、余额、持仓查询（`/fapi/v2` 或 `/fapi/v3` 的 `account`、`balance`、`positionRisk`，以最新版本为准） | 权益、可用保证金、持仓、对账 |
-| `POST /fapi/v1/order` | 开仓（LIMIT IOC）、止盈（LIMIT GTC reduceOnly）、超时平仓（MARKET reduceOnly） |
-| `GET /fapi/v1/order`、`DELETE /fapi/v1/order` | 按 `origClientOrderId` 查询、撤单 |
-| `GET /fapi/v1/openOrders`、`DELETE /fapi/v1/allOpenOrders` | 对账、Kill Switch |
-| 算法条件单接口（止损 STOP_MARKET 的下单、撤单、查询未完成条件单） | 止损单。币安已将合约条件单迁移至独立的算法订单接口，具体路径与参数以最新文档为准 |
-| `GET /fapi/v1/userTrades` | 成交明细（对账、补记出场） |
-| `GET /fapi/v1/income` | 资金费、手续费、已实现盈亏流水（日报核算） |
-| `POST` / `PUT` / `DELETE /fapi/v1/listenKey` | 创建、续期、关闭用户数据流 |
+| 接口                                                                                                     | 用途                                                                                                                                                              |
+| :------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /fapi/v1/commissionRate`                                                                            | 读取账户实际手续费率，核对 VIP0（§4）                                                                                                                             |
+| `GET /fapi/v1/leverageBracket`                                                                           | 杠杆分层与维持保证金率（06 §5.4 校验 3）                                                                                                                          |
+| `GET /fapi/v1/positionSide/dual`、`POST` 同路径                                                          | 查询 / 设置单向持仓模式                                                                                                                                           |
+| `POST /fapi/v1/marginType`                                                                               | 设置逐仓 ISOLATED                                                                                                                                                 |
+| `POST /fapi/v1/leverage`                                                                                 | 设置杠杆（5x）                                                                                                                                                    |
+| 账户、余额、持仓查询（`/fapi/v2` 或 `/fapi/v3` 的 `account`、`balance`、`positionRisk`，以最新版本为准） | 权益、可用保证金、持仓、对账                                                                                                                                      |
+| `POST /fapi/v1/order`                                                                                    | 开仓（LIMIT IOC）、止盈（LIMIT GTC reduceOnly）、超时平仓（MARKET reduceOnly）                                                                                    |
+| `GET /fapi/v1/order`、`DELETE /fapi/v1/order`                                                            | 按 `origClientOrderId` 查询、撤单                                                                                                                                 |
+| `GET /fapi/v1/openOrders`、`DELETE /fapi/v1/allOpenOrders`                                               | 对账、Kill Switch                                                                                                                                                 |
+| 算法条件单接口（`POST /fapi/v1/algoOrder` 及对应的撤单、查询未完成条件单接口）                           | 止损单与追踪改单（07 §5.2）。自 2025-12-09 起，经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单会返回错误 `-4120`，必须走算法订单接口；参数细节以最新文档为准 |
+| `GET /fapi/v1/userTrades`                                                                                | 成交明细（对账、补记出场）                                                                                                                                        |
+| `GET /fapi/v1/income`                                                                                    | 资金费、手续费、已实现盈亏流水（日报核算）                                                                                                                        |
+| `POST` / `PUT` / `DELETE /fapi/v1/listenKey`                                                             | 创建、续期、关闭用户数据流                                                                                                                                        |
 
 ### 3.3 WebSocket
 
-| 流 | 用途 |
-| :-- | :-- |
-| `<symbol>@kline_1m` | 1m K 线（`x = true` 表示已收盘） |
-| `<symbol>@aggTrade` | 归集逐笔（订单流原子量） |
-| `<symbol>@bookTicker` | 最优买卖价与数量（开仓限价、价差风控 R9） |
-| 用户数据流 `ORDER_TRADE_UPDATE` | 订单状态与成交 |
-| 用户数据流 `ACCOUNT_UPDATE` | 余额与持仓变化 |
-| 用户数据流 `listenKeyExpired` | listenKey 失效，需重建 |
-| 用户数据流中条件单（算法订单）状态事件 | 止损单触发与状态，事件名以最新文档为准 |
+| 流                              | 用途                                                   |
+| :------------------------------ | :----------------------------------------------------- |
+| `<symbol>@kline_1m`             | 1m K 线（`x = true` 表示已收盘）                       |
+| `<symbol>@aggTrade`             | 归集逐笔（订单流原子量）                               |
+| `<symbol>@bookTicker`           | 最优买卖价与数量（开仓限价、价差风控 R9）              |
+| 用户数据流 `ORDER_TRADE_UPDATE` | 订单状态与成交                                         |
+| 用户数据流 `ACCOUNT_UPDATE`     | 余额与持仓变化                                         |
+| 用户数据流 `listenKeyExpired`   | listenKey 失效，需重建                                 |
+| 用户数据流 `ALGO_UPDATE`        | 算法订单（止损单）挂出、触发与状态，字段以最新文档为准 |
 
 ### 3.4 历史数据仓库（data.binance.vision）
 
-| 数据 | 路径（`{S}` 为交易对） | 用途 |
-| :-- | :-- | :-- |
-| 1m K 线 | `data/futures/um/monthly/klines/{S}/1m/`、`daily/...` | 特征、标签、回测 |
-| 归集逐笔 | `data/futures/um/daily/aggTrades/{S}/` | 订单流特征、大单阈值 |
-| 资金费率 | `data/futures/um/monthly/fundingRate/{S}/` | 回测资金费 |
-| 合约指标 | `data/futures/um/daily/metrics/{S}/` | 持仓量变化特征（可选） |
+| 数据     | 路径（`{S}` 为交易对）                                | 用途                   |
+| :------- | :---------------------------------------------------- | :--------------------- |
+| 1m K 线  | `data/futures/um/monthly/klines/{S}/1m/`、`daily/...` | 特征、标签、回测       |
+| 归集逐笔 | `data/futures/um/daily/aggTrades/{S}/`                | 订单流特征、大单阈值   |
+| 资金费率 | `data/futures/um/monthly/fundingRate/{S}/`            | 回测资金费             |
+| 合约指标 | `data/futures/um/daily/metrics/{S}/`                  | 持仓量变化特征（可选） |
 
 每个 zip 均有同名 `.CHECKSUM` 校验文件。格式陷阱见 03 §1.1。
 
@@ -102,7 +102,9 @@
 4. 把 Key 与 Secret（或私钥文件路径）写入服务器 `/etc/trade/env`（02 §7）。
 5. 测试网在测试网网站单独申请 Key，写入 `BINANCE_TESTNET_*` 环境变量。
 
-### 5.2 签名规则（`trade.live.exchange.signing`）
+### 5.2 签名规则
+
+签名 REST 默认由官方 SDK `binance-sdk-derivatives-trading-usds-futures`（锁定版本，02 §4）完成，`trade.live.exchange.client` 只做封装。以下规则用于核对 SDK 行为，以及自研替换时的实现规格：
 
 - 所有签名请求带 `timestamp`（毫秒，已按 07 §2 校正的服务器时间）与 `recvWindow`（默认 5000 ms），请求头 `X-MBX-APIKEY`。
 - HMAC：对完整查询字符串（含 `timestamp`）用 Secret 做 HMAC-SHA256，十六进制结果作为 `signature` 参数。
@@ -113,8 +115,8 @@
 
 - 限额从 `exchangeInfo.rateLimits` 实时读取（请求权重 / 每分钟、下单数 / 每 10 秒与每分钟），**不在代码中硬编码**。
 - 每个响应读取头部 `X-MBX-USED-WEIGHT-1M`、`X-MBX-ORDER-COUNT-1M`（以文档为准），用量 > 70% 时停止新开仓（07 §5.5），> 90% 时暂停所有非必要请求（预热、补齐）。
-- 启动预热拉取 K 线的权重较大（16 币 × 10 天），`trade.live.market_data` 需按权重分批、跨多分钟完成，预热期间不开仓。
-- 本策略稳态下的请求量很小：每分钟最多数笔订单 + 每 60 秒一次对账查询，远低于限额。
+- 首次启动预热拉取 K 线的权重较大（17 个交易对 × 30 天 ≈ 每币 29 次请求），`trade.live.market_data` 需按权重分批、跨多分钟完成，预热期间不开仓；有近期 EWM 状态时只补缺口（07 §2）。
+- 本策略稳态下的请求量很小：每分钟最多数笔订单与追踪改单 + 每 60 秒一次对账查询，远低于限额。
 
 ## 7. 测试网注意事项
 
@@ -132,6 +134,7 @@
 
 ## 9. 接口核对记录
 
-| 核对日期 | 核对人 | 范围 | 结论 / 变更 |
-| :-- | :-- | :-- | :-- |
-| 待填写 | | §3 全部接口 | 初次实现时核对 |
+| 核对日期   | 核对人                     | 范围                 | 结论 / 变更                                                                                                                                                      |
+| :--------- | :------------------------- | :------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-28 | 设计方（网络检索，未实测） | 条件单迁移、官方 SDK | 条件单需走 `/fapi/v1/algoOrder`（2025-12-09 起旧接口返回 -4120）；官方模块化 Python SDK 已提供 USDⓈ-M 包。**均需在 P5 用 `api_smoke.py --env testnet` 实测确认** |
+| 待填写     |                            | §3 全部接口          | 初次实现时核对                                                                                                                                                   |
