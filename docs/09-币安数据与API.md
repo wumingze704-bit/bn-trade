@@ -39,8 +39,11 @@
 | `GET /fapi/v1/klines`                    | 1m K 线（预热、WS 迟到时补齐）                                                 | 启动预热、补齐                 |
 | `GET /fapi/v1/aggTrades`                 | 逐笔回补（`fromId`）                                                           | 逐笔缺口时                     |
 | `GET /fapi/v1/ticker/bookTicker`         | 最优买卖价（WS 不可用时兜底）                                                  | 兜底                           |
+| `GET /fapi/v1/ticker/24hr`               | 24 小时滚动价格变动统计（全部或单币，含 `priceChangePercent`），实盘动态候选池取涨幅榜前 20（07 §3.5） | 候选池刷新（默认每 15 分钟） |
 | `GET /fapi/v1/premiumIndex`              | 标记价格、下次资金费时间                                                       | 每 5 分钟                      |
 | `GET /fapi/v1/fundingRate`               | 历史资金费率                                                                   | 日报核算                       |
+
+> 说明：`/fapi/v1/ticker/24hr` 不传 `symbol` 时返回全部合约、传 `symbol` 时返回单币；响应字段 `priceChangePercent` 即 24 小时涨跌幅，用于涨幅榜排序（无专门“涨幅榜”接口，前 20 由客户端排序得到）。该接口的请求权重、分页与返回体大小**待 P1/P5 用 `api_smoke.py` 实测核对**（§9），不预先猜测。
 
 ### 3.2 账户与交易（需签名，见 §5）
 
@@ -115,7 +118,8 @@
 
 - 限额从 `exchangeInfo.rateLimits` 实时读取（请求权重 / 每分钟、下单数 / 每 10 秒与每分钟），**不在代码中硬编码**。
 - 每个响应读取头部 `X-MBX-USED-WEIGHT-1M`、`X-MBX-ORDER-COUNT-1M`（以文档为准），用量 > 70% 时停止新开仓（07 §5.5），> 90% 时暂停所有非必要请求（预热、补齐）。
-- 首次启动预热拉取 K 线的权重较大（17 个交易对 × 30 天 ≈ 每币 29 次请求），`trade.live.market_data` 需按权重分批、跨多分钟完成，预热期间不开仓；有近期 EWM 状态时只补缺口（07 §2）。
+- 首次启动预热拉取 K 线的权重较大（候选池约 20 个币 + BTCUSDT × 30 天 ≈ 每币 29 次请求），`trade.live.market_data` 需按权重分批、跨多分钟完成，预热期间不开仓；有近期 EWM 状态时只补缺口（07 §2）。
+- 候选池刷新调用 `GET /fapi/v1/ticker/24hr`（全部合约，返回体较大），其权重以最新文档为准、**待 P1/P5 实测**；默认 15 分钟一次，放在非关键路径、避开分钟收盘决策窗口（07 §4），用量计入 `X-MBX-USED-WEIGHT-1M` 监控。
 - 本策略稳态下的请求量很小：每分钟最多数笔订单与追踪改单 + 每 60 秒一次对账查询，远低于限额。
 
 ## 7. 测试网注意事项
@@ -137,4 +141,6 @@
 | 核对日期   | 核对人                     | 范围                 | 结论 / 变更                                                                                                                                                      |
 | :--------- | :------------------------- | :------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-10-28 | 设计方（网络检索，未实测） | 条件单迁移、官方 SDK | 条件单需走 `/fapi/v1/algoOrder`（2025-12-09 起旧接口返回 -4120）；官方模块化 Python SDK 已提供 USDⓈ-M 包。**均需在 P5 用 `api_smoke.py --env testnet` 实测确认** |
+| 2026-10-28 | Cline（东京服务器实测）     | exchangeInfo、ping 延迟 | `GET /fapi/v1/exchangeInfo` 返回 200，`futuresType=U_MARGINED`，`rateLimits.REQUEST_WEIGHT` 2400/min；**`contractType` 存在 `TRADIFI_PERPETUAL`**（TradFi，`underlyingType=EQUITY`、`underlyingSubType=["TradFi"]`），`check_contract` 按 `!= PERPETUAL` 即可阻断；REST ping 20 次 P95 ≈ 16 ms（P50 ≈ 8 ms） |
+| 2026-10-28 | Cline（东京服务器实测）     | WebSocket 行情流 | `wss://fstream.binance.com/ws/`：`btcusdt@bookTicker` 有数据；`btcusdt@aggTrade`、`btcusdt@kline_1m`、`!miniTicker@arr` 均无数据（连接成功但收不到消息）。疑似行情流命名/订阅机制变更，**待 P5 `api_smoke.py` 以最新文档实测核实**，WS 事件延迟暂记为待测 |
 | 待填写     |                            | §3 全部接口          | 初次实现时核对                                                                                                                                                   |

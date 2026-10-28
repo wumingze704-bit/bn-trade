@@ -7,7 +7,7 @@ name = "trade"
 version = "0.1.0"
 description = "币安山寨币分钟级超短线量化工具"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "httpx==0.28.1",
     "lightgbm==4.7.0",

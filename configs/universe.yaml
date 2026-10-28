@@ -1,0 +1,29 @@
+# 可交易性校验门槛与盲测币抽样参数。
+# 规格：docs/03-数据与选币.md §4.2、§4.4
+blind_seed: 2026 # 盲测币抽样固定种子（抽取后不得重抽）
+blind_count: 5 # 盲测币数量
+
+tradable:
+  contract_type: PERPETUAL # 仅 USDⓈ-M 永续
+  quote_asset: USDT # 仅 USDT 报价
+  status: TRADING # 仅在交易中
+  excluded_symbols: [CLUSDT, SNDKUSDT] # TradFi 合约（股票/商品/指数），03 §4.3
+
+history:
+  onboard_warmup_days: 30 # 上线后前 30 天数据一律不用
+  train_onboard_margin_months: 6 # 训练币：onboardDate + 30 天 ≤ T_start + 6 个月
+  holdout_min_months: 3 # 留出币：测试段 + 封存集内至少 3 个月有效数据
+
+filters:
+  step_notional_max: 0.5 # stepSize × 最近 7 天价格中位数 ≤ 0.5 USDT
+  min_notional_max: 5.0 # 最小下单额 ≤ 5 USDT
+  min_leverage: 5 # 杠杆分层允许 ≥ 5x
+
+liquidity: # 警告级
+  daily_quote_median_min: 50000000 # 有效期内日成交额中位数 ≥ 5000 万 USDT
+  monthly_quote_median_min: 10000000 # 各月日成交额中位数的最小值 ≥ 1000 万 USDT
+  tick_rel_max: 0.0002 # tickSize / 价格中位数 ≤ 2 bp
+
+quality: # 数据质量（03 §2.4），阻断级
+  missing_ratio_max: 0.01 # 缺失分钟占比 > 1% 不合格
+  consistency_error_max: 0.02 # aggTrades 与 K 线成交额一致性误差 > 2% 不合格

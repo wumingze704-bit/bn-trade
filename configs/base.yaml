@@ -2,16 +2,13 @@ market: usdm
 quote_asset: USDT
 data_window:
   end_month: "2026-09"
-  months: 12
-  warmup_days: 10
+  months: 24
+  warmup_days: 30
+  tuning_months: 12
   holdout_months: 2
 fees:
-  usdm:
-    maker: 0.0002
-    taker: 0.0005
-  spot:
-    maker: 0.001
-    taker: 0.001
+  maker: 0.0002
+  taker: 0.0005
 display_tz: Asia/Shanghai
 paths:
   data_root: ./data

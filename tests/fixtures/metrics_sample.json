@@ -1,0 +1,50 @@
+{
+  "SOLUSDT": {
+    "price_median_7d": 150.0,
+    "max_leverage": 20,
+    "daily_quote_median": 100000000,
+    "monthly_quote_median_min": 20000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  },
+  "AAVEUSDT": {
+    "price_median_7d": 90.0,
+    "max_leverage": 20,
+    "daily_quote_median": 80000000,
+    "monthly_quote_median_min": 15000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  },
+  "XRPUSDT": {
+    "price_median_7d": 0.6,
+    "max_leverage": 20,
+    "daily_quote_median": 120000000,
+    "monthly_quote_median_min": 30000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  },
+  "NEARUSDT": {
+    "price_median_7d": 4.0,
+    "max_leverage": 20,
+    "daily_quote_median": 60000000,
+    "monthly_quote_median_min": 12000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  },
+  "INJUSDT": {
+    "price_median_7d": 20.0,
+    "max_leverage": 20,
+    "daily_quote_median": 55000000,
+    "monthly_quote_median_min": 11000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  },
+  "OPUSDT": {
+    "price_median_7d": 2.0,
+    "max_leverage": 20,
+    "daily_quote_median": 70000000,
+    "monthly_quote_median_min": 14000000,
+    "tick_rel": 0.0001,
+    "quality_ok": true
+  }
+}

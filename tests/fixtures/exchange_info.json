@@ -1,0 +1,44 @@
+{
+  "symbols": [
+    {
+      "symbol": "SOLUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.01" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "CLUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "onboardDate": 1743436800000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.001" },
+        { "filterType": "LOT_SIZE", "stepSize": "1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "BTCUSDT_210925",
+      "contractType": "CURRENT_QUARTER",
+      "quoteAsset": "USDT",
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": []
+    },
+    {
+      "symbol": "ETHUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "BUSD",
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": []
+    }
+  ]
+}

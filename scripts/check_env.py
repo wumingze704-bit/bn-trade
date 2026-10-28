@@ -72,7 +72,7 @@ def main() -> int:
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     result = {
         "python": python_version,
-        "python_supported": sys.version_info[:2] == (3, 11),
+        "python_supported": (3, 11) <= sys.version_info[:2] < (3, 14),
         "pytorch": _torch_status(),
         "disk_free_gib": round(disk.free / (1024**3), 2),
         "data_path": str(data_path),

@@ -28,6 +28,7 @@ class DataWindowConfig(BaseModel):
     end_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     months: int = Field(ge=1, le=120)
     warmup_days: int = Field(ge=1, le=365)
+    tuning_months: int = Field(ge=0, le=120)
     holdout_months: int = Field(ge=0, le=12)
 
 
@@ -38,15 +39,6 @@ class FeeConfig(BaseModel):
 
     maker: float = Field(ge=0, le=0.1)
     taker: float = Field(ge=0, le=0.1)
-
-
-class FeesConfig(BaseModel):
-    """现货与 USDⓈ-M 合约费率。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    usdm: FeeConfig
-    spot: FeeConfig
 
 
 class PathsConfig(BaseModel):
@@ -63,10 +55,10 @@ class BaseConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    market: str = Field(pattern=r"^(usdm|spot)$")
+    market: str = Field(pattern=r"^usdm$")
     quote_asset: str = Field(pattern=r"^[A-Z0-9]{2,12}$")
     data_window: DataWindowConfig
-    fees: FeesConfig
+    fees: FeeConfig
     display_tz: str
     paths: PathsConfig
     seed: int = Field(ge=0)

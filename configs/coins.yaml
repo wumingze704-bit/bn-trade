@@ -1,0 +1,32 @@
+# 训练与回测评估币种名单（固定，使用者确认）。
+# 规格：docs/03-数据与选币.md §4
+# 注意：本文件只决定训练与回测评估名单，不决定实盘交易币种（实盘用动态候选池，07 §3.5）。
+reviewed: false # 使用者审阅后手动改为 true（08 G1 要求）
+window: { start: "2024-10-01", end: "2026-09-30" }
+btc_context: BTCUSDT
+train:
+  - { symbol: SOLUSDT, alias: C01, sector: L1, source: user }
+  - { symbol: SUIUSDT, alias: C02, sector: L1, source: user }
+  - { symbol: 1000PEPEUSDT, alias: C03, sector: Meme, source: user }
+  - { symbol: WIFUSDT, alias: C04, sector: Meme, source: user }
+  - { symbol: TRBUSDT, alias: C05, sector: Oracle, source: user }
+  - { symbol: ZENUSDT, alias: C06, sector: Privacy, source: user }
+  - { symbol: ONDOUSDT, alias: C07, sector: RWA, source: user }
+  - { symbol: AKEUSDT, alias: C08, sector: AI, source: user }
+  - { symbol: DOGEUSDT, alias: C09, sector: Meme, source: designer }
+  - { symbol: LINKUSDT, alias: C10, sector: Oracle, source: designer }
+  - { symbol: ENAUSDT, alias: C11, sector: DeFi, source: designer }
+  - { symbol: TAOUSDT, alias: C12, sector: AI, source: designer }
+  - { symbol: ARBUSDT, alias: C13, sector: L2, source: designer }
+holdout:
+  - { symbol: 龙虾USDT, alias: C14, sector: Meme, source: user }
+  - { symbol: AVAXUSDT, alias: C15, sector: L1, source: designer }
+  - { symbol: FETUSDT, alias: C16, sector: AI, source: designer }
+blind: [] # P1 由 select_coins.py --draw-blind 一次性写入，之后不可修改
+excluded:
+  - { symbol: CLUSDT, reason: "TradFi 合约" }
+  - { symbol: SNDKUSDT, reason: "TradFi 合约" }
+  - { symbol: 牛来USDT, reason: "上线不足 3 个月" }
+validation: # select_coins.py --validate 写入
+  generated_at: null
+  results: []

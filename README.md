@@ -6,14 +6,26 @@
 
 ## 环境
 
-- Python 3.11
+- Python 3.11~3.13（本地以 3.13 为主，服务器用发行版 Python）
 - Windows 研究环境按 PyTorch 官方说明安装 CUDA 12.x 对应版本；Ubuntu 实盘环境使用 CPU 版本。
 
 ## 安装
 
-在仓库根目录执行：
+本地（中国大陆、不开 VPN）与服务器的安装命令一致，区别只在 PyPI 镜像源：本地走国内镜像，服务器走官方源（docs/02 §5.2）。
+
+### 本地 Windows（国内镜像）
 
 ```powershell
+# 依赖（清华镜像；也可换 https://mirrors.aliyun.com/pypi/simple/）
+python -m pip install -r requirements.lock -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+PyTorch CUDA 12.x 版本请按 PyTorch 官方说明或阿里云 pytorch-wheels 镜像安装，版本与 `requirements.lock` 一致。
+
+### 服务器（Ubuntu，官方源）
+
+```bash
 python -m pip install -r requirements.lock
 python -m pip install -e .
 ```

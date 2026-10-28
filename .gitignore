@@ -10,8 +10,8 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
-data/
-artifacts/
+/data/
+/artifacts/
 
 # Local credentials and private configuration
 configs/*local*.yaml
