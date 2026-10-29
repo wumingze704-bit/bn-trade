@@ -1,0 +1,21 @@
+# 回测运行配置。规格：docs/06-回测引擎.md §2、§4、§5.5、§7。
+# 字段与 pydantic 模型 trade.backtest.engine.BacktestConfig 一一对应，未知字段报错。
+# 说明：模型信号时阈值 θ 来自 model_meta.json（05 §7.2）；R0 信号时用本文件 threshold。
+
+threshold: 0.5 # R0 信号阈值（p=0/1）；模型信号时被 model_meta.json 覆盖
+
+costs: # 成本模型（06 §4）
+  half_spread_min: 0.0001 # 最小半价差 1bp（06 §3.2）
+  slip_min: 0.0001 # 最小单边滑点 1bp（06 §4.2）
+  Y: 1.0 # 平方根冲击模型系数（06 §4.2）
+
+scenarios: [base, stress, hell, breakeven] # 每次回测必须全部运行（06 §4.3）
+
+sizing_sweep: # 比例敏感性扫描（06 §5.5）
+  position_frac: [0.1, 0.15, 0.2, 0.3]
+
+sanity: # 健全性检验开关（06 §7）
+  random_iters: 100 # S1 随机入场重复次数（fixture 用；正式回测取 1000）
+  threshold_perturb: 0.04 # S4 阈值扰动（06 §7 S4）
+  min_months_positive: 6 # S5 时间稳定性
+  min_folds_positive: 4

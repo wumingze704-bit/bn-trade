@@ -1,0 +1,34 @@
+# 特征、预过滤与标签配置。规格：docs/04-特征与标签.md §3~§7
+# 说明：特征公式与窗口在注册表（trade.features.registry）中固定；本文件只控制
+# 开关、EWM 半衰期、预过滤阈值与标签障碍参数。字段与 pydantic 模型
+# (trade.features.registry.FeaturesConfig) 一一对应，未知字段报错。
+
+ewm:
+  halflife_bars: 4320 # EWM 半衰期 3 天（04 §5），α = 1 - 0.5^(1/4320)
+  clip: 5.0 # z 值裁剪到 [-clip, clip]（04 §5）
+  min_var: 1.0e-12 # 防除零 ε（04 §1）
+
+warmup_bars: 43200 # 预热期（30 天 × 1440），期内不产出样本（04 §5）
+
+features:
+  disabled: [] # 消融实验：按名称关闭特征（默认全部启用，04 §4.5）
+
+prefilter:
+  vol_z_60: 1.0 # 条件一：vol_z_60 ≥ 1.0（04 §6）
+  r1_sigma: 2.0 # 条件二：|r_1| ≥ 2.0 × std_60(r)（04 §6）
+  brk_60: 0.0 # 条件三：brk_60 > 0（04 §6）
+  retention_min: 0.05 # 样本保留率告警下限（04 §6）
+  retention_max: 0.60 # 样本保留率告警上限（04 §6）
+
+label:
+  k_sl: 1.0 # 止损 ATR 系数（04 §7.1）
+  rr: 2.0 # 盈亏比（04 §7.1）
+  sl_min: 0.005 # 止损幅度下限 0.5%（04 §7.1）
+  sl_max: 0.015 # 止损幅度上限 1.5%（04 §7.1）
+  H_label: 60 # 时间障碍根数（04 §7.1）
+  entry_latency_ms: 1000 # 入场延迟：1000 → p_1s / hi_post_1s；3000 → p_3s / hi_post_3s
+  c_rt: 0.0012 # 固定往返成本估计 0.12%（04 §7.2）
+  r_mult_clip: [-1.5, 3.0] # r_mult 截断区间（04 §7.2）
+  fill_ratio_max: 0.10 # 标签窗口内补齐分钟占比上限（04 §7.1）
+  positive_min: 0.10 # 正样本率告警下限（04 §8）
+  positive_max: 0.50 # 正样本率告警上限（04 §8）

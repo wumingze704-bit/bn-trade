@@ -48,6 +48,19 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# H_label 为文档定义的标签参数名（04 §7），保持与设计文档一致
+"src/trade/labels/triple_barrier.py" = ["N803"]
+# 出场策略（06 §3.3）与仓位公式（06 §4.2/§5）沿用设计文档的符号名
+# H_max（最长持仓根数）、R（1R 价格距离）、Y（冲击系数）、H_label（时间障碍）
+"src/trade/common/exits.py" = ["N803", "N806"]
+"src/trade/backtest/engine.py" = ["N803", "N806"]
+"src/trade/backtest/event_sim.py" = ["N803"]
+"src/trade/backtest/costs.py" = ["N803"]
+# 测试允许中文函数名（AGENTS.md §7）；出场测试用单字母 OHLC 变量、H_max 为文档名
+"tests/**/*.py" = ["N802"]
+"tests/common/test_exits.py" = ["E741", "N803"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

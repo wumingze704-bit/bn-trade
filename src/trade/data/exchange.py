@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +25,7 @@ class SymbolInfo(BaseModel):
     filters: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class CheckLevel(str, Enum):
+class CheckLevel(StrEnum):
     """校验结果级别：阻断或警告。"""
 
     BLOCK = "block"
@@ -84,12 +84,18 @@ def min_notional(symbol: SymbolInfo) -> float | None:
     return _filter_value(symbol, "MIN_NOTIONAL", "notional")
 
 
-def check_contract(symbol: SymbolInfo, contract_type: str, quote_asset: str, status: str) -> CheckResult:
+def check_contract(
+    symbol: SymbolInfo, contract_type: str, quote_asset: str, status: str
+) -> CheckResult:
     """校验合约类型、报价资产与交易状态（阻断级）。"""
     if symbol.contract_type != contract_type:
-        return CheckResult("contract_type", CheckLevel.BLOCK, False, f"{symbol.contract_type} != {contract_type}")
+        return CheckResult(
+            "contract_type", CheckLevel.BLOCK, False, f"{symbol.contract_type} != {contract_type}"
+        )
     if symbol.quote_asset != quote_asset:
-        return CheckResult("quote_asset", CheckLevel.BLOCK, False, f"{symbol.quote_asset} != {quote_asset}")
+        return CheckResult(
+            "quote_asset", CheckLevel.BLOCK, False, f"{symbol.quote_asset} != {quote_asset}"
+        )
     if symbol.status != status:
         return CheckResult("status", CheckLevel.BLOCK, False, f"{symbol.status} != {status}")
     return CheckResult("contract", CheckLevel.BLOCK, True, "合约类型/报价资产/交易状态合格")
@@ -98,11 +104,15 @@ def check_contract(symbol: SymbolInfo, contract_type: str, quote_asset: str, sta
 def check_not_excluded(symbol: SymbolInfo, excluded_symbols: set[str]) -> CheckResult:
     """校验合约不在 TradFi 等排除名单（阻断级）。"""
     if symbol.symbol in excluded_symbols:
-        return CheckResult("not_excluded", CheckLevel.BLOCK, False, f"{symbol.symbol} 在排除名单（TradFi 等）")
+        return CheckResult(
+            "not_excluded", CheckLevel.BLOCK, False, f"{symbol.symbol} 在排除名单（TradFi 等）"
+        )
     return CheckResult("not_excluded", CheckLevel.BLOCK, True, "不在排除名单")
 
 
-def check_step_notional(symbol: SymbolInfo, price_median_7d: float, max_value: float) -> CheckResult:
+def check_step_notional(
+    symbol: SymbolInfo, price_median_7d: float, max_value: float
+) -> CheckResult:
     """校验数量步长价值 stepSize × 7 天价格中位数 ≤ 上限（阻断级）。"""
     step = step_size(symbol)
     if step is None:
@@ -115,7 +125,9 @@ def check_step_notional(symbol: SymbolInfo, price_median_7d: float, max_value: f
             False,
             f"stepSize × 价格中位数 = {step_notional:.4f} > {max_value} USDT",
         )
-    return CheckResult("step_notional", CheckLevel.BLOCK, True, f"{step_notional:.4f} ≤ {max_value} USDT")
+    return CheckResult(
+        "step_notional", CheckLevel.BLOCK, True, f"{step_notional:.4f} ≤ {max_value} USDT"
+    )
 
 
 def check_min_notional(symbol: SymbolInfo, max_value: float) -> CheckResult:
@@ -124,15 +136,21 @@ def check_min_notional(symbol: SymbolInfo, max_value: float) -> CheckResult:
     if notional is None:
         return CheckResult("min_notional", CheckLevel.BLOCK, False, "缺少 MIN_NOTIONAL notional")
     if notional > max_value:
-        return CheckResult("min_notional", CheckLevel.BLOCK, False, f"{notional} > {max_value} USDT")
+        return CheckResult(
+            "min_notional", CheckLevel.BLOCK, False, f"{notional} > {max_value} USDT"
+        )
     return CheckResult("min_notional", CheckLevel.BLOCK, True, f"{notional} ≤ {max_value} USDT")
 
 
 def check_leverage(max_leverage: int, min_leverage: int) -> CheckResult:
     """校验杠杆分层允许达到目标杠杆（阻断级）。"""
     if max_leverage < min_leverage:
-        return CheckResult("max_leverage", CheckLevel.BLOCK, False, f"最大杠杆 {max_leverage}x < {min_leverage}x")
-    return CheckResult("max_leverage", CheckLevel.BLOCK, True, f"最大杠杆 {max_leverage}x ≥ {min_leverage}x")
+        return CheckResult(
+            "max_leverage", CheckLevel.BLOCK, False, f"最大杠杆 {max_leverage}x < {min_leverage}x"
+        )
+    return CheckResult(
+        "max_leverage", CheckLevel.BLOCK, True, f"最大杠杆 {max_leverage}x ≥ {min_leverage}x"
+    )
 
 
 def check_history(
@@ -208,4 +226,3 @@ def check_liquidity(
             f"tick_rel {tick_rel:.6f} vs {tick_rel_max:.6f}",
         ),
     ]
-

@@ -1,0 +1,23 @@
+# 出场策略配置。规格：docs/06-回测引擎.md §3.3；docs/05-模型与训练.md §6.1
+# 字段与 pydantic 模型 trade.common.exits.ExitConfig 一一对应，未知字段报错。
+# 说明：回测与实盘共用同一份出场代码（06 §3.3），本文件必须与 model_meta.json
+# 的 exit_policy 一致（07 §2）。
+
+type: trail # trail | fixed | partial（partial 预留，P3 不实现，06 §3.3）
+
+# —— trail 参数（06 §3.3）——
+be_trigger_r: 1.0 # HH ≥ P_fill + 1.0R 后止损上移到保本价
+be_offset: 0.0015 # 保本偏移 0.15%（覆盖往返成本，06 §3.3）
+trail_trigger_r: 1.5 # HH ≥ P_fill + 1.5R 后启动追踪
+k_trail: 1.5 # 追踪距离 = k_trail × atr_abs（调参候选 {1.0,1.5,2.0}）
+tp_cap_r: 4.0 # 封顶止盈限价 = P_fill + 4R
+stall_bars: 20 # 入场后 20 根内 HH 未达 +0.5R 视为无进展
+stall_r: 0.5 # 无进展阈值（R 的倍数）
+H_max: 120 # 最长持仓根数（调参候选 {60,120,240}）
+
+# —— 公共参数（06 §3.3）——
+tp_penetration: 0.0001 # 止盈需穿越 1bp 才成交（限价排队）
+min_stop_move_r: 0.1 # 新止损与旧止损相差不足 max(1 tick, 0.1R) 不更新
+
+# —— fixed 参数（对照，06 §3.3）——
+rr: 2.0 # fixed 止盈盈亏比；fixed 的 H_max 取 features.yaml 的 label.H_label

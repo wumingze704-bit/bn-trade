@@ -1,0 +1,18 @@
+# 仓位与资金配置。规格：docs/06-回测引擎.md §5（唯一规格来源）。
+# 字段与 pydantic 模型 trade.common.sizing.SizingConfig 一一对应，未知字段报错。
+# 说明：回测与实盘共用 trade.common.sizing.calc_notional（06 §5）。
+
+initial_equity: 10 # 初始本金 USDT（user 运行）
+mode: fixed_fraction # fixed_fraction | fixed_risk（06 §5.2）
+position_frac: 0.20 # 每笔保证金 = 当前权益 × 20%
+leverage: 5
+max_positions: 3 # 0.20 × 3 = 0.60 ≤ 0.95（06 §5.4 校验 1）
+base: equity # 按当前权益复利；reference 运行用 base=initial
+risk_per_trade: 0.005 # 仅 fixed_risk 模式使用（06 §5.2）
+max_risk_per_trade: 0.025 # 单笔止损亏损硬上限（占权益）
+daily_loss_stop: 0.05 # 当日亏损达权益 5% 停止开仓
+daily_loss_halt: 0.08 # 当日亏损达 8% 全平并停机
+max_drawdown_halt: 0.20 # 从峰值回撤 20% 停机，人工复核
+max_consecutive_losses: 6
+liq_cap: 0.005 # 流动性上限（占 mean_60(qv)，06 §5.3）
+maint_margin_rate: 0.01 # 回测用维持保证金率（保守值，06 §5.4）

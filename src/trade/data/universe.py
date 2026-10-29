@@ -254,12 +254,16 @@ def validate_symbol(
 
 def blocking_failed(results: list[CheckResult]) -> list[str]:
     """返回未通过的阻断项名称。"""
-    return [result.name for result in results if result.level is CheckLevel.BLOCK and not result.passed]
+    return [
+        result.name for result in results if result.level is CheckLevel.BLOCK and not result.passed
+    ]
 
 
 def warning_names(results: list[CheckResult]) -> list[str]:
     """返回未通过的警告项名称。"""
-    return [result.name for result in results if result.level is CheckLevel.WARN and not result.passed]
+    return [
+        result.name for result in results if result.level is CheckLevel.WARN and not result.passed
+    ]
 
 
 def validate_coins(
@@ -354,7 +358,9 @@ def eligible_blind_candidates(
         metrics = metrics_by_name.get(symbol.symbol)
         if metrics is None:
             continue
-        results = validate_symbol(symbol, "blind", universe, metrics, window_start_ms, window_end_ms)
+        results = validate_symbol(
+            symbol, "blind", universe, metrics, window_start_ms, window_end_ms
+        )
         if not blocking_failed(results) and not warning_names(results):
             candidates.append(symbol.symbol)
     return sorted(candidates)
@@ -378,4 +384,3 @@ def dump_coins(path: Path, coins: CoinsConfig) -> None:
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-

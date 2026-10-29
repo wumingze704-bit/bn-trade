@@ -11,8 +11,6 @@ import pytest
 
 from trade.data.exchange import SymbolInfo
 from trade.data.universe import (
-    CoinEntry,
-    CoinsConfig,
     SymbolMetrics,
     UniverseConfig,
     draw_blind,

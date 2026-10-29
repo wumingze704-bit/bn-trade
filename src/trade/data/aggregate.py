@@ -79,18 +79,26 @@ def _finalize_minute(
         该分钟的原子量字典。
     """
     quote_values = [price * qty for _, price, qty, _ in trades]
-    buy_quote = sum(qv for (_, _, _, maker), qv in zip(trades, quote_values) if not maker)
-    sell_quote = sum(qv for (_, _, _, maker), qv in zip(trades, quote_values) if maker)
+    buy_quote = sum(
+        qv for (_, _, _, maker), qv in zip(trades, quote_values, strict=False) if not maker
+    )
+    sell_quote = sum(
+        qv for (_, _, _, maker), qv in zip(trades, quote_values, strict=False) if maker
+    )
     max_trade_quote = max(quote_values)
     whale_buy_quote = sum(
-        qv for (_, _, _, maker), qv in zip(trades, quote_values) if not maker and qv >= whale_thr
+        qv
+        for (_, _, _, maker), qv in zip(trades, quote_values, strict=False)
+        if not maker and qv >= whale_thr
     )
     whale_sell_quote = sum(
-        qv for (_, _, _, maker), qv in zip(trades, quote_values) if maker and qv >= whale_thr
+        qv
+        for (_, _, _, maker), qv in zip(trades, quote_values, strict=False)
+        if maker and qv >= whale_thr
     )
 
     buy_by_second: dict[int, float] = {}
-    for (ts, _price, _qty, maker), qv in zip(trades, quote_values):
+    for (ts, _price, _qty, maker), qv in zip(trades, quote_values, strict=False):
         if not maker:
             second = ts // 1000
             buy_by_second[second] = buy_by_second.get(second, 0.0) + qv
@@ -168,7 +176,9 @@ def aggregate_aggtrades(
                 last_minute_close = current_trades[-1][1]
                 current_minute = minute
                 current_trades = []
-            current_trades.append((ts, float(row.price), float(row.quantity), bool(row.is_buyer_maker)))
+            current_trades.append(
+                (ts, float(row.price), float(row.quantity), bool(row.is_buyer_maker))
+            )
 
     if current_trades:
         rows.append(_finalize_minute(current_minute, current_trades, whale_thr, last_minute_close))
@@ -324,5 +334,3 @@ def read_aggtrades_zip(path: str | Path, *, chunksize: int = 500_000) -> Iterabl
             chunk = chunk.rename(columns=str.strip)
         chunk["transact_time"] = normalize_timestamp_ms(chunk["transact_time"])
         yield coerce_aggtrades(chunk)
-
-
