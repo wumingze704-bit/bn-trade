@@ -9,39 +9,15 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
 from trade.common.config import BaseConfig, load_config
-from trade.data.loader import load_bars
+from trade.data.loader import load_bars, window_bounds
 from trade.data.universe import CoinsConfig, load_coins
 from trade.features import FeaturesConfig, compute_features, enabled_features, feature_hash
 from trade.labels import is_sample_mask, triple_barrier, uniqueness_weights
-
-_MS_PER_DAY = 86_400_000
-
-
-def _month_start_ms(year: int, month: int) -> int:
-    return int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
-
-
-def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
-    total = year * 12 + (month - 1) + delta
-    return total // 12, total % 12 + 1
-
-
-def _window_bounds(base_cfg: BaseConfig) -> tuple[int, int, int]:
-    """返回 (start_ms, end_ms, holdout_start_ms)。"""
-    end_year, end_month = (int(part) for part in base_cfg.data_window.end_month.split("-"))
-    months = base_cfg.data_window.months
-    holdout_months = base_cfg.data_window.holdout_months
-    m1_year, m1_month = _shift_month(end_year, end_month, -(months - 1))
-    start_ms = _month_start_ms(m1_year, m1_month) - base_cfg.data_window.warmup_days * _MS_PER_DAY
-    end_ms = _month_start_ms(*_shift_month(end_year, end_month, 1))
-    holdout_start_ms = _month_start_ms(*_shift_month(end_year, end_month, -(holdout_months - 1)))
-    return start_ms, end_ms, holdout_start_ms
 
 
 def _sha256_file(path: Path) -> str:
@@ -64,7 +40,8 @@ def build_dataset(
     """构建数据集并写 manifest.json，返回 manifest 内容。"""
     features = enabled_features(features_cfg)
     fhash = feature_hash(features)
-    start_ms, end_ms, holdout_start_ms = _window_bounds(base_cfg)
+    wb = window_bounds(base_cfg)
+    start_ms, end_ms, holdout_start_ms = wb.start_ms, wb.end_ms, wb.holdout_start_ms
     build_end_ms = end_ms if include_holdout else holdout_start_ms
 
     features_dir = data_root / "features" / run_id

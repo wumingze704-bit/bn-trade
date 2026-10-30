@@ -180,6 +180,38 @@ def test_追价保护被放弃():
     assert any(s.reason == "chase" for s in skipped)
 
 
+def test_盯市权益曲线捕获持仓浮亏():
+    """T0.18：权益曲线按 c_t 盯市，V 形价格路径下的浮亏计入回撤（实现盈亏≈0）。"""
+    n = 30
+    open_time = np.arange(n) * _MIN + _T0
+    close = np.concatenate([np.linspace(100.0, 80.0, 15), np.linspace(80.0, 100.0, 15)])
+    bars = pd.DataFrame(
+        {
+            "open_time": open_time,
+            "open": close,
+            "high": close * 1.001,
+            "low": close * 0.999,
+            "close": close,
+            "quote_volume": np.full(n, 1e6),
+            "is_filled": np.zeros(n, dtype="int64"),
+            "p_1s": close,
+            "hi_post_1s": close * 1.001,
+            "lo_post_1s": close * 0.999,
+        }
+    )
+    trade = _trade(symbol="A", entry=_T0 + _MIN, exit=_T0 + 28 * _MIN, gross_return=0.0)
+    result = simulate_portfolio(
+        [trade],
+        [],
+        sizing_cfg=_sizing(base="initial"),
+        backtest_cfg=_backtest(),
+        fees=_fees(),
+        bars_by_symbol={"A": bars},
+    )
+    assert len(result.equity_curve) > 5  # 逐分钟盯市，而非只在平仓时记录
+    assert result.equity_curve["drawdown"].max() > 0.1  # 浮亏回撤远大于实现回撤
+
+
 def test_run_backtest端到端():
     rng = np.random.default_rng(3)
     bars_by_symbol: dict[str, pd.DataFrame] = {}

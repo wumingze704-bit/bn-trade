@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +15,43 @@ import pandas as pd  # type: ignore[import-untyped]
 
 from trade.backtest.engine import ExecutedTrade, PortfolioResult, SkippedSignal
 from trade.backtest.metrics import compute_metrics
+
+
+def compute_experiment_hash(
+    effective_configs: Mapping[str, object], input_files: Mapping[str, Path]
+) -> str:
+    """计算生效配置与输入文件内容的 SHA256（06 §8）。
+
+    Args:
+        effective_configs: 按配置名映射的 JSON 兼容配置值。
+        input_files: 按输入名映射的配置快照、规则快照或信号文件路径。
+
+    Returns:
+        完整的小写 SHA256 十六进制摘要。
+
+    Raises:
+        OSError: 输入文件无法读取。
+        TypeError: 配置值不能编码为 JSON。
+    """
+    input_hashes = {name: _sha256_file(path) for name, path in sorted(input_files.items())}
+    payload = {"configs": effective_configs, "input_files": input_hashes}
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def experiments_log_path(artifact_root: Path) -> Path:
+    """返回统一的试验日志路径（06 §8）。"""
+    return artifact_root / "reports" / "EXPERIMENTS.log"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def trades_to_frame(trades: list[ExecutedTrade], run: str, scenario: str) -> pd.DataFrame:
@@ -50,12 +89,14 @@ def trades_to_frame(trades: list[ExecutedTrade], run: str, scenario: str) -> pd.
     )
 
 
-def skipped_to_frame(skipped: list[SkippedSignal]) -> pd.DataFrame:
-    """被放弃的候选信号表（06 §8 skipped.parquet）。"""
+def skipped_to_frame(skipped: list[SkippedSignal], run: str, scenario: str) -> pd.DataFrame:
+    """被放弃的候选信号表（06 §8 skipped.parquet，含真实 run/scenario）。"""
     if not skipped:
         return pd.DataFrame()
     return pd.DataFrame(
         {
+            "run": [run] * len(skipped),
+            "scenario": [scenario] * len(skipped),
             "symbol": [s.symbol for s in skipped],
             "open_time": [s.open_time for s in skipped],
             "p": [s.p for s in skipped],
@@ -70,11 +111,13 @@ def gate_payload(
     sanity_results: dict[str, str],
     *,
     source: str,
+    g2_bootstrap: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, object]:
     """构造 gate.json 内容（06 §8，基于 reference 运行）。
 
-    G2/G3 闸门判定在 P4 正式回测时给出（08 §3）；P3 的 R0 回测只写指标与
-    健全性检验结果，gate 字段为 null。
+    G2 统计显著性（单笔净期望的 UTC 日分块 bootstrap）以 `g2_bootstrap` 写入，
+    含全部/训练组/留出组的下限、上限、次数、种子与是否通过（08 §3 G2）。P3 的
+    R0 回测只写指标与健全性检验结果，gate 字段为 null。
     """
     return {
         "run_id": run_id,
@@ -83,6 +126,7 @@ def gate_payload(
         "source": source,
         "metrics": reference_metrics,
         "sanity": sanity_results,
+        "g2_bootstrap": g2_bootstrap,
         "gate": None,
     }
 
@@ -92,39 +136,45 @@ def write_report(
     run_id: str,
     *,
     source: str,
-    scenario_results: dict[str, PortfolioResult],
+    run_results: dict[str, dict[str, PortfolioResult]],
     reference_metrics: dict[str, float],
     sanity_results: dict[str, str],
     initial_equity: float,
+    g2_bootstrap: dict[str, dict[str, float]] | None = None,
 ) -> None:
-    """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。"""
+    """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。
+
+    `run_results` 为 run → scenario → PortfolioResult；每笔交易与放弃信号保留真实的
+    run 与 scenario（06 §8，T0.11）。
+    """
     report_dir.mkdir(parents=True, exist_ok=True)
-    all_trades: list[ExecutedTrade] = []
-    all_skipped: list[SkippedSignal] = []
+    trade_frames: list[pd.DataFrame] = []
+    skipped_frames: list[pd.DataFrame] = []
+    equity_frames: list[pd.DataFrame] = []
     summary: dict[str, dict[str, dict[str, float]]] = {}
 
-    for scen, result in scenario_results.items():
-        summary[scen] = {"reference": compute_metrics(result, initial_equity)}
-        all_trades.extend(result.trades)
-        all_skipped.extend(result.skipped)
+    for run, scenario_results in run_results.items():
+        for scen, result in scenario_results.items():
+            summary.setdefault(scen, {})[run] = compute_metrics(result, initial_equity)
+            trade_frames.append(trades_to_frame(result.trades, run, scen))
+            skipped_frames.append(skipped_to_frame(result.skipped, run, scen))
+            if not result.equity_curve.empty:
+                frame = result.equity_curve.copy()
+                frame["run"] = run
+                frame["scenario"] = scen
+                equity_frames.append(frame)
 
     (report_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    trades_to_frame(all_trades, "reference", "base").to_parquet(report_dir / "trades.parquet")
-    skipped_to_frame(all_skipped).to_parquet(report_dir / "skipped.parquet")
-
-    equity_frames = []
-    for scen, result in scenario_results.items():
-        if not result.equity_curve.empty:
-            frame = result.equity_curve.copy()
-            frame["run"] = "reference"
-            frame["scenario"] = scen
-            equity_frames.append(frame)
+    pd.concat(trade_frames, ignore_index=True).to_parquet(report_dir / "trades.parquet")
+    pd.concat(skipped_frames, ignore_index=True).to_parquet(report_dir / "skipped.parquet")
     if equity_frames:
         pd.concat(equity_frames, ignore_index=True).to_parquet(report_dir / "equity.parquet")
 
-    gate = gate_payload(run_id, reference_metrics, sanity_results, source=source)
+    gate = gate_payload(
+        run_id, reference_metrics, sanity_results, source=source, g2_bootstrap=g2_bootstrap
+    )
     (report_dir / "gate.json").write_text(
         json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -154,17 +204,19 @@ def _render_report_md(
         lines.append(f"- {key}: {reference_metrics.get(key)}")
     lines += [
         "",
-        "## 2. 各情景核心指标",
+        "## 2. 各情景核心指标（reference / user）",
         "",
-        "| 情景 | 净收益 USDT | 净收益率 | PF | 笔数 |",
-        "| :-- | :-- | :-- | :-- | :-- |",
+        "| 情景 | 运行 | 净收益 USDT | 净收益率 | PF | 笔数 |",
+        "| :-- | :-- | :-- | :-- | :-- | :-- |",
     ]
     for scen, runs in summary.items():
-        m = runs.get("reference", {})
-        lines.append(
-            f"| {scen} | {m.get('net_return_usdt', 0):.4f} | {m.get('net_return_pct', 0):.4%} "
-            f"| {m.get('profit_factor', 0):.3f} | {int(m.get('n_trades', 0))} |"
-        )
+        for run in sorted(runs):
+            m = runs.get(run, {})
+            lines.append(
+                f"| {scen} | {run} | {m.get('net_return_usdt', 0):.4f} "
+                f"| {m.get('net_return_pct', 0):.4%} | {m.get('profit_factor', 0):.3f} "
+                f"| {int(m.get('n_trades', 0))} |"
+            )
     lines += ["", "## 3. 健全性检验（06 §7）", "", "| 编号 | 结果 |", "| :-- | :-- |"]
     for code, status in sanity_results.items():
         lines.append(f"| {code} | {status} |")

@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+
+from trade.common.config import BaseConfig
 
 # K 线 12 列去掉 ignore（03 §1.2）
 KLINE_COLUMNS = (
@@ -49,6 +52,50 @@ ATOMIC_COLUMNS = (
 REQUIRED_BAR_COLUMNS = (*KLINE_COLUMNS, *ATOMIC_COLUMNS, "is_filled")
 OPTIONAL_BAR_COLUMNS = ("oi", "funding_rate", "funding_time")
 
+# 一天毫秒数（用于从数据窗口推导预热起点，03 §6）
+_MS_PER_DAY = 86_400_000
+
+
+@dataclass(frozen=True)
+class WindowBounds:
+    """回测数据时间窗口（均为 UTC 毫秒）。"""
+
+    start_ms: int
+    end_ms: int
+    holdout_start_ms: int
+
+
+def _month_start_ms(year: int, month: int) -> int:
+    """返回某 UTC 月 1 日 00:00 的毫秒时间戳。"""
+    return int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
+
+
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    """返回 (year, month) 偏移 delta 个月后的年月。"""
+    total = year * 12 + (month - 1) + delta
+    return total // 12, total % 12 + 1
+
+
+def window_bounds(base_cfg: BaseConfig) -> WindowBounds:
+    """从 base.yaml 的数据窗口推导 (start_ms, end_ms, holdout_start_ms)（03 §6）。
+
+    Args:
+        base_cfg: 基础配置，含 data_window（end_month、months、warmup_days、
+            holdout_months）。
+
+    Returns:
+        WindowBounds：start_ms 含预热期，end_ms 为 M24 之后一个月起点，
+        holdout_start_ms 为封存集 M23 起点。
+    """
+    end_year, end_month = (int(part) for part in base_cfg.data_window.end_month.split("-"))
+    months = base_cfg.data_window.months
+    holdout_months = base_cfg.data_window.holdout_months
+    m1_year, m1_month = _shift_month(end_year, end_month, -(months - 1))
+    start_ms = _month_start_ms(m1_year, m1_month) - base_cfg.data_window.warmup_days * _MS_PER_DAY
+    end_ms = _month_start_ms(*_shift_month(end_year, end_month, 1))
+    holdout_start_ms = _month_start_ms(*_shift_month(end_year, end_month, -(holdout_months - 1)))
+    return WindowBounds(start_ms=start_ms, end_ms=end_ms, holdout_start_ms=holdout_start_ms)
+
 
 def _validate_columns(bars: pd.DataFrame, alias: str) -> None:
     missing = [col for col in REQUIRED_BAR_COLUMNS if col not in bars.columns]
@@ -62,7 +109,7 @@ def load_bars(
     start_ms: int,
     end_ms: int,
     *,
-    holdout_start_ms: int | None = None,
+    holdout_start_ms: int,
     allow_holdout: bool = False,
 ) -> pd.DataFrame:
     """读取 [start_ms, end_ms) 的分钟数据（03 §5）。
@@ -74,13 +121,15 @@ def load_bars(
         alias: 币种别名（如 C01）。
         start_ms: 起点毫秒（含）。
         end_ms: 终点毫秒（不含）。
-        holdout_start_ms: 封存集起点（M23）；请求与其重叠且 allow_holdout=False 时抛错。
+        holdout_start_ms: 封存集起点（M23，必填）；请求与其重叠且
+            allow_holdout=False 时抛错。必填是为了防止调用方漏传守卫（03 §6、
+            AGENTS.md §6 红线 2）。
         allow_holdout: 是否允许读取封存集（仅 `--final` 可开，03 §6）。
 
     Raises:
         ValueError: 请求与封存集重叠、无数据或缺少必需列。
     """
-    if holdout_start_ms is not None and not allow_holdout and end_ms > holdout_start_ms:
+    if not allow_holdout and end_ms > holdout_start_ms:
         raise ValueError("请求范围与封存集重叠，且 allow_holdout=False（03 §6）")
 
     bars_dir = data_root / "bars" / alias

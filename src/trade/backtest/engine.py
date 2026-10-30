@@ -51,9 +51,23 @@ class SanityConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     random_iters: int = Field(default=1000, ge=1)
+    random_seed: int = Field(default=42, ge=0)
     threshold_perturb: float = Field(default=0.04, gt=0.0)
     min_months_positive: int = Field(default=6, ge=1)
     min_folds_positive: int = Field(default=4, ge=1)
+    bootstrap_iters: int = Field(default=10000, ge=1)
+    bootstrap_seed: int = Field(default=42, ge=0)
+
+
+class ReferenceConfig(BaseModel):
+    """reference 运行配置（06 §5.1，用于 G2/G3 闸门判定）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    initial_equity: float = Field(default=10000.0, gt=0.0)
+    mode: str = Field(default="fixed_risk", pattern=r"^(fixed_fraction|fixed_risk)$")
+    risk_per_trade: float = Field(default=0.005, ge=0.001, le=0.05)
+    base: str = Field(default="initial", pattern=r"^(equity|initial)$")
 
 
 class BacktestConfig(BaseModel):
@@ -67,6 +81,7 @@ class BacktestConfig(BaseModel):
     scenarios: list[str] = Field(default_factory=lambda: ["base", "stress", "hell", "breakeven"])
     sizing_sweep: SizingSweepConfig = Field(default_factory=SizingSweepConfig)
     sanity: SanityConfig = Field(default_factory=SanityConfig)
+    reference: ReferenceConfig = Field(default_factory=ReferenceConfig)
 
 
 @dataclass(frozen=True)
@@ -156,6 +171,7 @@ class PortfolioResult:
     equity_curve: pd.DataFrame = field(default_factory=pd.DataFrame)
     final_equity: float = 0.0
     equity_floor_hit: bool = False
+    max_drawdown_halt: bool = False
 
 
 def _entry_columns(latency_ms: int) -> tuple[str, str, str]:
@@ -186,6 +202,104 @@ def _symbol_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
         "rv15": rv_15(close),
         "mean_qv_60": rolling_mean(qv, 60),
     }
+
+
+def _close_lookup(bars_by_symbol: dict[str, pd.DataFrame] | None) -> dict[str, dict[int, float]]:
+    """预建 open_time → close 映射，供逐分钟盯市（06 §3.4、§5.1）。"""
+    if not bars_by_symbol:
+        return {}
+    lookup: dict[str, dict[int, float]] = {}
+    for symbol, bars in bars_by_symbol.items():
+        if "open_time" not in bars.columns or "close" not in bars.columns:
+            continue
+        open_time = bars["open_time"].to_numpy(dtype="int64")
+        close = bars["close"].to_numpy(dtype="float64")
+        lookup[symbol] = {int(open_time[i]): float(close[i]) for i in range(open_time.shape[0])}
+    return lookup
+
+
+def _mark_equity(
+    wallet: float,
+    positions: dict[str, ExecutedTrade],
+    close_lookup: dict[str, dict[int, float]],
+    ts: int,
+) -> float:
+    """盯市权益 = 钱包余额 + 未实现盈亏（notional × (c_t / p_fill − 1)，06 §5.1）。"""
+    unrealized = 0.0
+    for trade in positions.values():
+        close_at_ts = close_lookup.get(trade.symbol, {}).get(ts)
+        if close_at_ts is None or close_at_ts <= 0.0 or trade.p_fill <= 0.0:
+            close_at_ts = trade.p_fill  # 缺失分钟按入场价近似（保守）
+        unrealized += trade.notional * (close_at_ts / trade.p_fill - 1.0)
+    return wallet + unrealized
+
+
+def _mark_to_market_curve(
+    trades: list[ExecutedTrade],
+    close_lookup: dict[str, dict[int, float]],
+    initial_equity: float,
+) -> pd.DataFrame:
+    """按分钟盯市的权益曲线（06 §3.4、§5.1）。
+
+    权益 = 钱包余额（初始 + 已实现净盈亏） + 未实现盈亏；在每根持仓 K 线收盘处采样。
+    """
+    if not trades:
+        return pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
+
+    sample_ts: set[int] = set()
+    for t in trades:
+        sample_ts.add(t.exit_open_time)
+        for ts in close_lookup.get(t.symbol, {}):
+            if t.entry_open_time <= ts < t.exit_open_time:
+                sample_ts.add(ts)
+
+    by_exit: dict[int, float] = {}
+    for t in trades:
+        by_exit[t.exit_open_time] = by_exit.get(t.exit_open_time, 0.0) + t.net_pnl
+
+    rows: list[tuple[int, float, float]] = []
+    realized = 0.0
+    peak = initial_equity
+    for ts in sorted(sample_ts):
+        realized += by_exit.get(ts, 0.0)
+        equity = initial_equity + realized
+        for t in trades:
+            if t.entry_open_time <= ts < t.exit_open_time:
+                close_at_ts = close_lookup.get(t.symbol, {}).get(ts)
+                if close_at_ts is None or close_at_ts <= 0.0:
+                    close_at_ts = t.p_fill
+                equity += t.notional * (close_at_ts / t.p_fill - 1.0)
+        peak = max(peak, equity)
+        drawdown = (peak - equity) / peak if peak > 0.0 else 0.0
+        rows.append((ts, equity, drawdown))
+
+    if not rows or rows[0][0] != 0:
+        rows.insert(0, (0, initial_equity, 0.0))
+    return pd.DataFrame(rows, columns=["ts_ms", "equity", "drawdown"])
+
+
+def reference_trade_net_pnl(
+    tr: PrecomputedTrade,
+    *,
+    sizing_cfg: SizingConfig,
+    fees: FeeSchedule,
+) -> float:
+    """reference 仓位（base=initial、无组合约束）下单笔净盈亏（06 §7 S1）。"""
+    base = sizing_cfg.initial_equity
+    sz = calc_notional(
+        base=base,
+        sl=tr.sl,
+        loss_rate=tr.loss_rate,
+        entry_price=tr.p_fill,
+        mean_qv_60=tr.mean_qv_60,
+        available_margin=base,
+        step_size=tr.step_size,
+        min_notional=tr.min_notional,
+        cfg=sizing_cfg,
+    )
+    if not sz.accepted:
+        return 0.0
+    return sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate)
 
 
 def precompute_trades(
@@ -349,20 +463,22 @@ def simulate_portfolio(
     backtest_cfg: BacktestConfig,
     fees: FeeSchedule,
     initial_equity: float | None = None,
+    bars_by_symbol: dict[str, pd.DataFrame] | None = None,
 ) -> PortfolioResult:
     """组合模拟（06 §3.4 第 2 步）：按时间推进，应用仓位与组合约束。
 
     组合约束：冷却期、组合持仓上限、候选排序（p 降序、m 降序）、当日亏损停止、
-    权益下限、保证金与数量取整（06 §3.1、§5.3）。
+    权益下限、保证金与数量取整（06 §3.1、§5.3）。权益曲线按盯市权益（钱包余额
+    + 未实现盈亏）逐分钟生成，回撤与回撤停机基于该曲线（06 §5.1、§3.4）。
     """
-    equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity
-    peak = equity
+    start_equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity
+    equity = start_equity
     positions: dict[str, ExecutedTrade] = {}
     cooldown_until: dict[str, int] = {}
     daily_realized: dict[str, float] = {}
-    equity_rows: list[tuple[int, float, float]] = []
     result = PortfolioResult(skipped=list(precompute_skipped))
     min_min_notional = min((t.min_notional for t in trades), default=1e18)
+    close_lookup = _close_lookup(bars_by_symbol)
 
     ordered = sorted(trades, key=lambda tr: (tr.entry_open_time, -tr.p, -tr.m))
 
@@ -373,14 +489,12 @@ def simulate_portfolio(
         )
         for sym, trade in due:
             equity += trade.net_pnl
-            peak = max(peak, equity)
             day = _utc_day(trade.exit_open_time)
             daily_realized[day] = daily_realized.get(day, 0.0) + trade.net_pnl
             if trade.exit_type_code in (0, 1, 2):
                 cooldown_until[sym] = (
                     trade.exit_open_time + backtest_cfg.risk.cooldown_bars * 60_000
                 )
-            equity_rows.append((trade.exit_open_time, equity, (peak - equity) / peak))
             del positions[sym]
 
         if tr.symbol in positions:
@@ -456,23 +570,16 @@ def simulate_portfolio(
 
     for _sym, trade in sorted(positions.items(), key=lambda kv: kv[1].exit_open_time):
         equity += trade.net_pnl
-        peak = max(peak, equity)
         day = _utc_day(trade.exit_open_time)
         daily_realized[day] = daily_realized.get(day, 0.0) + trade.net_pnl
-        equity_rows.append((trade.exit_open_time, equity, (peak - equity) / peak))
     positions.clear()
 
     result.final_equity = equity
-    if equity_rows:
-        result.equity_curve = pd.DataFrame(equity_rows, columns=["ts_ms", "equity", "drawdown"])
-    else:
-        result.equity_curve = pd.DataFrame(
-            {
-                "ts_ms": [0],
-                "equity": [initial_equity if initial_equity is not None else equity],
-                "drawdown": [0.0],
-            }
-        )
+    result.equity_curve = _mark_to_market_curve(result.trades, close_lookup, start_equity)
+    if not result.equity_curve.empty:
+        max_dd = float(result.equity_curve["drawdown"].max())
+        if max_dd >= sizing_cfg.max_drawdown_halt:
+            result.max_drawdown_halt = True
     return result
 
 
@@ -526,5 +633,6 @@ def run_backtest(
         backtest_cfg=backtest_cfg,
         fees=fees,
         initial_equity=initial_equity,
+        bars_by_symbol=bars_by_symbol,
     )
     return result, all_trades

@@ -18,6 +18,8 @@ from trade.backtest.engine import (
     PrecomputedTrade,
     SkippedSignal,
     TradeRule,
+    _close_lookup,
+    _mark_to_market_curve,
     precompute_trades,
 )
 from trade.common.exits import ExitConfig
@@ -74,6 +76,7 @@ def event_sim(
         backtest_cfg=backtest_cfg,
         fees=fees,
         initial_equity=initial_equity,
+        bars_by_symbol=bars_by_symbol,
     )
 
 
@@ -85,16 +88,17 @@ def _event_combine(
     backtest_cfg: BacktestConfig,
     fees: FeeSchedule,
     initial_equity: float | None,
+    bars_by_symbol: dict[str, pd.DataFrame],
 ) -> PortfolioResult:
     """按分钟时钟推进的组合模拟（独立于 engine.simulate_portfolio 的实现）。"""
-    equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity
-    peak = equity
+    start_equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity
+    equity = start_equity
     positions: dict[str, ExecutedTrade] = {}
     cooldown_until: dict[str, int] = {}
     daily_realized: dict[str, float] = {}
-    equity_rows: list[tuple[int, float, float]] = []
     result = PortfolioResult(skipped=list(all_skipped))
     min_min_notional = min((t.min_notional for t in all_trades), default=1e18)
+    close_lookup = _close_lookup(bars_by_symbol)
 
     by_entry: dict[int, list[PrecomputedTrade]] = defaultdict(list)
     for tr in all_trades:
@@ -111,14 +115,12 @@ def _event_combine(
         ):
             trade = positions[sym]
             equity += trade.net_pnl
-            peak = max(peak, equity)
             day = _utc_day(trade.exit_open_time)
             daily_realized[day] = daily_realized.get(day, 0.0) + trade.net_pnl
             if trade.exit_type_code in (0, 1, 2):
                 cooldown_until[sym] = (
                     trade.exit_open_time + backtest_cfg.risk.cooldown_bars * 60_000
                 )
-            equity_rows.append((trade.exit_open_time, equity, (peak - equity) / peak))
             del positions[sym]
 
         for tr in by_entry.get(ts, []):
@@ -200,15 +202,15 @@ def _event_combine(
     for sym in sorted(positions, key=lambda s: positions[s].exit_open_time):
         trade = positions[sym]
         equity += trade.net_pnl
-        peak = max(peak, equity)
-        equity_rows.append((trade.exit_open_time, equity, (peak - equity) / peak))
     positions.clear()
 
     result.final_equity = equity
-    if equity_rows:
-        result.equity_curve = pd.DataFrame(equity_rows, columns=["ts_ms", "equity", "drawdown"])
-    else:
-        result.equity_curve = pd.DataFrame({"ts_ms": [0], "equity": [equity], "drawdown": [0.0]})
+    result.equity_curve = _mark_to_market_curve(result.trades, close_lookup, start_equity)
+    if (
+        not result.equity_curve.empty
+        and float(result.equity_curve["drawdown"].max()) >= sizing_cfg.max_drawdown_halt
+    ):
+        result.max_drawdown_halt = True
     return result
 
 

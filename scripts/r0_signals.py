@@ -13,7 +13,7 @@ import pandas as pd
 
 from trade.backtest.r0 import TrainConfig, r0_signals_for_symbol
 from trade.common.config import BaseConfig, load_config
-from trade.data.loader import load_bars
+from trade.data.loader import load_bars, window_bounds
 from trade.data.universe import load_coins
 from trade.features.registry import FeaturesConfig
 
@@ -25,8 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--coins", type=Path, default=Path("configs/coins.yaml"))
     parser.add_argument("--features", type=Path, default=Path("configs/features.yaml"))
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
-    parser.add_argument("--start", type=str, default="2024-10-01")
-    parser.add_argument("--end", type=str, default="2026-09-30")
     return parser
 
 
@@ -37,13 +35,21 @@ def main() -> None:
     features = load_config(FeaturesConfig, args.features)
     train = load_config(TrainConfig, args.train)
 
-    start_ms = int(pd.Timestamp(args.start, tz="UTC").timestamp() * 1000)
-    end_ms = int(pd.Timestamp(args.end, tz="UTC").timestamp() * 1000)
+    wb = window_bounds(base)
+    # R0 信号只覆盖调参期 + 测试段，不碰封存集 M23~M24（03 §6、AGENTS.md §6 红线 2）
+    end_ms = wb.holdout_start_ms
 
     entries = [*coins.train, *coins.holdout, *coins.blind]
     frames = []
     for entry in entries:
-        bars = load_bars(base.paths.data_root, entry.alias, start_ms, end_ms)
+        bars = load_bars(
+            base.paths.data_root,
+            entry.alias,
+            wb.start_ms,
+            end_ms,
+            holdout_start_ms=wb.holdout_start_ms,
+            allow_holdout=False,
+        )
         frame = r0_signals_for_symbol(
             bars,
             train.r0,

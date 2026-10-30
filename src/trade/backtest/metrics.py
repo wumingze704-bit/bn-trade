@@ -66,7 +66,7 @@ def compute_metrics(
         "avg_mfe_r": float(np.mean(mfe)) if mfe else 0.0,
         "avg_mae_r": float(np.mean(mae)) if mae else 0.0,
         "giveback_ratio": _giveback_ratio(trades),
-        "max_drawdown": _max_drawdown(_equity_series(trades, initial_equity)),
+        "max_drawdown": _portfolio_max_drawdown(result, trades, initial_equity, group),
         **{f"exit_{k}": float(v) for k, v in exit_dist.items()},
     }
 
@@ -93,6 +93,18 @@ def _equity_series(trades: list[ExecutedTrade], initial_equity: float) -> list[f
         equity += t.net_pnl
         series.append(equity)
     return series
+
+
+def _portfolio_max_drawdown(
+    result: PortfolioResult,
+    trades: list[ExecutedTrade],
+    initial_equity: float,
+    group: str | None,
+) -> float:
+    """最大回撤：组合层（group=None）用盯市权益曲线，分组层用已实现序列（06 §5.1、§6）。"""
+    if group is None and result.equity_curve is not None and not result.equity_curve.empty:
+        return float(result.equity_curve["drawdown"].max())
+    return _max_drawdown(_equity_series(trades, initial_equity))
 
 
 def _max_drawdown(series: list[float]) -> float:
@@ -128,6 +140,83 @@ def daily_returns(equity_curve: pd.DataFrame, initial_equity: float) -> pd.Serie
         daily = pd.concat([pd.Series({None: initial_equity}), daily])
     rets = daily.pct_change().dropna()
     return rets
+
+
+def daily_block_bootstrap_ci(
+    trades: list[ExecutedTrade],
+    *,
+    n_iters: int = 10000,
+    seed: int = 42,
+    alpha: float = 0.05,
+) -> dict[str, float]:
+    """单笔净期望（bp）的 UTC 日分块 bootstrap 95% 置信区间（08 §3 G2、06 §6）。
+
+    整日重抽样以保留日内交易相关性：每笔交易按 UTC 日（entry_open_time）分块，
+    单笔期望 bp = 净盈亏 / 名义价值 × 10000；每次 bootstrap 有放回重抽整日，
+    按重抽后（Σ 各笔 bp）/（Σ 笔数）得到单笔期望，取 alpha/2 与 1−alpha/2 分位。
+
+    Args:
+        trades: 已按 group 过滤的交易列表。
+        n_iters: bootstrap 重复次数（08 G2 要求 10000）。
+        seed: 随机种子（来自配置）。
+        alpha: 置信水平（0.05 → 95%）。
+
+    Returns:
+        {lower_bp, upper_bp, mean_bp, n_iters, seed, n_days, n_trades, passed}；
+        lower_bp > 0 即 passed=True（08 §3 G2 统计显著性）。
+    """
+    valid = [t for t in trades if t.notional > 0.0]
+    if not valid:
+        return {
+            "lower_bp": 0.0,
+            "upper_bp": 0.0,
+            "mean_bp": 0.0,
+            "n_iters": float(n_iters),
+            "seed": float(seed),
+            "n_days": 0.0,
+            "n_trades": 0.0,
+            "passed": False,
+        }
+
+    by_day: dict[str, list[float]] = {}
+    for t in valid:
+        day = _utc_day(t.entry_open_time)
+        by_day.setdefault(day, []).append(t.net_pnl / t.notional * 10000.0)
+
+    day_bp_totals = np.asarray([sum(v) for v in by_day.values()], dtype="float64")
+    day_counts = np.asarray([len(v) for v in by_day.values()], dtype="float64")
+    n_days = len(day_bp_totals)
+
+    mean_bp = float(day_bp_totals.sum() / day_counts.sum()) if day_counts.sum() else 0.0
+
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_iters, dtype="float64")
+    for i in range(n_iters):
+        idx = rng.integers(0, n_days, size=n_days)
+        total_bp = day_bp_totals[idx].sum()
+        total_n = day_counts[idx].sum()
+        means[i] = total_bp / total_n if total_n > 0 else 0.0
+
+    lower = float(np.quantile(means, alpha / 2.0))
+    upper = float(np.quantile(means, 1.0 - alpha / 2.0))
+    return {
+        "lower_bp": lower,
+        "upper_bp": upper,
+        "mean_bp": mean_bp,
+        "n_iters": float(n_iters),
+        "seed": float(seed),
+        "n_days": float(n_days),
+        "n_trades": float(len(valid)),
+        "passed": lower > 0.0,
+    }
+
+
+def _utc_day(ts_ms: int) -> str:
+    """UTC 日（08 §3 G2 分块 bootstrap）。"""
+    from datetime import UTC, datetime
+
+    day = datetime.fromtimestamp(ts_ms // 1000, tz=UTC)
+    return f"{day.year:04d}-{day.month:02d}-{day.day:02d}"
 
 
 def sharpe(returns: pd.Series) -> float:

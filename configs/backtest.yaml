@@ -16,6 +16,15 @@ sizing_sweep: # 比例敏感性扫描（06 §5.5）
 
 sanity: # 健全性检验开关（06 §7）
   random_iters: 100 # S1 随机入场重复次数（fixture 用；正式回测取 1000）
+  random_seed: 42 # S1 随机入场种子（06 §7 S1）
   threshold_perturb: 0.04 # S4 阈值扰动（06 §7 S4）
   min_months_positive: 6 # S5 时间稳定性
   min_folds_positive: 4
+  bootstrap_iters: 10000 # G2 统计显著性 UTC 日分块 bootstrap 次数（08 §3 G2）
+  bootstrap_seed: 42 # G2 bootstrap 种子
+
+reference: # reference 运行（06 §5.1，用于 G2/G3 闸门判定）
+  initial_equity: 10000.0
+  mode: fixed_risk
+  risk_per_trade: 0.005
+  base: initial
