@@ -16,7 +16,7 @@ import numpy as np
 
 from trade.backtest.engine import BacktestConfig
 from trade.common.config import BaseConfig, load_config
-from trade.common.exits import ExitConfig
+from trade.common.exits import ExitConfig, exit_policy_hash
 from trade.common.sizing import SizingConfig
 from trade.data.loader import (
     collect_universe_coins,
@@ -230,6 +230,7 @@ def build_dataset(
         "prefilter": features_cfg.prefilter.model_dump(),
         "label": features_cfg.label.model_dump(),
         "universe_rule_hash": rule_hash(universe_cfg) if universe_cfg is not None else "",
+        "exit_policy_hash": exit_policy_hash(exits_cfg) if exits_cfg is not None else "",
         "coins": per_coin,
         "warnings": warnings,
     }

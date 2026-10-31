@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from enum import IntEnum
@@ -68,6 +70,24 @@ class ExitConfig(BaseModel):
     tp_penetration: float = Field(default=0.0001, ge=0.0)
     min_stop_move_r: float = Field(default=0.1, ge=0.0)
     rr: float = Field(default=2.0, gt=0.0)
+
+
+def exit_policy_hash(cfg: ExitConfig) -> str:
+    """对出场策略配置求 SHA256（06 §3.3）。
+
+    出场参数改变即视为新数据集（04 §8、05 §6.1）：`exit_sim` 标签、回测与实盘
+    使用同一份出场策略，构建数据集时把该哈希写入 manifest，供下游校验一致性。
+
+    Args:
+        cfg: 出场配置（configs/exits.yaml 的 pydantic 模型）。
+
+    Returns:
+        配置字段的 SHA256 十六进制字符串。
+    """
+    canonical = json.dumps(
+        cfg.model_dump(), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

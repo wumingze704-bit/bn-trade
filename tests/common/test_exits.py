@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from trade.common.exits import ExitConfig, simulate_exit
+from trade.common.exits import ExitConfig, exit_policy_hash, simulate_exit
 
 _TOL = 1e-9
 
@@ -18,6 +18,18 @@ def _cfg(**kwargs) -> ExitConfig:
     defaults = dict(type="trail", tp_penetration=0.0001)
     defaults.update(kwargs)
     return ExitConfig(**defaults)
+
+
+def test_exit_policy_hash_确定性():
+    assert exit_policy_hash(_cfg()) == exit_policy_hash(_cfg())
+    assert len(exit_policy_hash(_cfg())) == 64
+
+
+def test_exit_policy_hash_参数改变即变():
+    base = exit_policy_hash(_cfg())
+    assert exit_policy_hash(_cfg(be_trigger_r=1.1)) != base
+    assert exit_policy_hash(_cfg(H_max=60)) != base
+    assert exit_policy_hash(ExitConfig(type="fixed", rr=3.0)) != base
 
 
 def _run(

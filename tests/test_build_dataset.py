@@ -116,6 +116,7 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
     assert manifest["feature_hash"]
     assert len(manifest["features"]) == 37
     assert manifest["universe_rule_hash"]
+    assert manifest["exit_policy_hash"]
     for entry in manifest["coins"]:
         assert entry["rows"] == 300
         assert 0.0 <= entry["retention"] <= 1.0
