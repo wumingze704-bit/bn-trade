@@ -1,29 +1,27 @@
-# 可交易性校验门槛与盲测币抽样参数。
-# 规格：docs/03-数据与选币.md §4.2、§4.4
-blind_seed: 2026 # 盲测币抽样固定种子（抽取后不得重抽）
-blind_count: 5 # 盲测币数量
-
-tradable:
-  contract_type: PERPETUAL # 仅 USDⓈ-M 永续
-  quote_asset: USDT # 仅 USDT 报价
-  status: TRADING # 仅在交易中
-  excluded_symbols: [CLUSDT, SNDKUSDT] # TradFi 合约（股票/商品/指数），03 §4.3
-
-history:
-  onboard_warmup_days: 30 # 上线后前 30 天数据一律不用
-  train_onboard_margin_months: 6 # 训练币：onboardDate + 30 天 ≤ T_start + 6 个月
-  holdout_min_months: 3 # 留出币：测试段 + 封存集内至少 3 个月有效数据
-
-filters:
-  step_notional_max: 0.5 # stepSize × 最近 7 天价格中位数 ≤ 0.5 USDT
+# 规则化月度选币配置（03 §4.6）。
+# 数据窗口不在此重复配置，统一取 base.yaml 的 data_window。
+# reviewed 由使用者审阅首份快照后手动改为 true（08 G1）；Agent 不得自行设置。
+reviewed: false
+btc_context: BTCUSDT
+rule:
+  rebalance: monthly # 每个 UTC 自然月 1 日 00:00 再平衡
+  new_entry_delay_days: 2 # 新进入的币只监控不开仓的天数（06 §3.1、07 §3.5 同读此值）
+  top_n: 60 # 按 30 天日成交额中位数取前 N
+  min_listing_days: 60 # 距首根日线 ≥ 60 天
+  lookback_days: 30 # 排名与流动性统计窗口
+  min_daily_quote_median: 20000000 # 30 天日成交额中位数 ≥ 2000 万 USDT
+  step_notional_max: 0.5 # stepSize × 7 天日收盘价中位数 ≤ 0.5 USDT
   min_notional_max: 5.0 # 最小下单额 ≤ 5 USDT
   min_leverage: 5 # 杠杆分层允许 ≥ 5x
-
-liquidity: # 警告级
-  daily_quote_median_min: 50000000 # 有效期内日成交额中位数 ≥ 5000 万 USDT
-  monthly_quote_median_min: 10000000 # 各月日成交额中位数的最小值 ≥ 1000 万 USDT
-  tick_rel_max: 0.0002 # tickSize / 价格中位数 ≤ 2 bp
-
-quality: # 数据质量（03 §2.4），阻断级
-  missing_ratio_max: 0.01 # 缺失分钟占比 > 1% 不合格
-  consistency_error_max: 0.02 # aggTrades 与 K 线成交额一致性误差 > 2% 不合格
+  tick_rel_max: 0.0002 # tickSize / 30 天日收盘价中位数 ≤ 2 bp
+  exclude_bases: [BTC, ETH] # 仅作环境 / 非山寨币
+  exclude_stable: true # USDC、FDUSD 等稳定币对
+  exclude_tradfi: true # contractType / underlyingType 识别的 TradFi 合约
+  excluded_symbols: [] # 使用者确认的额外排除（写明理由）
+roles:
+  holdout_mod: 5 # sha256(symbol) 取模，余数为 holdout_rem 的币进入留出组
+  holdout_rem: 0
+quality: # 03 §2.4（选币第 7 步的数据质量门槛）
+  missing_ratio_max: 0.01
+  aggtrades_missing_ratio_max: 0.01
+  consistency_error_max: 0.02

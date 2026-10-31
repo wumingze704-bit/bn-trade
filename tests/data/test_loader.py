@@ -11,7 +11,19 @@ import pytest
 
 from tests.features.helpers import make_bars
 from trade.common.config import BaseConfig
-from trade.data.loader import load_bars, month_index, month_key, segment_of, window_bounds
+from trade.data.loader import (
+    collect_universe_coins,
+    list_daily_symbols,
+    load_bars,
+    load_daily_bars,
+    month_index,
+    month_key,
+    rebalance_ms_of,
+    segment_of,
+    universe_months,
+    window_bounds,
+)
+from trade.data.universe import SnapshotCoin, UniverseSnapshot, write_universe_snapshot
 
 
 def _ms(year: int, month: int, day: int) -> int:
@@ -131,3 +143,59 @@ def test_request_holdout_without_final_raises(tmp_path) -> None:
         allow_holdout=True,
     )
     assert not loaded.empty
+
+
+def test_universe_months_and_rebalance(tmp_path) -> None:
+    base = _base_cfg(tmp_path)
+    months = universe_months(base)
+    assert months[0] == "2024-10"
+    assert months[-1] == "2026-09"
+    assert len(months) == 24
+    assert rebalance_ms_of("2026-01") == _ms(2026, 1, 1)
+
+
+def test_load_daily_bars_and_list_symbols(tmp_path) -> None:
+    import pandas as pd
+
+    data_root = tmp_path / "data"
+    daily_dir = data_root / "daily" / "SOLUSDT"
+    daily_dir.mkdir(parents=True)
+    frame = pd.DataFrame(
+        {
+            "open_time": [_ms(2026, 1, 1), _ms(2026, 1, 2)],
+            "close": [100.0, 101.0],
+            "quote_volume": [1_000.0, 2_000.0],
+        }
+    )
+    frame.to_parquet(daily_dir / "2026-01.parquet", index=False)
+
+    assert list_daily_symbols(data_root) == ["SOLUSDT"]
+    loaded = load_daily_bars(data_root, "SOLUSDT")
+    assert len(loaded) == 2
+    assert loaded["open_time"].is_monotonic_increasing
+
+
+def test_collect_universe_coins_dedupes_by_symbol(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    out = data_root / "universe"
+    for month, symbol in (("2025-12", "SOLUSDT"), ("2026-01", "SOLUSDT"), ("2026-01", "SUIUSDT")):
+        snapshot = UniverseSnapshot(
+            month=month,
+            rebalance_ms=rebalance_ms_of(month),
+            rule_hash="h",
+            coins=[
+                SnapshotCoin(
+                    symbol=symbol,
+                    alias="C001",
+                    role="train",
+                    rank=1,
+                    daily_quote_median=1.0,
+                    first_listing_ms=0,
+                )
+            ],
+        )
+        write_universe_snapshot(out / f"{month}.json", snapshot)
+
+    coins = collect_universe_coins(data_root, ["2025-12", "2026-01"])
+    assert {coin.symbol for coin in coins} == {"SOLUSDT", "SUIUSDT"}
+    assert len(coins) == 2

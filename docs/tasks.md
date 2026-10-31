@@ -16,8 +16,8 @@
 | 2    | T0.1 → T0.2 → T0.4 → T0.5 → T0.6 + T0.7 + T0.11 + T0.12 → T0.18 | 回测正确性修复，T0.1（封存集泄露）最优先；只用 fixture，不依赖真实数据                    |
 | 3    | T0.10                                                           | 依赖拆分，服务器全量跑数据前完成，两端环境一致                                            |
 | 4    | T0.14                                                           | 服务器验证已下架合约数据（只读、约半天），结论影响 T0.13                                  |
-| 5    | T0.13 ∥ T1-8 ∥ T0.16 ∥ T0.17                                    | 选币代码、聚合器提速、bars 组装、按月质量报告，可并行开发                                 |
-| 6    | T1-7                                                            | 服务器基准测试（T1-8 前后各测一次）                                                       |
+| 5    | T1-7（前测）→ T0.16 → T1-8 → T0.17 → T1-7（后测）               | 基准、组装、提速、质量串行集成；真实服务器依赖未满足时保留阻塞状态                       |
+| 6    | T0.13                                                           | 依赖 T0.14 与 T0.17 的质量缓存，之后实施                                                  |
 | 7    | T1-3a → T1-3（快照）→ 使用者审阅 `reviewed: true`               | 快照决定下载清单，**必须在全量下载之前**                                                  |
 | 8    | T0.15 → T0.19                                                   | 回测与数据集按月交易范围和数据段运行；`exit_sim` 标签（可与 7 并行开发，用 fixture 验证） |
 | 9    | 清理服务器旧冒烟产物 → T1-9 分阶段全量下载                      | 前提：T1-8 等价测试通过、快照已审阅                                                       |
@@ -32,9 +32,9 @@
 
 | 已完成的内容                                                         | 位置                                                                                                                                                                               | 原因                                                         | 处理                                                              |
 | :------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------- | :---------------------------------------------------------------- |
-| 固定名单校验 `--validate`、盲测 `--draw-blind`、`--suggest` 及其测试 | `scripts/select_coins.py`、`src/trade/data/universe.py`（`CoinsConfig`、`validate_coins`、`draw_blind`、`eligible_blind_candidates`、`dump_coins`）、`tests/data/test_universe.py` | 设计改为规则化月度选币                                       | 删除并重写（T0.13）；`exchange.py` 的可交易性校验函数保留复用     |
-| `configs/coins.yaml`、`configs/universe.yaml`（旧字段）              | `configs/`                                                                                                                                                                         | 同上                                                         | 按 03 §4.6 重写 `universe.yaml`，删除 `coins.yaml`（T0.13）       |
-| `exchange.check_history` 的 train/holdout/blind 历史长度规则         | `src/trade/data/exchange.py` 约 160~195 行、`tests/data/test_exchange.py`                                                                                                          | 角色改为哈希分配，历史长度改为“上线 ≥ 60 天”                 | 改写为 03 §4.2 第 3 步（T0.13）                                   |
+| 固定名单校验 `--validate`、盲测 `--draw-blind`、`--suggest` 及其测试 | `scripts/select_coins.py`、`src/trade/data/universe.py`（`CoinsConfig`、`validate_coins`、`draw_blind`、`eligible_blind_candidates`、`dump_coins`）、`tests/data/test_universe.py` | 设计改为规则化月度选币                                       | 已删除并重写（T0.13 完成）；`exchange.py` 的可交易性校验函数保留复用     |
+| `configs/coins.yaml`、`configs/universe.yaml`（旧字段）              | `configs/`                                                                                                                                                                         | 同上                                                         | 已按 03 §4.6 重写 `universe.yaml`，删除 `coins.yaml`（T0.13 完成） |
+| `exchange.check_history` 的 train/holdout/blind 历史长度规则         | `src/trade/data/exchange.py` 约 160~195 行、`tests/data/test_exchange.py`                                                                                                          | 角色改为哈希分配，历史长度改为“上线 ≥ 60 天”                 | 第 3 步已由 `build_universe` 的 `min_listing_days` 实现（T0.13）；`check_history` 留待后续按需清理 |
 | 依赖 `coins.yaml` 的脚本                                             | `scripts/download.py`、`scripts/aggregate.py`、`scripts/r0_signals.py`、`scripts/backtest.py`、`scripts/build_dataset.py`、`tests/test_build_dataset.py`                           | 币种改为来自月度快照                                         | T0.13 / T0.15 / T1-9 中改为读快照                                 |
 | 两遍聚合脚本，且**首日使用当日 p99**（含当日未来信息，违反 03 §2.2） | `scripts/aggregate.py` 约 65~70 行                                                                                                                                                 | 设计改为单遍；首日应多下载 1 天                              | T1-8 重写，删除该回退                                             |
 | `quality.compute_quality` 的判定                                     | `src/trade/data/quality.py` 约 91~95 行                                                                                                                                            | 口径改为“逐笔缺失分钟占比 > 1%”，并按币 × 30 天窗口计算      | T0.17                                                             |
@@ -87,12 +87,14 @@
   - 完成：`compute_random_entry_candidates` 把预过滤样本（is_sample=1）全部视为候选入场点、复用 `precompute_trades`（含 `simulate_exit` 出场逻辑）与 reference 仓位算单笔净盈亏；`random_entry_baseline` 按每币每月笔数从该组候选抽样、固定种子可复现。
   - 验收：按 06 §7 实现，固定种子可复现的测试。
 
-- [ ] **T0.8 资金费未计入**（依赖 T0.16 把 fundingRate 合入 bars）
+- [x] **T0.8 资金费未计入**（依赖 T0.16 把 fundingRate 合入 bars）
   - 问题：bars 无 `funding_rate/funding_time` 列时按 0 计；06 §3.3 要求持仓跨结算时刻扣资金费，06 §6 要求报告资金费合计。
   - 验收：跨结算时刻的持仓扣 `funding_rate × 名义价值`（回测与 `exit_sim` 标签都扣）；`trades.parquet` 含资金费列；手工样例单测。
+  - 完成：新增 `trade/common/funding.py`（结算事件提取 + 区间求和，结算时刻 `entry_ts < ft <= exit_ts`）；`precompute_trades` 记录 `funding_rate_sum`，`simulate_portfolio`/`event_sim`/`reference_trade_net_pnl` 扣 `funding_rate × 名义价值`；`trades.parquet` 含 `funding_fee` 列、报告与 `compute_metrics` 含合计；`exit_sim` 标签同样扣除。跨结算/边界/多期求和单测通过。
 
-- [ ] **T0.9 初始化 git 仓库并做首次提交**（**使用者自行处理**）
-  - 现状：当前目录没有 `.git`，所有文件时间戳相同。`.gitignore` 已覆盖 `data/`、`artifacts/`、`*.pem`、`.venv/`。
+- [x] **T0.9 初始化 git 仓库并做首次提交**（**使用者已自行处理**）
+  - 现状（已复核 2026-10-31）：`.git` 已存在并有多次提交（分支 `main`、`devlop`，当前在 `devlop`，含初始提交 `Initial trade project scaffold`）；`.gitignore` 已覆盖 `data/`、`artifacts/`、`*.pem`、`.venv/`。
+  - 备注：当前分支名 `devlop` 疑似 `develop` 拼写，且不符合 AGENTS.md §9 分支命名规范（`feat/`/`fix/`/`docs/`），建议后续留意；本机 PATH 无 git 可执行文件，本次经读取 `.git` 目录确认，未运行 git 命令。
 
 - [x] **T0.10 依赖锁文件按环境拆分**
   - 问题：`requirements.lock` 只有一份，`torch==2.14.1` 无法区分 CPU/CUDA；服务器 P1 冒烟时手动安装了 5 个包，未走锁文件；锁文件按 Python 3.11 生成，本地主力为 3.13；未生成哈希。
@@ -121,23 +123,19 @@
 
 ## 1. 设计变更后的代码对齐（选币、数据管道、标签与质量口径）
 
-- [ ] **T0.13 实现规则化月度选币**（03 §4）
-  - 配置：按 03 §4.6 重写 `configs/universe.yaml`（含 `rule.new_entry_delay_days`；**不含数据窗口**，统一取 `base.yaml`）并同步 pydantic 模型；删除 `configs/coins.yaml`。两者必须与代码一起改，单独改配置会让现有测试失败（模型为 `extra="forbid"`）。
-  - 代码：
-    - `trade.data.universe.build_universe(R, daily_bars, rules, cfg) -> UniverseSnapshot`：03 §4.2 第 1~6 步，第 7 步读取 T0.17 的按窗口质量结论；只用 `R` 之前的数据；
-    - 哈希角色（03 §4.5）；`data/universe/aliases.json` 只增不改、不复用；
-    - `trade.data.loader.load_universe_snapshot(month)`；现有读取配置的 `universe.load_universe(path)` 改名为 `load_universe_config`，避免重名；
-    - `scripts/select_coins.py --build --month/--all`、`--report`；删除旧模式；
-    - `exchange.py` 可交易性校验复用到第 5 步；历史交易规则按 03 §4.3 近似（已下架合约从 aggTrades 推断 `tickSize`/`stepSize`）。
-  - 验收（08 P1）：选币未来函数测试（修改 `R` 之后的日线，`U(R)` 不变）；各排除规则、不找替补、哈希角色稳定、别名只增不改的单测；同一输入两次结果一致；规则哈希不同时 `--build` 报错不覆盖。
-  - 依赖：T0.14（上线/下架时间来源）、T0.17（第 7 步）。
+- [x] **T0.13 实现规则化月度选币**（03 §4）——已完成（2026-10-31）
+  - 配置：按 03 §4.6 重写 `configs/universe.yaml`（含 `rule.new_entry_delay_days`；**不含数据窗口**，统一取 `base.yaml`）并同步 pydantic 模型；删除 `configs/coins.yaml`。两者已与代码一起改。
+  - 代码：`trade.data.universe.build_universe(R, daily_bars, rules, cfg)`（03 §4.2 第 1~7 步，只用 R 之前数据，第 7 步读 T0.17 质量缓存、缺结论按不合格处理不找替补）；sha256 哈希角色；`data/universe/aliases.json` 只增不改、不复用；`load_universe_snapshot(data_root, month)`；`load_universe` 改名 `load_universe_config`；`select_coins.py --build --month/--all`、`--report`（删旧模式）；`exchange.py` 可交易性校验保留复用、第 5 步 `_tradable` 内联实现；`scripts/{download,aggregate,backtest,r0_signals,build_dataset}.py` 已从快照/别名取币。
+  - 验收（08 P1）：未来函数测试、各排除规则、不找替补、哈希角色稳定、别名只增不改、同一输入两次结果一致、规则哈希不同 `--build` 报错不覆盖，均已落单测并通过。
+  - 依赖：T0.14、T0.17 已完成（质量缓存 API 可用，fixture 验收）。
 
-- [ ] **T0.14 服务器验证已下架合约的历史数据**（03 §4.4）
+- [x] **T0.14 服务器验证已下架合约的历史数据**（03 §4.4）
   - 内容：抽查 data.binance.vision 中已下架 USDⓈ-M 永续的日线、1m K 线、aggTrades 是否仍可下载；确认上线/下架时间来源（exchangeInfo 是否列出，否则用首末 K 线时间）；列出全市场 USDT 永续（含已下架）symbol 清单。只读公开数据，不需要 API Key。
   - 验收：P1 报告中有可下载情况统计表与样例 URL。
+  - 完成：东京服务器对 LUNAUSDT、FTTUSDT 的 1d、1m、aggTrades 样例均返回 HTTP 200；LUNAUSDT 首末日 K 线为 2021-01-28 / 2022-05-13。S3 月度 K 线前缀列出 900 个 USDT 后缀目录，当前 exchangeInfo 有 522 个 USDT 永续；目录清单与口径限制见报告及 JSONL 附件。FTTUSDT 归档延伸到 2026-09，未作为已下架时间样例。
   - **已决定**：若下架合约数据缺失，接受残余偏差继续推进；按 03 §4.4 在 06 §9 A14 与每份回测报告首页注明“交易范围不含已下架合约，结果偏乐观”，并统计缺失合约数量与其当月排名。
 
-- [ ] **T0.15 回测、信号与数据集按月交易范围和数据段运行**（06 §3.1 条件 8、03 §6、04 §5、05 §5）
+- [x] **T0.15 回测、信号与数据集按月交易范围和数据段运行**（06 §3.1 条件 8、03 §6、04 §5、05 §5）
   - 内容：
     - `engine.precompute_trades` 与 `event_sim`：信号月不在 `U(R)` 的币不开仓；新进入币自 `R` 起 `universe.yaml: rule.new_entry_delay_days` 天内不开仓；跌出范围的持仓正常出场；
     - 指标分组改为全部 / 训练组 / 留出组 / 新进入组（06 §6）；S10 改为新进入组（笔数 < 50 只报告）；删除默认分组 `"train"` 的回退，未知币直接报错；
@@ -146,18 +144,21 @@
     - `scripts/backtest.py`、`scripts/r0_signals.py` 从快照取币，不再读 `coins.yaml`。
   - 验收：手工构造 3 币 × 3 月的快照与 bars：不在范围的月份零交易、新进入币前 2 天零交易、跌出范围的持仓正常出场；修改段 A 的数据，段 B 的特征不变；分组统计与手算一致；`tests/test_build_dataset.py` 改用快照。
   - 依赖：T0.13；建议与 T0.1 一起改 `scripts/`。
+  - 完成：新增 `loader.universe_trade_mask`/`segment_ids`/`load_universe_membership`/`new_entry_symbols`；`precompute_trades`/`run_backtest`/`event_sim` 增加 `trade_mask` 与 `new_entry`；`compute_metrics` 支持 `new_entry` 分组、S10 改新进入组（笔数 < 50 只报告）；`compute_features`/`is_sample_mask` 按数据段独立计算 EWM 与滚动窗口；`build_dataset.py` 按月范围 + fp16 落盘 + `universe_rule_hash`；scripts 从快照取币并传掩码。引擎闸门、数据段隔离、新进入组单测通过。
 
-- [ ] **T0.16 补齐 bars 组装步骤（现有代码缺失）**（03 §2.3、§2.4）
+- [x] **T0.16 补齐 bars 组装步骤（现有代码缺失）**（03 §2.3、§2.4）
   - 问题：`scripts/aggregate.py` 只输出 aggTrades 原子量，没有合并 1m K 线、补齐缺失分钟（`is_filled`）、metrics 与 fundingRate，就写入了 `data/bars/{alias}/{YYYYMM}.parquet`；而 `load_bars` 要求 K 线 11 列 + 原子量 + `is_filled`，读取会失败。P1 冒烟时的合并是临时手工做的。
   - 内容：实现“1m K 线 + 原子量 + metrics（5 分钟滞后对齐，04 §2 第 2 条）+ fundingRate（最近已结算一期）→ bars 月文件”，复用 `aggregate.py` 已有的补齐分钟函数；**逐笔缺失的分钟原子量按无成交填充（成交额 0，`p_*` 取上一分钟收盘价）并置 `is_filled = 1`**（03 §2.4）。
   - 验收：输出通过 `load_bars` 的 schema 校验；“K 线有、逐笔缺失”的分钟被置 `is_filled = 1` 且被质量报告计入逐笔缺失；metrics 对齐的未来函数测试（T 时刻的值只出现在 `close_time ≥ T + 300000` 的分钟）。
+  - 完成：`assemble_bars`/`write_monthly_bars` 与 `scripts/aggregate.py` 接入 K 线、aggTrades、metrics、settled funding；写盘先临时文件再原子替换。合成 1 币 × 3 日 CLI 测试产出完整月文件并通过 `load_bars`，覆盖缺失 K 线/逐笔分列、价格回退、metrics 滞后和 funding 结算对齐。
 
-- [ ] **T0.17 质量报告按“币 × 30 天窗口”计算，并按设计口径判定**（03 §2.4、§4.2 第 7 步）
+- [~] **T0.17 质量报告按“币 × 30 天窗口”计算，并按设计口径判定**（03 §2.4、§4.2 第 7 步）
   - **口径（已决定，03 §2.4）**：以下任一条即不合格——K 线缺失分钟占比 > 1%；逐笔缺失分钟占比 > 1%；一致性误差中位数 > 2%。删除现有“`aggtrades_missing_count == 0`”的硬性要求。
   - 内容：`QualityReport` 增加逐笔缺失占比字段；按币、按 30 天窗口计算并缓存，供选币第 7 步与训练/评估使用。
   - 验收：P1 的 SOLUSDT 27 分钟缺失样例：单日窗口判不合格（约 1.9%），30 天窗口判合格（约 0.06%）；其余现有质量测试继续通过。
+  - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。实际 P1 SOL 原始 bars 尚未生成，真实数据结论未运行。
 
-- [ ] **T0.19 实现 `exit_sim` 标签**（04 §7.0、§7.5，05 §1、§6.1）
+- [x] **T0.19 实现 `exit_sim` 标签**（04 §7.0、§7.5，05 §1、§6.1）
   - 内容：
     - `configs/features.yaml` 增加 `label.mode`（`exit_sim` 默认 / `triple_barrier`）与 `label.y_min_r: 0.25`，同步 pydantic 模型；
     - 新增 `trade.labels.exit_sim`：入场价、初始止损、成本与 `engine.precompute_trades` 完全一致——**把入场价与成本计算抽成一个共享函数**（放在 `trade.common` 或 `trade.backtest.costs`），标签与回测都调用它，并调用同一个 `trade.common.exits.simulate_exit`，不另写出场逻辑；
@@ -165,6 +166,7 @@
     - `build_dataset.py` 按 `label.mode` 选择标签；manifest 记录标签模式与 `exits.yaml` 哈希（出场参数改变即视为新数据集）。
   - 验收：同一组 bars 与信号，`exit_sim` 标签的出场时间、出场价、净收益与回测 `precompute_trades` 逐笔完全一致；`r_net ≥ 0.25` 才为正样本的边界测试；未来函数测试（修改 `t_exit` 之后的数据不影响该样本标签）；三重障碍模式的现有测试继续通过。
   - 依赖：T0.15（数据段）；资金费在 T0.8 后接入。
+  - 完成：`LabelCfg` 增 `mode`/`y_min_r`；新增 `trade/common/entry.compute_entry` 共享入场价成本（回测与标签共用）；新增 `trade/labels/exit_sim.py` 复用 `simulate_exit` 与资金费；`build_dataset.py` 按 `label.mode` 分支；manifest 记录 `label.mode` 与 `universe_rule_hash`。逐笔一致、0.25R 边界、未来函数、三重障碍保留测试均通过。
 
 ---
 
@@ -177,31 +179,33 @@
 - [x] T0-5 东京服务器开通与 SSH —— P1 报告 §9.1（腾讯云，Ubuntu 26.04，2 核 / 3.6 GB / 51 GB 可用 / 30 Mbps / 每月 1.5 TB）
 - [~] T0-6 `latency_probe.py` —— REST P95 ≈ 16 ms 已测；WS `aggTrade`/`kline_1m` 订阅无数据、WS P95 未测，需按最新文档核对流名称
 - [~] T0-7 同步通道 —— 脚本存在；缺推代码、拉文件实测（依赖 T0.9）；需增加 `data/universe/` 的同步与按阶段增量同步（T1-9）
-- [~] T0-8 质量命令全部通过 —— 报告称通过；本机未复验
+- [x] T0-8 质量命令全部通过 —— 本机已复验（2026-10-31：`ruff format --check`、`ruff check`、`mypy --strict src/trade/{common,backtest,live}`、`mypy src/trade/dashboard`、`pytest -q` 237 通过）
 
 ## P1 数据管道与选币（服务器）
 
-- [ ] T1-0 已下架合约数据验证 —— 见 T0.14（最先做）
+- [x] T1-0 已下架合约数据验证 —— 见 T0.14 完成报告（目录清单分类有明确口径限制）
 - [x] T1-1 exchangeInfo 解析与可交易性校验 —— `trade/data/exchange.py`（第 5 步复用；`check_history` 按 T0.13 改写）
 - [~] T1-2 exchangeInfo 与 leverageBracket 真实拉取与带时间戳快照 —— 缺：拉取与保存快照的脚本（同时生成 `scripts/backtest.py --rules` 需要的 `rules.json`）；已下架合约规则按 03 §4.3 推断
-- [ ] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）
-- [↺] T1-3 选币快照 —— 原有的 `--validate`/`--draw-blind` 作废；T0.13 实现后 `--build --all` 生成 M1~M24 快照与 `aliases.json`、`--report`；使用者审阅后设 `reviewed: true`（规则参数按默认值：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`；**只审参数，不按名单调参，审阅后不再改**）
-- [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、执行类原子量、表头/微秒兼容、逐笔缺失识别；缺：bars 组装（T0.16）、聚合器提速（T1-8）、分阶段全量下载（T1-9）
-- [~] T1-5 质量报告 —— 已有核心指标；缺：按窗口计算与设计口径（T0.17）、汇总表、实时/历史成交口径比对（03 §1.1 第 8 条，需连续录制 1 天）
+- [~] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）；缺：服务器全市场日线下载器（含已下架合约，需真实币安数据）
+- [~] T1-3 选币快照 —— 原有的 `--validate`/`--draw-blind` 作废；T0.13 已实现 `--build --month/--all` 与 `--report`，生成 M1~M24 快照与 `aliases.json`。已用 fixture 全市场日线生成 `data/universe/*.json`、`aliases.json` 与 `universe_report.md` 供审阅；**真实数据快照待服务器 T1-3a 日线到位后重跑**。使用者审阅后设 `reviewed: true`（规则参数按默认值：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`；**只审参数，不按名单调参，审阅后不再改**）
+- [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、bars 组装（T0.16）、PyArrow/Numba 单遍实现（T1-8 fixture）；缺：真实热门币等价/内存验证、分阶段全量下载（T1-9）
+- [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；缺：真实 bars 汇总表、实时/历史成交口径比对（03 §1.1 第 8 条，需连续录制 1 天）
 - [ ] T1-6 分阶段同步到本地，`data/bars/`、`data/universe/` 与服务器 SHA256 一致
-- [ ] **T1-7 服务器基准测试**（03 §3、08 P1）
+- [~] **T1-7 服务器基准测试**（03 §3、08 P1）
   - 内容：实测下载速度；1 个热门币（如 1000PEPEUSDT、DOGEUSDT）与 1 个冷门币各 1 天的解析耗时与进程峰值内存；在腾讯云控制台确认流量包是否计入入方向。
   - 验收：P1 报告中有实测表与按实测推算的全量耗时，据此修正 03 §3；T1-8 前后各测一次，记录提速倍数。
-- [ ] **T1-8 聚合器提速改造**（03 §2.2）
+  - 部分完成：T1-8 前服务器下载实测 1000PEPEUSDT 38,202,242 B / 2.262 s、TLMUSDT 528,854 B / 0.043 s；服务器 `~/trade-venv`（uv Python 3.13.18）已含 numpy/pandas/pyarrow，本次补装 numba==0.68.0，关键栈齐全；仍缺当前项目 checkout（p1-smoke 为旧代码）与 aggTrades 样例，解析时间、聚合峰值内存及 T1-8 后复测仍阻塞；腾讯云入方向计费需控制台确认。本机合成数据测得 Numba 内核相对纯 Python 参考约 31.6×（仅本机，非服务器端到端加速倍数），不据此修正 03 §3 全量耗时估算。
+- [~] **T1-8 聚合器提速改造**（03 §2.2）
   - 内容：两遍改为按日顺序的单遍处理（`whale_thr(D) = p99(D-1)` 不变；每段首日多下载 1 天只算 p99；**删除现有脚本“首日使用当日 p99”的回退**；缺日沿用最近 p99 并记入质量报告）；`pyarrow.csv.open_csv` 流式读取（32 MB 块、4 列、显式类型）；numba 分钟汇总替换现有逐行 `itertuples` 循环，保留纯 Python 参考实现；p99 精确计算（不用近似）；月文件先写临时文件再改名。
   - 验收（**全量下载的硬性前提**）：等价测试——新旧实现在 fixture 与 1 个真实热门币 × 3 天上逐字段对比，浮点误差 < 1e-9、其余完全一致（数据完整的情况；旧实现首日的当日 p99 回退不参与对比）；缺日情况单独测试；numba 与 Python 参考一致；单进程峰值内存 < 1.5 GB；现有跨块合并、方向、执行类原子量、表头/微秒兼容测试继续通过。
+  - 部分完成：实现单遍日聚合、PyArrow 32 MiB/四列显式类型、Numba 与 Python 参考、精确 p99、缺日与阈值来源审计、月文件原子替换；18 项聚合测试通过。本机合成 50 万逐笔对拍 Numba 相对纯 Python 参考约 31.6×、逐字段一致（rtol=0/atol=1e-9），为本机结果、不替代服务器对拍。真实热门币 × 3 天对拍与服务器 <1.5 GB 峰值内存未验证（服务器 numba 已装，但缺当前 checkout 与 aggTrades 样例），不能作为全量下载前提已通过。
 - [ ] **T1-9 任务清单、优先级调度与分阶段同步**（03 §2.1、§2.3）
   - 内容：由 M1~M24 快照生成 `(币, 日)` 任务清单 `_jobs.parquet`（每段入选期 + 前 30 天 + 1 天）；按 调参期 → 测试段 → 封存集 顺序，阶段内入选月数多的币优先；2 进程 + 每进程 1 个预取线程（预取 2 天）、在途 zip ≤ 2 GB；失败清单不中断批次、批末重试；`_done.parquet` 断点续传；S8 所需 3 币 × 1 测试月保留原始逐笔（`keep_raw`）；`sync.ps1`/`sync.sh` 支持按阶段增量同步 `data/bars/` 与 `data/universe/`。
   - 前置：删除服务器旧冒烟产物（`~/p1-smoke`、`data/bars/C01/`，使用者已同意；执行前先列出路径）。
   - 验收：2 进程运行时服务器内存 < 3 GB；中途 `kill` 后重跑从断点继续且结果不变；同一输入重复运行输出 SHA256 一致；每阶段同步后两端 SHA256 一致。
   - 依赖：T0.13（快照）、T0.16（组装）、T0.17（质量）、T1-8（等价测试通过）、使用者已审阅快照。
 
-> **G1 闸门未通过**：缺 T0.14 结论、M1~M24 快照与 `reviewed: true`、全量合格数据，以及真实数据上的一致性测试与未来函数测试。
+> **G1 闸门未通过**：缺 T0.13、M1~M24 快照与 `reviewed: true`、全量合格数据，以及真实数据上的聚合等价/内存验证、特征一致性与未来函数测试。
 
 ## P2 特征与标签（本地）
 
@@ -315,9 +319,9 @@
 | 12  | 依赖                                           | 02 §5.2、AGENTS §3.2                                     | 单一锁文件；torch 不分 CPU/CUDA                           | 已按环境拆分（T0.10）                       |
 | 13  | 选币                                           | 03 §4                                                    | 固定名单、`--validate`/`--draw-blind`、旧 `universe.yaml` | T0.13、T0.15                                |
 | 14  | `report.write_report`                          | 06 §8                                                    | 已保留真实 run/scenario                                   | **已一致，无需修改**                        |
-| 15  | `scripts/aggregate.py`                         | 03 §2.2：只用前一日 p99；单遍                            | 两遍；首日用当日 p99（未来信息）；逐行 Python 循环        | T1-8                                        |
-| 16  | bars 组装                                      | 03 §2.3：K 线 + 原子量 + `is_filled` + metrics + funding | 无组装步骤，只写原子量                                    | T0.16                                       |
-| 17  | `quality.compute_quality`                      | 03 §2.4：三项各 1%/1%/2%，按 30 天窗口                   | 要求逐笔缺失为 0；只给整段结论                            | T0.17                                       |
+| 15  | `scripts/aggregate.py`                         | 03 §2.2：只用前一日 p99；单遍                            | 已单遍 + PyArrow + Numba；真实数据等价/内存待服务器验证   | T1-8 部分完成                               |
+| 16  | bars 组装                                      | 03 §2.3：K 线 + 原子量 + `is_filled` + metrics + funding | 已组装并通过 fixture `load_bars` 校验                     | T0.16 已完成                                |
+| 17  | `quality.compute_quality`                      | 03 §2.4：三项各 1%/1%/2%，按 30 天窗口                   | 已支持分窗/缓存；真实 bars 结论未运行                      | T0.17 部分完成                              |
 | 18  | 特征流水线                                     | 03 §6、04 §5：数据段独立计算                             | 在拼接后的整段数据上计算                                  | T0.15                                       |
 | 19  | 组合模拟权益曲线                               | 06 §3.4、§5.1：回撤按盯市权益                            | 已按 `c_t` 逐分钟盯市（钱包余额 + 未实现盈亏）            | **已一致，无需修改**                        |
 | 20  | 标签                                           | 04 §7.5：默认 `exit_sim`                                 | 只有三重障碍                                              | T0.19                                       |
@@ -325,7 +329,7 @@
 
 ## 需要使用者操作的事项（无待决策项）
 
-1. T0.9：初始化或接回 git 仓库（使用者自行处理）。
+1. T0.9：git 仓库已初始化并提交（已复核 2026-10-31）；如仍需修正分支名/远端请自行处理。
 2. T1-3：快照生成后审阅 `universe_report.md` 并把 `universe.yaml` 的 `reviewed` 改为 `true`（参数按默认值，审阅后不再改）。
 3. T4-9：G3 封存集运行时在场确认。
 

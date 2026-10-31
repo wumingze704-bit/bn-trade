@@ -13,8 +13,15 @@ import pandas as pd
 
 from trade.backtest.r0 import TrainConfig, r0_signals_for_symbol
 from trade.common.config import BaseConfig, load_config
-from trade.data.loader import load_bars, window_bounds
-from trade.data.universe import load_coins
+from trade.data.loader import (
+    collect_universe_coins,
+    load_bars,
+    load_universe_membership,
+    universe_months,
+    universe_trade_mask,
+    window_bounds,
+)
+from trade.data.universe import load_universe_config
 from trade.features.registry import FeaturesConfig
 
 
@@ -22,24 +29,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="生成 R0 规则策略信号")
     parser.add_argument("--out", type=Path, default=Path("artifacts/signals/r0.parquet"))
     parser.add_argument("--base", type=Path, default=Path("configs/base.yaml"))
-    parser.add_argument("--coins", type=Path, default=Path("configs/coins.yaml"))
     parser.add_argument("--features", type=Path, default=Path("configs/features.yaml"))
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
+    parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     base = load_config(BaseConfig, args.base)
-    coins = load_coins(args.coins)
     features = load_config(FeaturesConfig, args.features)
     train = load_config(TrainConfig, args.train)
+    universe_cfg = load_universe_config(args.universe)
 
     wb = window_bounds(base)
     # R0 信号只覆盖调参期 + 测试段，不碰封存集 M23~M24（03 §6、AGENTS.md §6 红线 2）
     end_ms = wb.holdout_start_ms
 
-    entries = [*coins.train, *coins.holdout, *coins.blind]
+    months = universe_months(base)
+    membership = load_universe_membership(base.paths.data_root, months)
+    entries = collect_universe_coins(base.paths.data_root, months)
     frames = []
     for entry in entries:
         bars = load_bars(
@@ -50,6 +59,12 @@ def main() -> None:
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=False,
         )
+        trade_mask = universe_trade_mask(
+            bars["open_time"].to_numpy(dtype="int64"),
+            entry.symbol,
+            membership,
+            universe_cfg.rule.new_entry_delay_days,
+        )
         frame = r0_signals_for_symbol(
             bars,
             train.r0,
@@ -57,7 +72,8 @@ def main() -> None:
             r1_sigma=features.prefilter.r1_sigma,
             brk_60_thr=features.prefilter.brk_60,
             warmup_bars=features.warmup_bars,
-            symbol=entry.symbol,
+            symbol=entry.alias,
+            trade_mask=trade_mask,
         )
         frames.append(frame)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 
 from trade.backtest.costs import FeeSchedule, scenario
@@ -42,6 +43,8 @@ def event_sim(
     sl_max: float,
     H_label: int,
     initial_equity: float | None = None,
+    trade_masks: dict[str, np.ndarray] | None = None,
+    new_entry_symbols: set[str] | None = None,
 ) -> PortfolioResult:
     """事件驱动参考模拟：逐分钟回放，按分钟时钟结算离场与开仓（06 §3.4）。"""
     scen = scenario(scen_name)
@@ -55,8 +58,10 @@ def event_sim(
             bars,
             sym_signals,
             symbol=symbol,
-            group=groups.get(symbol, "train"),
+            group=groups[symbol],
             rule=rules[symbol],
+            trade_mask=trade_masks.get(symbol) if trade_masks else None,
+            new_entry=bool(new_entry_symbols and symbol in new_entry_symbols),
             scen=scen,
             fees=fees,
             backtest_cfg=backtest_cfg,
@@ -169,7 +174,8 @@ def _event_combine(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, sz.status)
                 )
                 continue
-            net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate)
+            funding_fee = sz.notional * tr.funding_rate_sum
+            net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate) - funding_fee
             trade = ExecutedTrade(
                 symbol=tr.symbol,
                 group=tr.group,
@@ -192,9 +198,11 @@ def _event_combine(
                 mae_r=tr.mae_r,
                 entry_fee=sz.notional * fees.taker,
                 exit_fee=sz.notional * tr.exit_fee_rate,
+                funding_fee=funding_fee,
                 gross_pnl=sz.notional * tr.gross_return,
                 net_pnl=net_pnl,
                 capped_by=sz.capped_by,
+                new_entry=tr.new_entry,
             )
             positions[tr.symbol] = trade
             result.trades.append(trade)

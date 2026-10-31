@@ -1,6 +1,6 @@
 """回测指标（06 §6）。
 
-所有指标按 全部币/训练币/留出币/盲测币 分组时，用 group 过滤 trades。
+所有指标按 全部币/训练组/留出组/新进入组 分组时，用 group 过滤 trades（03 §4.5）。
 """
 
 from __future__ import annotations
@@ -25,16 +25,20 @@ def compute_metrics(
     Args:
         result: 组合模拟结果。
         initial_equity: 初始权益。
-        group: 只统计该币种组（train/holdout/blind）；None 表示全部。
+        group: 只统计该币种组（train/holdout/new_entry）；None 表示全部。
 
     Returns:
         指标字典（键为指标名，值为 float；无交易时为 NaN/0）。
     """
-    trades = [t for t in result.trades if group is None or t.group == group]
+    if group == "new_entry":
+        trades = [t for t in result.trades if t.new_entry]
+    else:
+        trades = [t for t in result.trades if group is None or t.group == group]
     final_equity = _final_equity(trades, initial_equity)
 
     gross_pnl = sum(t.gross_pnl for t in trades)
     fees = sum(t.entry_fee + t.exit_fee for t in trades)
+    funding_fee = sum(t.funding_fee for t in trades)
     net_pnl = sum(t.net_pnl for t in trades)
     n = len(trades)
     wins = [t for t in trades if t.net_pnl > 0]
@@ -55,6 +59,7 @@ def compute_metrics(
         "net_return_pct": net_pnl / initial_equity if initial_equity else 0.0,
         "gross_pnl": gross_pnl,
         "fees": fees,
+        "funding_fee": funding_fee,
         "cost_ratio": fees / gross_pnl if gross_pnl else 0.0,
         "win_rate": float(len(wins)) / n if n else 0.0,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else math.inf,

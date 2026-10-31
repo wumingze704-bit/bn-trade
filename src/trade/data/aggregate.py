@@ -6,9 +6,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
+
+from trade.data._aggregate_numba import aggregate_arrays_numba
 
 # aggTrades CSV 列名（03 §1.3）
 AGGTRADES_COLUMNS = (
@@ -41,6 +46,7 @@ MINUTE_ATOMIC_COLUMNS = (
     "hi_post_3s",
     "lo_post_3s",
 )
+_DAY_MS = 86_400_000
 
 
 def coerce_aggtrades(df: pd.DataFrame) -> pd.DataFrame:
@@ -142,12 +148,12 @@ def _finalize_minute(
     }
 
 
-def aggregate_aggtrades(
+def aggregate_aggtrades_python(
     chunks: Iterable[pd.DataFrame],
     whale_thr: float,
     prev_close: float | None = None,
 ) -> pd.DataFrame:
-    """把 aggTrades 分块流式聚合为分钟原子量（跨块同分钟自动合并）。
+    """纯 Python 参考实现，供 Numba 版本逐字段对拍（03 §2.2）。
 
     Args:
         chunks: 按时间升序的 aggTrades DataFrame 分块（可迭代）。
@@ -191,7 +197,129 @@ def aggregate_aggtrades(
     frame["agg_n"] = frame["agg_n"].astype("int64")
     frame["p_1s_filled"] = frame["p_1s_filled"].astype("int64")
     frame["p_3s_filled"] = frame["p_3s_filled"].astype("int64")
+    integer_columns = {"open_time", "agg_n", "p_1s_filled", "p_3s_filled"}
+    for column in MINUTE_ATOMIC_COLUMNS:
+        if column not in integer_columns:
+            frame[column] = frame[column].astype("float64")
     return frame
+
+
+@dataclass(frozen=True)
+class DayAggregation:
+    """单日 aggTrades 的分钟原子量与精确大单阈值。"""
+
+    minutes: pd.DataFrame
+    p99_quote: float
+    n_trades: int
+
+
+def _frame_from_matrix(values: np.ndarray) -> pd.DataFrame:
+    """将 Numba 输出矩阵转换为稳定 schema 与计数类型。"""
+    frame = pd.DataFrame(values, columns=MINUTE_ATOMIC_COLUMNS)
+    for column in ("open_time", "agg_n", "p_1s_filled", "p_3s_filled"):
+        frame[column] = frame[column].astype("int64")
+    return frame
+
+
+def aggregate_aggtrades_day(
+    chunks: Iterable[pd.DataFrame],
+    whale_thr: float,
+    prev_close: float | None = None,
+) -> DayAggregation:
+    """单遍消费一天的 aggTrades 块，汇总分钟原子量并精确计算当天 p99（03 §2.2）。
+
+    Args:
+        chunks: 按 `transact_time` 升序的一次性 DataFrame 块迭代器。
+        whale_thr: 当天使用的前一日 p99；缺失时传 NaN，不回退到当日阈值。
+        prev_close: 日首之前最近一分钟的 K 线收盘价。
+
+    Returns:
+        `DayAggregation`，含分钟结果、当日单笔成交额精确 99 分位数与逐笔数。
+    """
+    quote_chunks: list[np.ndarray] = []
+    minute_chunks: list[np.ndarray] = []
+    pending_times: np.ndarray | None = None
+    pending_prices: np.ndarray | None = None
+    pending_quantities: np.ndarray | None = None
+    pending_makers: np.ndarray | None = None
+    last_close = prev_close if prev_close is not None else float("nan")
+    has_last_close = prev_close is not None
+    trade_count = 0
+
+    for chunk in chunks:
+        normalized = coerce_aggtrades(chunk)
+        times = normalized["transact_time"].to_numpy(dtype="int64")
+        prices = normalized["price"].to_numpy(dtype="float64")
+        quantities = normalized["quantity"].to_numpy(dtype="float64")
+        makers = normalized["is_buyer_maker"].to_numpy(dtype=np.bool_)
+        if not len(times):
+            continue
+        quote_chunks.append(prices * quantities)
+        trade_count += len(times)
+
+        if pending_times is not None:
+            times = np.concatenate((pending_times, times))
+            prices = np.concatenate((pending_prices, prices))
+            quantities = np.concatenate((pending_quantities, quantities))
+            makers = np.concatenate((pending_makers, makers))
+        minute_keys = times // 60_000
+        complete_count = int(np.searchsorted(minute_keys, minute_keys[-1], side="left"))
+        if complete_count:
+            minute_chunks.append(
+                aggregate_arrays_numba(
+                    times[:complete_count],
+                    prices[:complete_count],
+                    quantities[:complete_count],
+                    makers[:complete_count],
+                    whale_thr,
+                    last_close,
+                    has_last_close,
+                )
+            )
+            last_close = float(prices[complete_count - 1])
+            has_last_close = True
+        pending_times = times[complete_count:]
+        pending_prices = prices[complete_count:]
+        pending_quantities = quantities[complete_count:]
+        pending_makers = makers[complete_count:]
+
+    if pending_times is not None and len(pending_times):
+        minute_chunks.append(
+            aggregate_arrays_numba(
+                pending_times,
+                pending_prices,
+                pending_quantities,
+                pending_makers,
+                whale_thr,
+                last_close,
+                has_last_close,
+            )
+        )
+
+    if not quote_chunks:
+        return DayAggregation(pd.DataFrame(columns=MINUTE_ATOMIC_COLUMNS), float("nan"), 0)
+    quote_values = np.concatenate(quote_chunks)
+    quote_chunks.clear()
+    quantile_position = 0.99 * (trade_count - 1)
+    lower_index = int(np.floor(quantile_position))
+    upper_index = int(np.ceil(quantile_position))
+    quote_values.partition((lower_index, upper_index))
+    fraction = quantile_position - lower_index
+    p99_quote = float(
+        quote_values[lower_index]
+        + fraction * (quote_values[upper_index] - quote_values[lower_index])
+    )
+    minute_values = np.concatenate(minute_chunks, axis=0)
+    return DayAggregation(_frame_from_matrix(minute_values), p99_quote, trade_count)
+
+
+def aggregate_aggtrades(
+    chunks: Iterable[pd.DataFrame],
+    whale_thr: float,
+    prev_close: float | None = None,
+) -> pd.DataFrame:
+    """调用单遍 Numba 汇总器，返回分钟原子量（03 §2.2）。"""
+    return aggregate_aggtrades_day(chunks, whale_thr, prev_close).minutes
 
 
 def fill_missing_minutes(
@@ -252,6 +380,198 @@ def _missing_minute_row(open_time: int, close: float | None) -> dict[str, object
     }
 
 
+def _align_metrics(bars: pd.DataFrame, metrics: pd.DataFrame | None) -> pd.DataFrame:
+    """按 metrics 的真实可用时刻滞后对齐 OI（04 §2 第 2 条）。"""
+    if metrics is None or metrics.empty:
+        bars["oi"] = np.nan
+        return bars
+    source = metrics.copy()
+    if "timestamp_ms" in source:
+        timestamp_ms = normalize_timestamp_ms(source["timestamp_ms"])
+    elif "create_time" in source:
+        timestamp_ms = (
+            pd.to_datetime(source["create_time"], utc=True).dt.as_unit("ms").astype("int64")
+        )
+    else:
+        raise ValueError("metrics 缺少 timestamp_ms/create_time 时间列")
+    oi_column = "oi" if "oi" in source else "sum_open_interest"
+    if oi_column not in source:
+        raise ValueError("metrics 缺少 oi/sum_open_interest 列")
+    source["_available_time_ms"] = timestamp_ms + 300_000
+    source["oi"] = pd.to_numeric(source[oi_column], errors="coerce")
+    source = source[["_available_time_ms", "oi"]].dropna(subset=["oi"])
+    source = source.sort_values("_available_time_ms").drop_duplicates(
+        "_available_time_ms", keep="last"
+    )
+    return pd.merge_asof(
+        bars.sort_values("close_time"),
+        source,
+        left_on="close_time",
+        right_on="_available_time_ms",
+        direction="backward",
+    ).drop(columns="_available_time_ms")
+
+
+def _align_funding(bars: pd.DataFrame, funding: pd.DataFrame | None) -> pd.DataFrame:
+    """只把结算时间不晚于 K 线收盘的最近一期资金费率向后对齐（04 §2 第 3 条）。"""
+    if funding is None or funding.empty:
+        bars["funding_rate"] = np.nan
+        bars["funding_time"] = pd.Series(pd.NA, index=bars.index, dtype="Int64")
+        return bars
+    source = funding.copy()
+    if "funding_time" in source:
+        timestamp_ms = pd.to_numeric(source["funding_time"], errors="raise").astype("int64")
+    elif "funding_time_ms" in source:
+        timestamp_ms = pd.to_numeric(source["funding_time_ms"], errors="raise").astype("int64")
+    elif "calc_time" in source:
+        timestamp_ms = pd.to_numeric(source["calc_time"], errors="raise").astype("int64")
+    else:
+        raise ValueError("fundingRate 缺少 funding_time/funding_time_ms/calc_time 时间列")
+    timestamp_ms = normalize_timestamp_ms(timestamp_ms)
+    rate_column = "funding_rate" if "funding_rate" in source else "last_funding_rate"
+    if rate_column not in source:
+        raise ValueError("fundingRate 缺少 funding_rate/last_funding_rate 列")
+    source["funding_time"] = timestamp_ms
+    source["funding_rate"] = pd.to_numeric(source[rate_column], errors="coerce")
+    source = source[["funding_time", "funding_rate"]].dropna(subset=["funding_rate"])
+    source = source.sort_values("funding_time").drop_duplicates("funding_time", keep="last")
+    return pd.merge_asof(
+        bars.sort_values("close_time"),
+        source,
+        left_on="close_time",
+        right_on="funding_time",
+        direction="backward",
+    )
+
+
+def assemble_bars(
+    klines: pd.DataFrame,
+    atomic: pd.DataFrame,
+    *,
+    start_ms: int,
+    end_ms: int,
+    metrics: pd.DataFrame | None = None,
+    funding: pd.DataFrame | None = None,
+    previous_close: float | None = None,
+    aggtrades_missing_days: Iterable[int] = (),
+    whale_threshold_missing_days: Iterable[int] = (),
+) -> pd.DataFrame:
+    """组装一个完整 UTC 月的 K 线、逐笔原子量、metrics 与 settled funding（03 §2.3）。
+
+    Args:
+        klines: K 线数据，含 03 §1.2 字段；`ignore` 列可选。
+        atomic: aggTrades 分钟原子量，列见 `MINUTE_ATOMIC_COLUMNS`。
+        start_ms: UTC 分钟对齐的月起点（毫秒，含）。
+        end_ms: UTC 分钟对齐的区间终点（毫秒，不含）。
+        metrics: 可选 `timestamp_ms`/`create_time` 与 `oi`/`sum_open_interest`。
+        funding: 可选 `funding_time`/`funding_time_ms`/`calc_time` 与费率列。
+        previous_close: 月首之前最近一根 K 线收盘价，用于缺失价格回退。
+        aggtrades_missing_days: UTC 日起点毫秒，归档文件缺失且沿用最近 p99 的日期。
+        whale_threshold_missing_days: UTC 日起点毫秒，缺少可用前一日 p99 的日期。
+
+    Returns:
+        每分钟一行、可由 `load_bars` 读取的完整 DataFrame。
+
+    Raises:
+        ValueError: 时间范围未按分钟对齐或输入缺少必需列。
+    """
+    if start_ms % 60_000 or end_ms % 60_000 or end_ms <= start_ms:
+        raise ValueError("bars 区间必须为正且按 UTC 分钟对齐")
+    kline_columns = (
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume",
+        "count",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+    )
+    kline_source = klines.drop(columns="ignore", errors="ignore").copy()
+    missing_columns = [column for column in kline_columns if column not in kline_source]
+    if missing_columns:
+        raise ValueError(f"K 线缺少必需列：{missing_columns}")
+    kline_source["open_time"] = normalize_timestamp_ms(kline_source["open_time"])
+    kline_source["close_time"] = normalize_timestamp_ms(kline_source["close_time"])
+    kline_source = kline_source.sort_values("open_time").drop_duplicates("open_time", keep="last")
+    grid = pd.DataFrame({"open_time": np.arange(start_ms, end_ms, 60_000, dtype="int64")})
+    bars = grid.merge(kline_source[list(kline_columns)], on="open_time", how="left", sort=True)
+    kline_missing = bars["close"].isna()
+    prior_close = bars["close"].shift().ffill()
+    if len(prior_close):
+        prior_close.iloc[0] = previous_close
+    for column in ("open", "high", "low", "close"):
+        bars[column] = bars[column].where(~kline_missing, prior_close)
+    for column in ("volume", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"):
+        bars.loc[kline_missing, column] = 0
+    bars["close_time"] = bars["close_time"].fillna(bars["open_time"] + 59_999).astype("int64")
+    bars["kline_missing"] = kline_missing.astype("int8")
+
+    atomic_source = atomic.copy()
+    absent_atomic_columns = [
+        column for column in MINUTE_ATOMIC_COLUMNS if column not in atomic_source
+    ]
+    if absent_atomic_columns:
+        raise ValueError(f"原子量缺少必需列：{absent_atomic_columns}")
+    atomic_source["open_time"] = atomic_source["open_time"].astype("int64")
+    atomic_source = atomic_source.sort_values("open_time").drop_duplicates("open_time", keep="last")
+    bars = bars.merge(atomic_source[list(MINUTE_ATOMIC_COLUMNS)], on="open_time", how="left")
+    atomic_missing = bars["agg_n"].isna() & ~kline_missing & (bars["quote_volume"] > 0)
+    prior_price = bars["close"].shift().ffill()
+    if len(prior_price):
+        prior_price.iloc[0] = previous_close
+    for column in MINUTE_ATOMIC_COLUMNS:
+        if column in (
+            "open_time",
+            "whale_thr",
+            "p_1s",
+            "p_3s",
+            "p_1s_filled",
+            "p_3s_filled",
+            "hi_post_1s",
+            "lo_post_1s",
+            "hi_post_3s",
+            "lo_post_3s",
+        ):
+            continue
+        bars[column] = bars[column].fillna(0)
+    bars["whale_thr"] = bars["whale_thr"].ffill()
+    for column in ("p_1s", "p_3s", "hi_post_1s", "lo_post_1s", "hi_post_3s", "lo_post_3s"):
+        bars.loc[atomic_missing, column] = prior_price.loc[atomic_missing]
+    bars.loc[atomic_missing, ["p_1s_filled", "p_3s_filled"]] = 1
+    bars["aggtrades_missing"] = atomic_missing.astype("int8")
+    bars["is_filled"] = (kline_missing | atomic_missing).astype("int8")
+    day_starts = bars["open_time"] // _DAY_MS * _DAY_MS
+    bars["aggtrades_source_missing"] = day_starts.isin(set(aggtrades_missing_days)).astype("int8")
+    bars["whale_threshold_missing"] = day_starts.isin(set(whale_threshold_missing_days)).astype(
+        "int8"
+    )
+    bars = _align_metrics(bars, metrics)
+    bars = _align_funding(bars, funding)
+    bars = bars.sort_values("open_time").reset_index(drop=True)
+    return bars
+
+
+def write_monthly_bars(bars: pd.DataFrame, output_path: Path) -> None:
+    """先写临时 parquet 再原子替换月文件（03 §2.3）。
+
+    Args:
+        bars: `assemble_bars` 返回的单月分钟数据。
+        output_path: `data/bars/{alias}/{YYYYMM}.parquet` 目标路径。
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f"{output_path.name}.tmp")
+    try:
+        bars.to_parquet(temporary_path, index=False, compression="zstd")
+        temporary_path.replace(output_path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def daily_whale_thresholds(trades: pd.DataFrame, date_col: str = "transact_time") -> pd.DataFrame:
     """第一遍：计算每个 UTC 日的单笔成交额 99 分位数（03 §2.2）。
 
@@ -286,35 +606,51 @@ def has_header(first_line: str) -> bool:
     return not first_token.replace(".", "", 1).replace("-", "", 1).isdigit()
 
 
-def read_aggtrades_csv(path: str | Path, *, chunksize: int = 500_000) -> Iterable[pd.DataFrame]:
-    """读取 aggTrades CSV，处理表头有无与时间戳单位，分块返回。
+def _read_arrow_chunks(source: Any, *, header: bool) -> Iterable[pd.DataFrame]:
+    """按固定块与显式类型读取四个聚合所需列（03 §2.2）。"""
+    import pyarrow as pa
+    import pyarrow.csv as pa_csv
 
-    Args:
-        path: CSV 文件路径。
-        chunksize: 每块行数。
+    read_options = pa_csv.ReadOptions(
+        block_size=32 * 1024 * 1024,
+        column_names=list(AGGTRADES_COLUMNS),
+        skip_rows=1 if header else 0,
+    )
+    convert_options = pa_csv.ConvertOptions(
+        include_columns=["price", "quantity", "transact_time", "is_buyer_maker"],
+        column_types={
+            "price": pa.float64(),
+            "quantity": pa.float64(),
+            "transact_time": pa.int64(),
+            "is_buyer_maker": pa.bool_(),
+        },
+        true_values=["true", "True", "TRUE"],
+        false_values=["false", "False", "FALSE"],
+    )
+    with pa.PythonFile(source, mode="r") as arrow_source:
+        reader = pa_csv.open_csv(
+            arrow_source,
+            read_options=read_options,
+            parse_options=pa_csv.ParseOptions(delimiter=","),
+            convert_options=convert_options,
+        )
+        for batch in reader:
+            chunk = batch.to_pandas()
+            chunk["transact_time"] = normalize_timestamp_ms(chunk["transact_time"])
+            yield coerce_aggtrades(chunk)
 
-    Yields:
-        每块标准化后的 aggTrades DataFrame。
-    """
+
+def read_aggtrades_csv(path: str | Path) -> Iterable[pd.DataFrame]:
+    """读取 aggTrades CSV，按 32 MiB 块处理表头与时间戳单位。"""
     file_path = Path(path)
     with file_path.open(encoding="utf-8") as handle:
-        first_line = handle.readline()
-    header = 0 if has_header(first_line) else None
-    reader = pd.read_csv(file_path, chunksize=chunksize, header=header)
-    for chunk in reader:
-        if header is None:
-            chunk.columns = list(AGGTRADES_COLUMNS)
-        else:
-            chunk = chunk.rename(columns=str.strip)
-        chunk["transact_time"] = normalize_timestamp_ms(chunk["transact_time"])
-        yield coerce_aggtrades(chunk)
+        header = has_header(handle.readline())
+    with file_path.open("rb") as handle:
+        yield from _read_arrow_chunks(handle, header=header)
 
 
-def read_aggtrades_zip(path: str | Path, *, chunksize: int = 500_000) -> Iterable[pd.DataFrame]:
-    """从日度 zip 读取 aggTrades CSV，分块返回（03 §2.2）。
-
-    与 `read_aggtrades_csv` 相同的表头检测与时间戳归一逻辑。
-    """
+def read_aggtrades_zip(path: str | Path) -> Iterable[pd.DataFrame]:
+    """从日度 ZIP 流式读取 aggTrades，兼容表头与时间戳单位（03 §2.2）。"""
     import zipfile
 
     file_path = Path(path)
@@ -324,13 +660,6 @@ def read_aggtrades_zip(path: str | Path, *, chunksize: int = 500_000) -> Iterabl
             raise ValueError(f"zip 内没有 CSV：{file_path}")
         csv_name = csv_names[0]
         with archive.open(csv_name) as handle:
-            first_line = handle.readline().decode("utf-8").strip()
-    header = 0 if has_header(first_line) else None
-    reader = pd.read_csv(file_path, compression="zip", chunksize=chunksize, header=header)
-    for chunk in reader:
-        if header is None:
-            chunk.columns = list(AGGTRADES_COLUMNS)
-        else:
-            chunk = chunk.rename(columns=str.strip)
-        chunk["transact_time"] = normalize_timestamp_ms(chunk["transact_time"])
-        yield coerce_aggtrades(chunk)
+            header = has_header(handle.readline().decode("utf-8").strip())
+        with archive.open(csv_name) as handle:
+            yield from _read_arrow_chunks(handle, header=header)

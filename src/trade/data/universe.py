@@ -1,386 +1,385 @@
-"""币种名单校验与盲测币抽样。
+"""规则化月度选币：配置、交易范围快照、哈希角色与别名。
 
-规格：docs/03-数据与选币.md §4；docs/08-开发计划与验收.md §2 P1
+规格：docs/03-数据与选币.md §4
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from trade.common.config import ConfigError, load_config
-from trade.data.exchange import (
-    CheckLevel,
-    CheckResult,
-    SymbolInfo,
-    check_contract,
-    check_history,
-    check_leverage,
-    check_liquidity,
-    check_min_notional,
-    check_not_excluded,
-    check_step_notional,
-)
+
+_MS_PER_DAY = 86_400_000
+_DAYS_7 = 7 * _MS_PER_DAY
+# TradFi 合约的 underlyingType（03 §4.2 第 2 步）
+_TRADFI_UNDERLYING = {"STOCK", "COMMODITY", "INDEX", "ETF", "FX"}
 
 
-class WindowConfig(BaseModel):
-    """数据窗口起止（日期字符串，UTC）。"""
+class RuleConfig(BaseModel):
+    """选币规则（03 §4.2、§4.6 rule 段）。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    start: str
-    end: str
+    rebalance: str = Field(default="monthly", pattern=r"^monthly$")
+    new_entry_delay_days: int = Field(default=2, ge=0, le=365)
+    top_n: int = Field(default=60, ge=1)
+    min_listing_days: int = Field(default=60, ge=1)
+    lookback_days: int = Field(default=30, ge=1)
+    min_daily_quote_median: float = Field(default=20_000_000.0, gt=0)
+    step_notional_max: float = Field(default=0.5, gt=0)
+    min_notional_max: float = Field(default=5.0, gt=0)
+    min_leverage: int = Field(default=5, ge=1)
+    tick_rel_max: float = Field(default=0.0002, gt=0)
+    exclude_bases: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
+    exclude_stable: bool = True
+    exclude_tradfi: bool = True
+    excluded_symbols: list[str] = Field(default_factory=list)
 
 
-class CoinEntry(BaseModel):
-    """单个币种条目。"""
+class RolesConfig(BaseModel):
+    """哈希角色规则（03 §4.5 roles 段）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    holdout_mod: int = Field(default=5, ge=2)
+    holdout_rem: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_rem(self) -> RolesConfig:
+        if self.holdout_rem >= self.holdout_mod:
+            raise ValueError("holdout_rem 必须小于 holdout_mod")
+        return self
+
+
+class QualityRuleConfig(BaseModel):
+    """选币第 7 步的数据质量门槛（03 §2.4、§4.6 quality 段）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    missing_ratio_max: float = Field(default=0.01, gt=0, le=1)
+    aggtrades_missing_ratio_max: float = Field(default=0.01, gt=0, le=1)
+    consistency_error_max: float = Field(default=0.02, gt=0, le=1)
+
+
+class UniverseConfig(BaseModel):
+    """universe.yaml 的 pydantic 模型（03 §4.6）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviewed: bool = False
+    btc_context: str
+    rule: RuleConfig
+    roles: RolesConfig = Field(default_factory=RolesConfig)
+    quality: QualityRuleConfig = Field(default_factory=QualityRuleConfig)
+
+
+class SnapshotCoin(BaseModel):
+    """交易范围快照中的单个入选币（03 §4.2）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     symbol: str
     alias: str
-    sector: str
-    source: str = "user"
-
-
-class ExcludedEntry(BaseModel):
-    """排除币种条目。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    symbol: str
-    reason: str
-
-
-class ValidationRecord(BaseModel):
-    """单个币的校验记录。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    symbol: str
     role: str
-    passed: bool
-    blocking_failed: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    rank: int
+    daily_quote_median: float
+    first_listing_ms: int
+    price_median_30d: float | None = None
+    tick_rel: float | None = None
+    step_notional: float | None = None
+    max_leverage: int | None = None
 
 
-class ValidationSection(BaseModel):
-    """coins.yaml 的 validation 段。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    generated_at: str | None = None
-    results: list[ValidationRecord] = Field(default_factory=list)
-
-
-class CoinsConfig(BaseModel):
-    """coins.yaml 的 pydantic 模型。"""
+class UniverseSnapshot(BaseModel):
+    """某月的交易范围快照（03 §4.2）。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    reviewed: bool = False
-    window: WindowConfig
-    btc_context: str
-    train: list[CoinEntry]
-    holdout: list[CoinEntry]
-    blind: list[CoinEntry] = Field(default_factory=list)
-    excluded: list[ExcludedEntry] = Field(default_factory=list)
-    validation: ValidationSection = Field(default_factory=ValidationSection)
-
-
-class TradableConfig(BaseModel):
-    """可交易性硬性条件。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    contract_type: str
-    quote_asset: str
-    status: str
-    excluded_symbols: list[str] = Field(default_factory=list)
-
-
-class HistoryConfig(BaseModel):
-    """历史长度门槛。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    onboard_warmup_days: int
-    train_onboard_margin_months: int
-    holdout_min_months: int
-
-
-class FiltersConfig(BaseModel):
-    """过滤器门槛。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    step_notional_max: float
-    min_notional_max: float
-    min_leverage: int
-
-
-class LiquidityConfig(BaseModel):
-    """流动性门槛（警告级）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    daily_quote_median_min: float
-    monthly_quote_median_min: float
-    tick_rel_max: float
-
-
-class QualityConfig(BaseModel):
-    """数据质量门槛（阻断级）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    missing_ratio_max: float
-    consistency_error_max: float
-
-
-class UniverseConfig(BaseModel):
-    """universe.yaml 的 pydantic 模型。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    blind_seed: int
-    blind_count: int = Field(ge=1)
-    tradable: TradableConfig
-    history: HistoryConfig
-    filters: FiltersConfig
-    liquidity: LiquidityConfig
-    quality: QualityConfig
+    month: str
+    rebalance_ms: int
+    rule_hash: str
+    coins: list[SnapshotCoin] = Field(default_factory=list)
+    excluded_counts: dict[str, int] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class SymbolMetrics:
-    """一个币的可交易性相关度量（来自下载数据与质量报告）。"""
+class SymbolMeta:
+    """单个合约用于选币的分类与交易规则（03 §4.2 第 2、5 步）。"""
 
-    price_median_7d: float
-    max_leverage: int
-    daily_quote_median: float
-    monthly_quote_median_min: float
-    tick_rel: float
-    quality_ok: bool = True
-
-
-def load_coins(path: Path) -> CoinsConfig:
-    """加载并校验 coins.yaml。"""
-    try:
-        return load_config(CoinsConfig, path)
-    except (ConfigError, ValidationError) as error:
-        raise ConfigError(f"无法加载币种名单 {path}: {error}") from error
+    symbol: str
+    base_asset: str = ""
+    quote_asset: str = "USDT"
+    contract_type: str = "PERPETUAL"
+    underlying_type: str = ""
+    is_stable: bool = False
+    excluded: bool = False
+    tick_size: float | None = None
+    step_size: float | None = None
+    min_notional: float | None = None
+    max_leverage: int | None = None
 
 
-def load_universe(path: Path) -> UniverseConfig:
-    """加载并校验 universe.yaml。"""
+def load_universe_config(path: Path) -> UniverseConfig:
+    """加载并校验 universe.yaml（03 §4.6）。"""
     try:
         return load_config(UniverseConfig, path)
     except (ConfigError, ValidationError) as error:
         raise ConfigError(f"无法加载 universe 配置 {path}: {error}") from error
 
 
-def parse_date_ms(value: str) -> int:
-    """把 `YYYY-MM-DD` 解析为 UTC 毫秒时间戳。"""
-    parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
-    return int(parsed.timestamp() * 1000)
-
-
-def validate_symbol(
-    symbol: SymbolInfo,
-    role: str,
-    universe: UniverseConfig,
-    metrics: SymbolMetrics | None,
-    window_start_ms: int,
-    window_end_ms: int,
-) -> list[CheckResult]:
-    """对单个合约执行 03 §4.2 的全部校验。
-
-    Args:
-        symbol: 合约元数据。
-        role: `train` / `holdout` / `blind`。
-        universe: universe 配置门槛。
-        metrics: 可交易性度量；缺失时只做不依赖度量的检查。
-        window_start_ms: 数据窗口起点（毫秒）。
-        window_end_ms: 数据窗口终点（毫秒）。
-
-    Returns:
-        校验结果列表（阻断与警告混合）。
-    """
-    results: list[CheckResult] = [
-        check_contract(
-            symbol,
-            universe.tradable.contract_type,
-            universe.tradable.quote_asset,
-            universe.tradable.status,
-        ),
-        check_not_excluded(symbol, set(universe.tradable.excluded_symbols)),
-        check_history(
-            symbol,
-            role=role,
-            warmup_days=universe.history.onboard_warmup_days,
-            train_margin_months=universe.history.train_onboard_margin_months,
-            holdout_min_months=universe.history.holdout_min_months,
-            window_start_ms=window_start_ms,
-            window_end_ms=window_end_ms,
-        ),
-    ]
-    if metrics is not None:
-        results.append(
-            check_step_notional(symbol, metrics.price_median_7d, universe.filters.step_notional_max)
-        )
-        results.append(check_min_notional(symbol, universe.filters.min_notional_max))
-        results.append(check_leverage(metrics.max_leverage, universe.filters.min_leverage))
-        results.append(
-            CheckResult("quality", CheckLevel.BLOCK, metrics.quality_ok, "数据质量（03 §2.4）")
-        )
-        results.extend(
-            check_liquidity(
-                metrics.daily_quote_median,
-                metrics.monthly_quote_median_min,
-                metrics.tick_rel,
-                daily_min=universe.liquidity.daily_quote_median_min,
-                monthly_min=universe.liquidity.monthly_quote_median_min,
-                tick_rel_max=universe.liquidity.tick_rel_max,
-            )
-        )
-    return results
-
-
-def blocking_failed(results: list[CheckResult]) -> list[str]:
-    """返回未通过的阻断项名称。"""
-    return [
-        result.name for result in results if result.level is CheckLevel.BLOCK and not result.passed
-    ]
-
-
-def warning_names(results: list[CheckResult]) -> list[str]:
-    """返回未通过的警告项名称。"""
-    return [
-        result.name for result in results if result.level is CheckLevel.WARN and not result.passed
-    ]
-
-
-def validate_coins(
-    coins: CoinsConfig,
-    universe: UniverseConfig,
-    symbols_by_name: dict[str, SymbolInfo],
-    metrics_by_name: dict[str, SymbolMetrics],
-) -> list[ValidationRecord]:
-    """对名单中的训练币与留出币执行校验，返回逐币记录。
-
-    Args:
-        coins: 币种名单。
-        universe: universe 配置。
-        symbols_by_name: exchangeInfo 中按 symbol 索引的合约元数据。
-        metrics_by_name: 按 symbol 索引的可交易性度量（缺失的币只做基础检查）。
-
-    Returns:
-        训练币 + 留出币的校验记录列表。
-    """
-    window_start_ms = parse_date_ms(coins.window.start)
-    window_end_ms = parse_date_ms(coins.window.end)
-    records: list[ValidationRecord] = []
-    for role, entries in (("train", coins.train), ("holdout", coins.holdout)):
-        for entry in entries:
-            symbol_info = symbols_by_name.get(entry.symbol)
-            if symbol_info is None:
-                records.append(
-                    ValidationRecord(
-                        symbol=entry.symbol,
-                        role=role,
-                        passed=False,
-                        blocking_failed=["missing_exchange_info"],
-                    )
-                )
-                continue
-            results = validate_symbol(
-                symbol_info,
-                role,
-                universe,
-                metrics_by_name.get(entry.symbol),
-                window_start_ms,
-                window_end_ms,
-            )
-            records.append(
-                ValidationRecord(
-                    symbol=entry.symbol,
-                    role=role,
-                    passed=not blocking_failed(results),
-                    blocking_failed=blocking_failed(results),
-                    warnings=warning_names(results),
-                )
-            )
-    return records
-
-
-def draw_blind(candidates: list[str], seed: int, count: int) -> list[str]:
-    """按固定种子从候选币中均匀抽取盲测币（可复现）。
-
-    Args:
-        candidates: 合格候选币 symbol 列表。
-        seed: 固定随机种子（universe.yaml: blind_seed）。
-        count: 抽取数量（universe.yaml: blind_count）。
-
-    Returns:
-        抽取出的 symbol 列表（按候选排序后的抽样结果）。
-
-    Raises:
-        ValueError: 候选数量不足。
-    """
-    ordered = sorted(set(candidates))
-    if len(ordered) < count:
-        raise ValueError(f"候选币不足：{len(ordered)} < {count}")
-    rng = np.random.default_rng(seed)
-    return [ordered[int(i)] for i in rng.choice(len(ordered), size=count, replace=False)]
-
-
-def eligible_blind_candidates(
-    coins: CoinsConfig,
-    universe: UniverseConfig,
-    symbols: list[SymbolInfo],
-    metrics_by_name: dict[str, SymbolMetrics],
-) -> list[str]:
-    """筛选盲测币候选：不在名单内、通过全部阻断与警告门槛的合约。"""
-    excluded = {entry.symbol for entry in coins.excluded}
-    named = {entry.symbol for entry in (*coins.train, *coins.holdout, *coins.blind)}
-    window_start_ms = parse_date_ms(coins.window.start)
-    window_end_ms = parse_date_ms(coins.window.end)
-    candidates: list[str] = []
-    for symbol in symbols:
-        if symbol.symbol in named or symbol.symbol in excluded:
-            continue
-        metrics = metrics_by_name.get(symbol.symbol)
-        if metrics is None:
-            continue
-        results = validate_symbol(
-            symbol, "blind", universe, metrics, window_start_ms, window_end_ms
-        )
-        if not blocking_failed(results) and not warning_names(results):
-            candidates.append(symbol.symbol)
-    return sorted(candidates)
-
-
-def dump_coins(path: Path, coins: CoinsConfig) -> None:
-    """把 coins.yaml 写回磁盘（用于 --draw-blind 后保存盲测结果）。"""
-    import yaml
-
-    data: dict[str, Any] = {
-        "reviewed": coins.reviewed,
-        "window": {"start": coins.window.start, "end": coins.window.end},
-        "btc_context": coins.btc_context,
-        "train": [entry.model_dump() for entry in coins.train],
-        "holdout": [entry.model_dump() for entry in coins.holdout],
-        "blind": [entry.model_dump() for entry in coins.blind],
-        "excluded": [entry.model_dump() for entry in coins.excluded],
-        "validation": coins.validation.model_dump(),
+def rule_hash(cfg: UniverseConfig) -> str:
+    """对规则相关配置段求 SHA256（不含 reviewed 与 btc_context，03 §4.6）。"""
+    payload: dict[str, Any] = {
+        "rule": cfg.rule.model_dump(),
+        "roles": cfg.roles.model_dump(),
+        "quality": cfg.quality.model_dump(),
     }
-    path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def role_for_symbol(symbol: str, roles: RolesConfig) -> str:
+    """哈希角色：sha256(symbol) 前 8 字节取模（03 §4.5）。"""
+    digest = hashlib.sha256(symbol.encode("utf-8")).hexdigest()
+    value = int(digest[:8], 16)
+    return "holdout" if value % roles.holdout_mod == roles.holdout_rem else "train"
+
+
+def _next_alias(aliases: dict[str, str]) -> str:
+    """分配下一个未使用别名 C001…，不复用（03 §4.5）。"""
+    used = set(aliases.values())
+    index = 1
+    while f"C{index:03d}" in used:
+        index += 1
+    return f"C{index:03d}"
+
+
+def load_aliases(path: Path) -> dict[str, str]:
+    """读取 data/universe/aliases.json（只增不改、不复用，03 §4.5）。"""
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"aliases.json 必须是字符串键映射：{path}")
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def save_aliases(path: Path, aliases: dict[str, str]) -> None:
+    """原子写入 aliases.json（03 §4.5）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(aliases, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(path)
+
+
+def assign_aliases(
+    snapshot: UniverseSnapshot, aliases: dict[str, str]
+) -> tuple[UniverseSnapshot, dict[str, str]]:
+    """为快照币分配别名；已存在的不改，新币顺序追加（03 §4.5）。"""
+    updated = dict(aliases)
+    coins: list[SnapshotCoin] = []
+    for coin in snapshot.coins:
+        if coin.symbol not in updated:
+            updated[coin.symbol] = _next_alias(updated)
+        coins.append(coin.model_copy(update={"alias": updated[coin.symbol]}))
+    return snapshot.model_copy(update={"coins": coins}), updated
+
+
+def _is_excluded(meta: SymbolMeta, cfg: UniverseConfig) -> bool:
+    """第 2 步排除：TradFi、BTC/ETH、稳定币对、额外排除与合约类型（03 §4.2）。"""
+    rule = cfg.rule
+    if meta.excluded or meta.symbol in rule.excluded_symbols:
+        return True
+    if meta.quote_asset != "USDT":
+        return True
+    if meta.contract_type != "PERPETUAL":
+        return True
+    if meta.base_asset in rule.exclude_bases:
+        return True
+    if rule.exclude_stable and meta.is_stable:
+        return True
+    return bool(rule.exclude_tradfi and meta.underlying_type.upper() in _TRADFI_UNDERLYING)
+
+
+def _tradable(meta: SymbolMeta, price_7d: float, price_30d: float, rule: RuleConfig) -> bool:
+    """第 5 步可交易性：最小下单额、杠杆、step_notional 与 tick_rel（03 §4.2）。"""
+    if meta.min_notional is not None and meta.min_notional > rule.min_notional_max:
+        return False
+    if meta.max_leverage is not None and meta.max_leverage < rule.min_leverage:
+        return False
+    step_too_large = (
+        meta.step_size is not None
+        and not pd.isna(price_7d)
+        and meta.step_size * price_7d > rule.step_notional_max
+    )
+    tick_too_wide = (
+        meta.tick_size is not None
+        and not pd.isna(price_30d)
+        and meta.tick_size / price_30d > rule.tick_rel_max
+    )
+    return not (step_too_large or tick_too_wide)
+
+
+def _median_last_days(
+    before: pd.DataFrame, rebalance_ms: int, window_ms: int, column: str
+) -> float:
+    """取 R 前 window_ms 内 column 的日值中位数（03 §4.2）。"""
+    recent = before[
+        (before["open_time"] >= rebalance_ms - window_ms) & (before["open_time"] < rebalance_ms)
+    ]
+    if recent.empty:
+        return float("nan")
+    return float(recent[column].median())
+
+
+def _quality_ok(quality_cache: pd.DataFrame, symbol: str, rebalance_ms: int) -> bool:
+    """第 7 步：读取 T0.17 的按窗口质量结论（03 §2.4、§4.2）。"""
+    rows = quality_cache[
+        (quality_cache["symbol"] == symbol) & (quality_cache["window_end_ms"] == rebalance_ms)
+    ]
+    if rows.empty:
+        return False
+    return bool(rows["qualified"].iloc[0])
+
+
+def _month_key(rebalance_ms: int) -> str:
+    day = datetime.fromtimestamp(rebalance_ms // 1000, tz=UTC)
+    return f"{day.year:04d}-{day.month:02d}"
+
+
+def build_universe(
+    rebalance_ms: int,
+    daily_bars: dict[str, pd.DataFrame],
+    rules: dict[str, SymbolMeta],
+    cfg: UniverseConfig,
+    *,
+    quality_cache: pd.DataFrame | None = None,
+) -> UniverseSnapshot:
+    """按 03 §4.2 第 1~7 步构建某月交易范围快照。
+
+    只使用 open_time < R 的日线（无未来函数，03 §4.2）。
+
+    Args:
+        rebalance_ms: 再平衡时点 R（UTC 毫秒，月度 1 日 00:00）。
+        daily_bars: 全市场日线，symbol -> DataFrame（至少含 open_time、close、quote_volume）。
+        rules: symbol -> SymbolMeta（含已下架合约近似值，03 §4.3）。
+        cfg: universe 配置。
+        quality_cache: T0.17 的 (symbol, window_end_ms) 质量结论表；None 表示第 7 步全部合格。
+
+    Returns:
+        UniverseSnapshot（coin.alias 为空，由 assign_aliases 填充）。
+
+    Raises:
+        ValueError: rebalance_ms 未按天对齐。
+    """
+    if rebalance_ms % _MS_PER_DAY:
+        raise ValueError(f"再平衡时点未按天对齐：{rebalance_ms}")
+    rule = cfg.rule
+    lookback_ms = rule.lookback_days * _MS_PER_DAY
+    listing_ms = rule.min_listing_days * _MS_PER_DAY
+
+    excluded_counts: dict[str, int] = {
+        "candidates": 0,
+        "excluded": 0,
+        "listing": 0,
+        "liquidity": 0,
+        "tradability": 0,
+        "quality": 0,
+    }
+    eligible: list[tuple[str, float]] = []
+    details: dict[str, dict[str, Any]] = {}
+
+    for symbol, bars in daily_bars.items():
+        before = bars[bars["open_time"] < rebalance_ms]
+        if before.empty:
+            continue
+        excluded_counts["candidates"] += 1
+        meta = rules.get(symbol, SymbolMeta(symbol=symbol))
+        if _is_excluded(meta, cfg):
+            excluded_counts["excluded"] += 1
+            continue
+        first_listing_ms = int(before["open_time"].min())
+        if rebalance_ms - first_listing_ms < listing_ms:
+            excluded_counts["listing"] += 1
+            continue
+        daily_quote_median = _median_last_days(before, rebalance_ms, lookback_ms, "quote_volume")
+        if pd.isna(daily_quote_median) or daily_quote_median < rule.min_daily_quote_median:
+            excluded_counts["liquidity"] += 1
+            continue
+        price_7d = _median_last_days(before, rebalance_ms, _DAYS_7, "close")
+        price_30d = _median_last_days(before, rebalance_ms, lookback_ms, "close")
+        if not _tradable(meta, price_7d, price_30d, rule):
+            excluded_counts["tradability"] += 1
+            continue
+        eligible.append((symbol, daily_quote_median))
+        details[symbol] = {
+            "first_listing_ms": first_listing_ms,
+            "price_median_30d": price_30d,
+            "tick_rel": (
+                meta.tick_size / price_30d
+                if meta.tick_size is not None and not pd.isna(price_30d)
+                else None
+            ),
+            "step_notional": (
+                meta.step_size * price_7d
+                if meta.step_size is not None and not pd.isna(price_7d)
+                else None
+            ),
+            "max_leverage": meta.max_leverage,
+        }
+
+    eligible.sort(key=lambda item: item[1], reverse=True)
+    coins: list[SnapshotCoin] = []
+    for rank, (symbol, daily_quote_median) in enumerate(eligible[: rule.top_n], start=1):
+        if quality_cache is not None and not _quality_ok(quality_cache, symbol, rebalance_ms):
+            excluded_counts["quality"] += 1
+            continue  # 不找替补（03 §4.2 第 7 步）
+        detail = details[symbol]
+        coins.append(
+            SnapshotCoin(
+                symbol=symbol,
+                alias="",
+                role=role_for_symbol(symbol, cfg.roles),
+                rank=rank,
+                daily_quote_median=daily_quote_median,
+                first_listing_ms=detail["first_listing_ms"],
+                price_median_30d=detail["price_median_30d"],
+                tick_rel=detail["tick_rel"],
+                step_notional=detail["step_notional"],
+                max_leverage=detail["max_leverage"],
+            )
+        )
+
+    return UniverseSnapshot(
+        month=_month_key(rebalance_ms),
+        rebalance_ms=rebalance_ms,
+        rule_hash=rule_hash(cfg),
+        coins=coins,
+        excluded_counts=excluded_counts,
+    )
+
+
+def write_universe_snapshot(path: Path, snapshot: UniverseSnapshot) -> None:
+    """原子写入 data/universe/{YYYY-MM}.json（03 §4.2）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(snapshot.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def read_universe_snapshot(path: Path) -> UniverseSnapshot:
+    """读取某月交易范围快照（03 §4.2）。"""
+    if not path.is_file():
+        raise FileNotFoundError(f"未找到快照：{path}")
+    return UniverseSnapshot.model_validate_json(path.read_text(encoding="utf-8"))

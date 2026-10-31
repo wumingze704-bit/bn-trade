@@ -34,14 +34,24 @@ def is_sample_mask(
     r1_sigma: float,
     brk_60_thr: float,
     warmup_bars: int,
+    segments: np.ndarray | None = None,
 ) -> np.ndarray:
-    """样本掩码：预过滤三条件 且 非补齐分钟 且 已过预热期。"""
-    mask = prefilter_mask(bars, vol_z_60_thr, r1_sigma, brk_60_thr)
+    """样本掩码：预过滤三条件 且 非补齐分钟 且 已过预热期（按数据段，03 §6）。"""
     n = len(bars)
+    if segments is None:
+        segments = np.zeros(n, dtype="int64")
+    segments = np.asarray(segments, dtype="int64")
     is_filled = (
         bars["is_filled"].to_numpy(dtype="int64")
         if "is_filled" in bars.columns
         else np.zeros(n, dtype="int64")
     )
-    warmed = np.arange(n) >= warmup_bars
+    # 预过滤与预热都按段独立计算：滚动窗口不跨段、段首 warmup_bars 根不产出样本
+    mask = np.zeros(n, dtype=bool)
+    warmed = np.zeros(n, dtype=bool)
+    for seg in np.unique(segments):
+        idx = np.nonzero(segments == seg)[0]
+        seg_bars = bars.iloc[idx].reset_index(drop=True)
+        mask[idx] = prefilter_mask(seg_bars, vol_z_60_thr, r1_sigma, brk_60_thr)
+        warmed[idx] = np.arange(idx.shape[0]) >= warmup_bars
     return mask & (is_filled == 0) & warmed

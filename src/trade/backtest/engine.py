@@ -12,9 +12,11 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from trade.backtest.costs import FeeSchedule, Scenario, half_spread, scenario, slip
+from trade.backtest.costs import FeeSchedule, Scenario, scenario
+from trade.common.entry import compute_entry
 from trade.common.exits import ExitConfig, simulate_exit
-from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit, loss_rate
+from trade.common.funding import funding_rate_between, funding_settlements
+from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 from trade.features.kline import rolling_mean, rv_15, true_range, wilder_atr
 
 
@@ -117,9 +119,11 @@ class PrecomputedTrade:
     mae_r: float
     gross_return: float
     exit_fee_rate: float
+    funding_rate_sum: float = 0.0
     tick_size: float = 0.0
     step_size: float = 0.0
     min_notional: float = 0.0
+    new_entry: bool = False
 
 
 @dataclass
@@ -160,6 +164,8 @@ class ExecutedTrade:
     gross_pnl: float
     net_pnl: float
     capped_by: str | None
+    funding_fee: float = 0.0
+    new_entry: bool = False
 
 
 @dataclass
@@ -299,7 +305,7 @@ def reference_trade_net_pnl(
     )
     if not sz.accepted:
         return 0.0
-    return sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate)
+    return sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate - tr.funding_rate_sum)
 
 
 def precompute_trades(
@@ -318,11 +324,17 @@ def precompute_trades(
     sl_min: float,
     sl_max: float,
     H_label: int,
+    trade_mask: np.ndarray | None = None,
+    new_entry: bool = False,
 ) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
     """逐笔预计算（06 §3.4 第 1 步）：为每个候选信号算 P_fill 与出场结果。
 
     只处理 is_sample=1 且 p ≥ θ 的候选；开仓过滤、追价保护在此判断，
     仓位与组合约束在 simulate_portfolio 中判断（06 §3.4 第 2 步）。
+
+    Args:
+        trade_mask: 可选，与 bars 等长的 bool 数组，标记该分钟是否在当月交易范围
+            `U(R)` 内（06 §3.1 条件 8）。为 None 时视为全部可交易（无宇宙约束）。
     """
     n = len(bars)
     if n == 0:
@@ -351,12 +363,18 @@ def precompute_trades(
 
     trades: list[PrecomputedTrade] = []
     skipped: list[SkippedSignal] = []
+    fund_times, fund_rates = funding_settlements(bars)
 
     for row in signals.itertuples(index=False):
         if float(row.p) < backtest_cfg.threshold:
             continue
         t = idx_of.get(int(row.open_time))
         if t is None or t + 1 >= n:
+            continue
+        if trade_mask is not None and not bool(trade_mask[t]):
+            skipped.append(
+                SkippedSignal(symbol, int(row.open_time), float(row.p), "not_in_universe")
+            )
             continue
         if is_filled[t + 1] == 1:
             skipped.append(
@@ -380,23 +398,31 @@ def precompute_trades(
         if not np.isfinite(arr["rv15"][t]) or not np.isfinite(arr["mean_qv_60"][t]):
             skipped.append(SkippedSignal(symbol, int(row.open_time), float(row.p), "no_lookback"))
             continue
-        sl_ = float(np.clip(k_sl * sigma, sl_min, sl_max))
-        atr_abs = float(arr["atr_abs"][t])
-        tick_rel = rule.tick_size / c_t
-        hs = half_spread(tick_rel, half_spread_min)
-        if scen.fixed_slip is not None:
-            slip_ = scen.fixed_slip
-        else:
-            slip_ = slip(
-                slip_min=backtest_cfg.costs.slip_min * scen.slip_mult,
-                Y=backtest_cfg.costs.Y,
-                rv_15_raw=float(arr["rv15"][t]),
-                notional=notional_ref,
-                qv=float(qv[t]),
-            )
-        slip_stop = 2.0 * slip_
-        p_fill = p_raw * (1.0 + hs + slip_)
-        lr = loss_rate(sl=sl_, slip_stop=slip_stop, half_spread=hs, fee_taker=fees.taker)
+        entry = compute_entry(
+            c_t=c_t,
+            p_raw=p_raw,
+            sigma=sigma,
+            atr_abs=float(arr["atr_abs"][t]),
+            rv15=float(arr["rv15"][t]),
+            qv=float(qv[t]),
+            tick_size=rule.tick_size,
+            k_sl=k_sl,
+            sl_min=sl_min,
+            sl_max=sl_max,
+            notional_ref=notional_ref,
+            half_spread_min=half_spread_min,
+            slip_min=backtest_cfg.costs.slip_min * scen.slip_mult,
+            Y=backtest_cfg.costs.Y,
+            fixed_slip=scen.fixed_slip,
+            fee_taker=fees.taker,
+        )
+        sl_ = entry.sl
+        atr_abs = entry.atr_abs
+        hs = entry.half_spread
+        slip_ = entry.slip
+        slip_stop = entry.slip_stop
+        p_fill = entry.p_fill
+        lr = entry.loss_rate
 
         result = simulate_exit(
             open_,
@@ -447,9 +473,16 @@ def precompute_trades(
                 mae_r=result.mae_r,
                 gross_return=result.exit_price / p_fill - 1.0,
                 exit_fee_rate=exit_fee_rate,
+                funding_rate_sum=funding_rate_between(
+                    fund_times,
+                    fund_rates,
+                    int(open_time[t + 1]),
+                    int(open_time[result.exit_idx]),
+                ),
                 tick_size=rule.tick_size,
                 step_size=rule.step_size,
                 min_notional=rule.min_notional,
+                new_entry=new_entry,
             )
         )
     return trades, skipped
@@ -538,7 +571,8 @@ def simulate_portfolio(
         if not sz.accepted:
             result.skipped.append(SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, sz.status))
             continue
-        net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate)
+        funding_fee = sz.notional * tr.funding_rate_sum
+        net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate) - funding_fee
         trade = ExecutedTrade(
             symbol=tr.symbol,
             group=tr.group,
@@ -561,9 +595,11 @@ def simulate_portfolio(
             mae_r=tr.mae_r,
             entry_fee=sz.notional * fees.taker,
             exit_fee=sz.notional * tr.exit_fee_rate,
+            funding_fee=funding_fee,
             gross_pnl=sz.notional * tr.gross_return,
             net_pnl=net_pnl,
             capped_by=sz.capped_by,
+            new_entry=tr.new_entry,
         )
         positions[tr.symbol] = trade
         result.trades.append(trade)
@@ -599,8 +635,16 @@ def run_backtest(
     sl_max: float,
     H_label: int,
     initial_equity: float | None = None,
+    trade_masks: dict[str, np.ndarray] | None = None,
+    new_entry_symbols: set[str] | None = None,
 ) -> tuple[PortfolioResult, list[PrecomputedTrade]]:
-    """运行单个成本情景的回测（06 §3.4）：预计算 + 组合模拟。"""
+    """运行单个成本情景的回测（06 §3.4）：预计算 + 组合模拟。
+
+    Args:
+        trade_masks: 可选，alias -> 该币每分钟是否在当月交易范围的 bool 数组（06 §3.1
+            条件 8）。缺省 None 表示无宇宙约束（测试/旧调用兼容）。
+        new_entry_symbols: 可选，新进入组 alias 集合（03 §4.5、06 §7 S10）。
+    """
     scen = scenario(scen_name)
     all_trades: list[PrecomputedTrade] = []
     all_skipped: list[SkippedSignal] = []
@@ -612,8 +656,10 @@ def run_backtest(
             bars,
             sym_signals,
             symbol=symbol,
-            group=groups.get(symbol, "train"),
+            group=groups[symbol],
             rule=rules[symbol],
+            trade_mask=trade_masks.get(symbol) if trade_masks else None,
+            new_entry=bool(new_entry_symbols and symbol in new_entry_symbols),
             scen=scen,
             fees=fees,
             backtest_cfg=backtest_cfg,

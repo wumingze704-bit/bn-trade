@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from trade.backtest.costs import FeeSchedule
@@ -37,8 +38,16 @@ from trade.backtest.sanity import (
 from trade.common.config import BaseConfig, load_config
 from trade.common.exits import ExitConfig
 from trade.common.sizing import SizingConfig
-from trade.data.loader import load_bars, window_bounds
-from trade.data.universe import load_coins, load_universe
+from trade.data.loader import (
+    collect_universe_coins,
+    load_bars,
+    load_universe_membership,
+    new_entry_symbols,
+    universe_months,
+    universe_trade_mask,
+    window_bounds,
+)
+from trade.data.universe import load_universe_config
 from trade.features.registry import FeaturesConfig
 
 
@@ -54,7 +63,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--features", type=Path, default=Path("configs/features.yaml"))
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
     parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
-    parser.add_argument("--coins", type=Path, default=Path("configs/coins.yaml"))
     parser.add_argument("--final", action="store_true", help="包含封存集 M23~M24（仅 G3，06 §8）")
     return parser
 
@@ -72,6 +80,8 @@ def _run_scenario(
     sizing_cfg: SizingConfig,
     features: FeaturesConfig,
     initial_equity: float,
+    trade_masks: dict[str, np.ndarray] | None = None,
+    new_entry_symbols: set[str] | None = None,
 ):
     """运行单个成本情景的回测（06 §3.4）。"""
     result, _ = run_backtest(
@@ -89,6 +99,8 @@ def _run_scenario(
         sl_max=features.label.sl_max,
         H_label=features.label.H_label,
         initial_equity=initial_equity,
+        trade_masks=trade_masks,
+        new_entry_symbols=new_entry_symbols,
     )
     return result
 
@@ -123,8 +135,8 @@ def main() -> None:
     sizing_cfg = load_config(SizingConfig, args.sizing)
     features = load_config(FeaturesConfig, args.features)
     train_cfg = load_config(TrainConfig, args.train)
-    universe_cfg = load_universe(args.universe)
-    coins = load_coins(args.coins)
+    universe_cfg = load_universe_config(args.universe)
+    coins = collect_universe_coins(base.paths.data_root, universe_months(base))
 
     wb = window_bounds(base)
     run_end_ms = wb.end_ms if args.final else wb.holdout_start_ms
@@ -132,20 +144,30 @@ def main() -> None:
 
     rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
     rules: dict[str, TradeRule] = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
-    groups = {e.alias: "train" for e in coins.train}
-    groups.update({e.alias: "holdout" for e in coins.holdout})
-    groups.update({e.alias: "blind" for e in coins.blind})
+    groups = {coin.alias: coin.role for coin in coins}
 
+    months = universe_months(base)
+    membership = load_universe_membership(base.paths.data_root, months)
     bars_by_symbol: dict[str, pd.DataFrame] = {}
-    for entry in [*coins.train, *coins.holdout, *coins.blind]:
-        bars_by_symbol[entry.alias] = load_bars(
+    trade_masks: dict[str, np.ndarray] = {}
+    for coin in coins:
+        bars_by_symbol[coin.alias] = load_bars(
             base.paths.data_root,
-            entry.alias,
+            coin.alias,
             wb.start_ms,
             run_end_ms,
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=args.final,
         )
+        trade_masks[coin.alias] = universe_trade_mask(
+            bars_by_symbol[coin.alias]["open_time"].to_numpy(dtype="int64"),
+            coin.symbol,
+            membership,
+            universe_cfg.rule.new_entry_delay_days,
+        )
+
+    ne_symbols = new_entry_symbols(membership, base.data_window.tuning_months)
+    new_entry_aliases = {coin.alias for coin in coins if coin.symbol in ne_symbols}
 
     fees = FeeSchedule(base.fees.maker, base.fees.taker)
     # reference 运行权益/口径来自配置（06 §5.1），user 运行按 sizing.yaml（06 §5.4）。
@@ -176,6 +198,8 @@ def main() -> None:
                 sizing_cfg=sizing,
                 features=features,
                 initial_equity=equity,
+                trade_masks=trade_masks,
+                new_entry_symbols=new_entry_aliases,
             )
             for scen in backtest_cfg.scenarios
         }
@@ -223,6 +247,8 @@ def main() -> None:
             sizing_cfg=reference_sizing,
             features=features,
             initial_equity=backtest_cfg.reference.initial_equity,
+            trade_masks=trade_masks,
+            new_entry_symbols=new_entry_aliases,
         )
         pfs[direction] = compute_metrics(presult, backtest_cfg.reference.initial_equity)[
             "profit_factor"
@@ -257,6 +283,8 @@ def main() -> None:
         sl_max=features.label.sl_max,
         H_label=features.label.H_label,
         initial_equity=backtest_cfg.reference.initial_equity,
+        trade_masks=trade_masks,
+        new_entry_symbols=new_entry_aliases,
     )
     s9 = s9_compare(reference_result, event)
 
@@ -271,6 +299,15 @@ def main() -> None:
         )
 
     report_dir = base.paths.artifact_root / "reports" / args.run_id
+    # S10 新进入组（06 §7 S10）：笔数 < 50 只报告，否则 base 情景 PF ≥ 1.0。
+    ne_trades = [t for t in reference_result.trades if t.new_entry]
+    if len(ne_trades) < 50:
+        s10 = f"report_only_{len(ne_trades)}笔"
+    else:
+        ne_pf = compute_metrics(
+            reference_result, backtest_cfg.reference.initial_equity, group="new_entry"
+        )["profit_factor"]
+        s10 = "passed" if ne_pf >= 1.0 else "failed"
     sanity = run_sanity_checks(
         s1="passed" if s1["passed"] else "failed",
         s4=s4,
@@ -278,7 +315,7 @@ def main() -> None:
         s6=s6,
         s9=s9,
         s8="not_run_待真实数据",
-        s10="not_run_盲测币未抽取",
+        s10=s10,
         s11="not_run",
     )
     write_report(
@@ -307,7 +344,7 @@ def main() -> None:
             },
         },
         {
-            "coins_snapshot": args.coins,
+            "coins_snapshot": base.paths.data_root / "universe",
             "exchange_rules_snapshot": args.rules,
             "signals": args.signals,
         },

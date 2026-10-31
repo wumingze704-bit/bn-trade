@@ -89,13 +89,33 @@ def normalize_features(
 
 
 def compute_features(
-    bars: pd.DataFrame, btc_bars: pd.DataFrame, features: Sequence[Feature], cfg: FeaturesConfig
+    bars: pd.DataFrame,
+    btc_bars: pd.DataFrame,
+    features: Sequence[Feature],
+    cfg: FeaturesConfig,
+    segments: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """批量计算标准化特征，返回 open_time + 特征列 的 DataFrame。"""
-    raw = compute_raw(bars, btc_bars, features)
-    result = normalize_features(raw, features, cfg)
-    result.insert(0, "open_time", bars["open_time"].to_numpy(dtype="int64"))
-    return result
+    """批量计算标准化特征，返回 open_time + 特征列 的 DataFrame。
+
+    按数据段独立计算（03 §6）：每个连续段内的滚动窗口与 EWM 状态不跨越段界，段首
+    作为预热。`segments` 为 None 时整段视为单一数据段（与旧行为一致）。
+    """
+    n = len(bars)
+    if segments is None:
+        segments = np.zeros(n, dtype="int64")
+    segments = np.asarray(segments, dtype="int64")
+    open_time = bars["open_time"].to_numpy(dtype="int64")
+    parts: list[pd.DataFrame] = []
+    for seg in np.unique(segments):
+        idx = np.nonzero(segments == seg)[0]
+        seg_bars = bars.iloc[idx].reset_index(drop=True)
+        raw = compute_raw(seg_bars, btc_bars, features)
+        result = normalize_features(raw, features, cfg)
+        result.insert(0, "open_time", open_time[idx])
+        parts.append(result)
+    if not parts:
+        return pd.DataFrame({"open_time": open_time})
+    return pd.concat(parts, ignore_index=True)
 
 
 class IncrementalComputer:

@@ -41,6 +41,7 @@ def r0_signals_for_symbol(
     brk_60_thr: float,
     warmup_bars: int,
     symbol: str,
+    trade_mask: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """为单个币生成 R0 信号（05 §2）。
 
@@ -52,7 +53,8 @@ def r0_signals_for_symbol(
         r0: R0 阈值（train.yaml）。
         vol_z_60_thr/r1_sigma/brk_60_thr: 预过滤阈值（features.yaml，04 §6）。
         warmup_bars: 预热根数，期内不产出样本。
-        symbol: 币种符号。
+        symbol: 币种标识（内部用 alias，03 §1.1 第 7 条）。
+        trade_mask: 可选，与 bars 等长的 bool 数组，标记该分钟是否在当月交易范围（03 §4.2）。
 
     Returns:
         DataFrame，列 = [symbol, open_time, p, m, is_sample]。
@@ -66,6 +68,8 @@ def r0_signals_for_symbol(
     )
     warmed = np.arange(n) >= warmup_bars
     sample = prefilter_mask(bars, vol_z_60_thr, r1_sigma, brk_60_thr) & (is_filled == 0) & warmed
+    if trade_mask is not None:
+        sample &= trade_mask
 
     b = brk_60(bars["high"].to_numpy(dtype="float64"), bars["close"].to_numpy(dtype="float64"))
     t5 = tbr_5(

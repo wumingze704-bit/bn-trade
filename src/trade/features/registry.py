@@ -80,10 +80,11 @@ class PrefilterCfg(BaseModel):
 
 
 class LabelCfg(BaseModel):
-    """三重障碍标签参数（04 §7）。"""
+    """标签参数（04 §7；mode=exit_sim 默认，triple_barrier 保留为对照）。"""
 
     model_config = ConfigDict(extra="forbid")
 
+    mode: str = Field(default="exit_sim", pattern=r"^(exit_sim|triple_barrier)$")
     k_sl: float = Field(default=1.0, gt=0.0)
     rr: float = Field(default=2.0, gt=0.0)
     sl_min: float = Field(default=0.005, gt=0.0, le=1.0)
@@ -91,6 +92,7 @@ class LabelCfg(BaseModel):
     H_label: int = Field(default=60, ge=1)
     entry_latency_ms: int = Field(default=1000)
     c_rt: float = Field(default=0.0012, ge=0.0)
+    y_min_r: float = Field(default=0.25, ge=0.0)
     r_mult_clip: tuple[float, float] = (-1.5, 3.0)
     fill_ratio_max: float = Field(default=0.10, ge=0.0, le=1.0)
     positive_min: float = Field(default=0.10, ge=0.0, le=1.0)

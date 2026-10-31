@@ -11,7 +11,15 @@ from datetime import UTC, datetime
 from scripts.build_dataset import build_dataset
 from tests.features.helpers import make_bars
 from trade.common.config import BaseConfig
-from trade.data.universe import CoinEntry, CoinsConfig
+from trade.common.exits import ExitConfig
+from trade.data.loader import collect_universe_coins
+from trade.data.universe import (
+    RuleConfig,
+    SnapshotCoin,
+    UniverseConfig,
+    UniverseSnapshot,
+    write_universe_snapshot,
+)
 from trade.features import FeaturesConfig
 
 
@@ -59,22 +67,55 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
         paths={"data_root": data_root, "artifact_root": tmp_path / "artifacts"},
         seed=42,
     )
-    coins = CoinsConfig(
-        window={"start": "2026-01-01", "end": "2026-01-31"},
+    universe_cfg = UniverseConfig(
         btc_context="BTCUSDT",
-        train=[
-            CoinEntry(symbol="SOLUSDT", alias="C01", sector="L1"),
-            CoinEntry(symbol="SUIUSDT", alias="C02", sector="L1"),
-        ],
-        holdout=[],
+        rule=RuleConfig(new_entry_delay_days=0),
     )
+    snapshot = UniverseSnapshot(
+        month="2026-01",
+        rebalance_ms=base_ms,
+        rule_hash="test-rule-hash",
+        coins=[
+            SnapshotCoin(
+                symbol="SOLUSDT",
+                alias="C01",
+                role="train",
+                rank=1,
+                daily_quote_median=100.0,
+                first_listing_ms=base_ms,
+            ),
+            SnapshotCoin(
+                symbol="SUIUSDT",
+                alias="C02",
+                role="train",
+                rank=2,
+                daily_quote_median=90.0,
+                first_listing_ms=base_ms,
+            ),
+        ],
+    )
+    universe_dir = data_root / "universe"
+    universe_dir.mkdir(parents=True)
+    write_universe_snapshot(universe_dir / "2026-01.json", snapshot)
+
+    coins = collect_universe_coins(data_root, ["2026-01"])
     features_cfg = FeaturesConfig(warmup_bars=0)
 
-    manifest = build_dataset("test_run", base_cfg, coins, features_cfg, data_root)
+    manifest = build_dataset(
+        "test_run",
+        base_cfg,
+        coins,
+        features_cfg,
+        data_root,
+        btc_context="BTCUSDT",
+        universe_cfg=universe_cfg,
+        exits_cfg=ExitConfig(type="trail"),
+    )
 
     assert len(manifest["coins"]) == 2
     assert manifest["feature_hash"]
     assert len(manifest["features"]) == 37
+    assert manifest["universe_rule_hash"]
     for entry in manifest["coins"]:
         assert entry["rows"] == 300
         assert 0.0 <= entry["retention"] <= 1.0

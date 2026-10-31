@@ -82,6 +82,7 @@ def trades_to_frame(trades: list[ExecutedTrade], run: str, scenario: str) -> pd.
             "margin": [t.margin for t in trades],
             "entry_fee": [t.entry_fee for t in trades],
             "exit_fee": [t.exit_fee for t in trades],
+            "funding_fee": [t.funding_fee for t in trades],
             "gross_pnl": [t.gross_pnl for t in trades],
             "net_pnl": [t.net_pnl for t in trades],
             "size_capped_by": [t.capped_by for t in trades],
@@ -200,7 +201,14 @@ def _render_report_md(
         "## 1. 摘要（reference / base）",
         "",
     ]
-    for key in ("net_return_usdt", "net_return_pct", "profit_factor", "n_trades", "win_rate"):
+    for key in (
+        "net_return_usdt",
+        "net_return_pct",
+        "profit_factor",
+        "n_trades",
+        "win_rate",
+        "funding_fee",
+    ):
         lines.append(f"- {key}: {reference_metrics.get(key)}")
     lines += [
         "",
