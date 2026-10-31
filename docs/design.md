@@ -7,7 +7,7 @@
 
 基于**币安**的公开历史数据与 USDⓈ-M 永续合约 API，在**规则化月度选币**得到的交易范围上（每月初按成交额取前 60 个山寨币永续，训练、回测、实盘同一规则，03 §4），用最近 **24 个月**数据训练一个“跨币种通用”的分钟级突破识别模型，只做多、5x 逐仓；出场采用**保本 + ATR 追踪止损 + 无进展离场**的弹性策略，最长持仓 120 分钟（可调）。先经过严格的 Walk-Forward 回测和多道闸门，通过后依次进入测试网、影子盘、10 USDT 小资金实盘；交易范围每月自动更新，衰亡的币自动退出、新币自动进入，无需人工维护名单（03 §4.1、07 §3.5）。
 
-**网络原则：使用者在中国大陆、不依赖 VPN。** 所有访问币安的流量（历史数据下载、行情、下单）都只发生在**腾讯云东京服务器**上；本地 Windows 只通过 SSH 与服务器交互、用 RTX 3060 12 GB 训练。看板（深色 iOS 风格，含全市场扫描动画）部署在服务器上、只监听 127.0.0.1，电脑经 SSH 隧道访问，不对公网开放；手机只接收微信推送；通知直接推到**个人微信**（WxPusher），企业微信群机器人作备份。
+**网络原则：使用者在中国大陆、不依赖 VPN。** 所有访问币安的流量（历史数据下载、行情、下单）都只发生在**腾讯云东京服务器**上；本地 Windows 只通过 SSH 与服务器交互、用 RTX 3060 6 GB（Laptop）训练。看板（深色 iOS 风格，含全市场扫描动画）部署在服务器上、只监听 127.0.0.1，电脑经 SSH 隧道访问，不对公网开放；手机只接收微信推送；通知直接推到**个人微信**（WxPusher），企业微信群机器人作备份。
 
 ## 2. 端到端流程
 
@@ -153,3 +153,4 @@ flowchart LR
 | 2026-10-30 | 06 §7 S11、src/trade/backtest/sanity.py、tests/backtest/test_sanity.py | 修复 T0.5：`deflated_sharpe` 按 Bailey & López de Prado (2014) 重写为 SR0（试验均值 + 试验间标准差 ddof=1 × Euler–Mascheroni 插值）+ PSR；新增 `expected_max_sharpe_ratio` | 原实现缺均值项、试验标准差用 ddof=0、SR0 未按论文 Snippet 1 计算 |
 | 2026-10-30 | 06 §5.1/§6/§7/§8、08 §3 G2、src/trade/backtest/{engine,event_sim,metrics,sanity,report}.py、scripts/backtest.py、configs/backtest.yaml、tests/backtest/* | 修复 T0.6/T0.7/T0.11/T0.12/T0.18：reference 权益/口径来自配置并同时产出 reference/user 两运行，脚本实算 S1/S4/S5/S6/S9 写 gate（S9 标注仅覆盖组合层）；S1 改为预过滤样本随机入场、保持每币每月笔数、固定种子；`trades/skipped.parquet` 保留真实 run/scenario；实现 UTC 日分块 bootstrap 95% CI（10000 次、种子来自配置）写 gate；组合模拟逐分钟按 `c_t` 盯市（权益 = 钱包余额 + 未实现盈亏），回撤与 `max_drawdown_halt` 基于该曲线 | 原脚本硬编码权益、只跑一个运行、S4/S5 未实现、S1 为盈亏重抽样、报告混写情景、权益曲线只记已实现盈亏 |
 | 2026-10-31 | 02 §4/§5.2/§6、README.md、AGENTS.md §3.2、pyproject.toml、requirements-{base,research,live}.lock | T0.10 依赖按环境拆分：`pyproject.toml` 拆 `research`（lightgbm、matplotlib、plotly、`torch==2.14.1+cu126`）、`live`（fastapi、uvicorn、币安官方 SDK `binance-sdk-derivatives-trading-usds-futures==18.2.0`、`torch==2.14.1`）、`dev`；删除 streamlit 与 live 侧 plotly；生成 `requirements-base.lock`、`requirements-research.lock`（CUDA 12.6 torch，cu126 索引）、`requirements-live.lock`（CPU torch，Linux manylinux_2_28），均 `--generate-hashes` 并锁定 setuptools；删除旧 `requirements.lock` | 单一锁文件无法区分 CPU/CUDA torch 与开发/实盘环境，且旧锁无哈希、按 3.11 生成 |
+| 2026-10-31 | design §1、01 §1、05 §5.1/§6.2 | 训练显卡由「RTX 3060 12 GB（台式版）」更正为「RTX 3060 6 GB（Laptop 版）」，显存目标由 < 8 GB 改为 < 5 GB（本机 `nvidia-smi` 与 `torch.cuda.get_device_properties` 实测为 RTX 3060 Laptop GPU、6 GB） | 原文档按 12 GB 台式版规划，实测为 6 GB Laptop 版 |
