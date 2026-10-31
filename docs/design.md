@@ -43,8 +43,7 @@ flowchart LR
 | 08   | [08-开发计划与验收.md](./08-开发计划与验收.md) | 阶段 P0~P8、闸门 G1~G6、阶段解耦契约、测试要求、给 Agent 的工作指令                              | 开发/Agent |
 | 09   | [09-币安数据与API.md](./09-币安数据与API.md)   | 用到的全部币安数据与接口、API Key、签名、限频、费率核对、冒烟测试                                | 开发       |
 | 10   | [10-可视化看板.md](./10-可视化看板.md)         | 网页看板：深色视觉规范、页面、全市场扫描、控制、安全、性能（草图 assets/dashboard-overview.svg） | 开发       |
-| —    | [../.claude/AGENTS.md](../.claude/AGENTS.md)   | 通用工程规范：代码、注释、文档同步、量化红线、Git、完成报告                                      | 开发/Agent |
-| —    | [reports/TEMPLATE.md](./reports/TEMPLATE.md)   | 每次任务结束的中文完成报告模板                                                                   | 开发/Agent |
+| —    | [../AGENTS.md](../AGENTS.md)   | 通用工程规范：代码、注释、文档同步、量化红线、Git、完成报告                                      | 开发/Agent |
 
 ## 4. 关键决策速查
 

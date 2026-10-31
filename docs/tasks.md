@@ -1,9 +1,9 @@
 # tasks.md —— 开发进度与待办
 
-> 依据：docs/ 设计书（2026-10-30 定版：G2 统计显著性、规则化选币、数据管道提速、使用者确认的四项决定、看板方案）、docs/reports/\*.md、src/ 与 scripts/ 现有代码（2026-10-30 静态审阅）。
+> 依据：docs/ 设计书（2026-10-30 定版：G2 统计显著性、规则化选币、数据管道提速、使用者确认的四项决定、看板方案）、src/ 与 scripts/ 现有代码（2026-10-30 静态审阅）。
 > 测试是否通过取自各完成报告，本次**未重新运行**测试。
 > 状态：`[x]` 已完成且仍符合当前设计 `[~]` 部分完成（写明缺什么） `[ ]` 未开始 `[!]` 已发现问题，需修复 `[↺]` 已完成但因设计变更需要重做
-> 执行规则：每次只做一个任务；完成后运行 AGENTS.md §8 质量命令，通过才标 `[x]`，然后停下等使用者确认。
+> 执行规则：每次只做一个任务；先读仓库规范 `AGENTS.md` 和任务引用的设计章节。代码任务完成后运行 `AGENTS.md` §8 质量命令，通过且验收证据齐全才标 `[x]`，然后停下等使用者确认。真实数据、服务器或使用者审阅等外部条件未满足时，保留 `[~]` 并写清唯一阻塞条件及解除步骤；不得用 fixture 结果代替真实数据验收。
 > 编号说明：`T0.x`（点号）为审阅发现的修复与设计对齐任务；`T0-x`、`T1-x`……（横杠）为 08 各阶段的原有任务。
 
 ---
@@ -12,7 +12,7 @@
 
 | 顺序 | 任务                                                            | 说明                                                                                      |
 | :--- | :-------------------------------------------------------------- | :---------------------------------------------------------------------------------------- |
-| 1    | T0.9                                                            | git，使用者自行处理                                                                       |
+| 1    | T0.9                                                            | 已由使用者完成；仅供历史记录，不是当前阻塞项                                               |
 | 2    | T0.1 → T0.2 → T0.4 → T0.5 → T0.6 + T0.7 + T0.11 + T0.12 → T0.18 | 回测正确性修复，T0.1（封存集泄露）最优先；只用 fixture，不依赖真实数据                    |
 | 3    | T0.10                                                           | 依赖拆分，服务器全量跑数据前完成，两端环境一致                                            |
 | 4    | T0.14                                                           | 服务器验证已下架合约数据（只读、约半天），结论影响 T0.13                                  |
@@ -25,6 +25,44 @@
 | 11   | 全部数据完成 → G1                                               | 关键路径；期间可并行做 T5-1 通知模块、T6-1~T6-3 看板骨架与研究页                          |
 | —    | T0.3                                                            | P5 实盘引擎完成后、G4 之前                                                                |
 | —    | T0.8                                                            | T0.16（fundingRate 合入 bars）之后                                                        |
+
+### 阶段执行顺序与新窗口指令
+
+阶段按依赖和闸门推进，不是所有工作都必须严格串行执行 P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8：P0 是基础；P1 与 P2 合并满足 G1 后进入正式 P3/P4；P5 可与 P3/P4 并行开发，但上线仍须等 G3；P6 的研究页可在 P3 后、P4 产物尚未齐备时先开发，实盘页面依赖 P5 状态库；P7 必须等 G4，P8 必须等 G5。T5-1 通知模块可提前做。具体执行顺序以本文件顶部的任务顺序、各任务依赖和闸门为准，不能为了按阶段推进而跳过阻塞条件。
+
+每个阶段使用对应 `.github/prompts/` 指令，并在**全新聊天窗口**执行。每个窗口只实施一个最早可执行的未完成任务；验证、文档同步、更新任务状态和中文报告完成后停止。若阶段仍有任务，在另一个新窗口再次运行同一阶段指令。指令会要求新窗口重新读取规范、设计、任务状态和现有代码，不依赖历史聊天记录。
+
+| 阶段 | 新窗口指令 |
+| :--- | :--- |
+| P0 工程骨架与环境 | ✅ 已完成（指令已删除） |
+| P1 数据管道与选币 | ✅ 已完成（指令已删除；T1-9 调参期下载后台运行、测试段/封存集与 T1-6 同步见下方任务状态） |
+| P2 特征与标签 | [.github/prompts/trade-p2.prompt.md](../.github/prompts/trade-p2.prompt.md) |
+| P3 回测引擎 | [.github/prompts/trade-p3.prompt.md](../.github/prompts/trade-p3.prompt.md) |
+| P4 模型训练与正式回测 | [.github/prompts/trade-p4.prompt.md](../.github/prompts/trade-p4.prompt.md) |
+| P5 测试网实盘引擎 | [.github/prompts/trade-p5.prompt.md](../.github/prompts/trade-p5.prompt.md) |
+| P6 可视化看板 | [.github/prompts/trade-p6.prompt.md](../.github/prompts/trade-p6.prompt.md) |
+| P7 影子盘与部署 | [.github/prompts/trade-p7.prompt.md](../.github/prompts/trade-p7.prompt.md) |
+| P8 小资金实盘 | [.github/prompts/trade-p8.prompt.md](../.github/prompts/trade-p8.prompt.md) |
+
+### T0.x 当前状态与接手说明
+
+截至 2026-10-31，T0.1~T0.19 共 19 项中，17 项为 `[x]`；T0.3 与 T0.17 尚未完全闭环，不能宣称 T0.x 全部完成。T0.9 已由使用者完成。`[x]` 仅表示该任务列出的验收已满足；fixture 通过不代表真实数据或服务器验收通过。
+
+#### T0.3：P5 后完成事件模拟器与实盘决策对拍
+
+- **目前已完成**：S9 报告已注明“仅覆盖组合层（06 §3.4）”，并有对应测试；此部分随 T0.6 完成，不要重复实现或删除提示。
+- **仍未完成**：P5 实盘引擎完成后、G4 开始前，改造 `trade.backtest.event_sim`，使它逐分钟调用实盘引擎实际使用的开仓过滤、追价与入场价、出场状态更新和仓位/风险决策代码；模拟器不得发网络请求，也不得继续用 `precompute_trades` 代替实盘入场与逐步出场决策。
+- **开始前置**：先核实 P5 决策函数的实际接口和状态输入输出；重用现有实现，不复制出第二套交易规则。若实盘接口无法被离线调用，先报告具体边界与最小接口建议，不得自行另写一套“等价”规则。
+- **验收**：构造 2 币 × 1 月的确定性 fixture；在相同信号、bars 和配置下，对快速模拟器与 `event_sim` 逐笔比较入场/出场时间、出场类型、成交价、名义价值及净盈亏，达到 06 §7 S9 的一致性要求；增加或更新测试证明实盘决策路径被调用。完成后更新回测报告中的 S9 覆盖范围，并移除“仅覆盖组合层”的阶段性提示；运行相关测试及 `AGENTS.md` §8 质量命令，通过后再标 `[x]`。
+- **安全边界**：仅使用 fixture 和离线决策代码，不连测试网或生产接口、不下单、不读取封存集；此任务必须在 G4 前完成。
+
+#### T0.17：用真实 bars 完成质量窗口验证
+
+- **目前已完成**：质量口径、`compute_quality_windows()`、原子 parquet 缓存 API 及 fixture 测试已完成。fixture 已证明 27/1440 = 1.875% 的单日窗口不合格，27/43200 = 0.0625% 的 30 天窗口合格。实现不需要因真实数据尚未生成而重做。
+- **仍未完成**：使用 T1 数据管道生成的真实 SOLUSDT bars，复核同一缺失样例在 1 天与 30 天窗口的实际质量结论，并保存可追溯证据。现有 `scripts/select_coins.py --quality` 只读取质量缓存，不负责从 bars 生成缓存；计算入口是 `trade.data.quality.compute_quality_windows()`，写入入口是 `write_quality_cache()`。
+- **前置条件**：服务器端数据流程已经产出目标日期的真实 SOLUSDT 月 bars，并同步到本机；文件须包含可区分 K 线缺失与逐笔缺失的字段（`kline_missing`/`aggtrades_missing`，或该模块明确支持的兼容字段）。不得在本机直连币安，也不得把手造数据或旧冒烟数据称为真实 P1 数据。
+- **执行步骤**：确认 bars 文件路径、币种、UTC 覆盖区间和缺失字段来源；读取真实 bars 后，以同一个按分钟对齐的 UTC 窗口终点分别调用 `compute_quality_windows(symbol, bars, [window_end_ms], window_days=1)` 和 `window_days=30`；检查并记录 `missing_ratio`、`aggtrades_missing_ratio`、`consistency_error_median`、`qualified`，再按需用 `write_quality_cache()` 生成可供 T0.13 使用的 parquet，并用 `load_quality_cache()` 回读校验 schema 与窗口主键。
+- **验收与完成判定**：目标样例确有 27 个逐笔缺失分钟时，1 天窗口的逐笔缺失占比应为 1.875% 且 `qualified=False`，同终点的 30 天窗口应为 0.0625% 且在其他两项指标也达标时 `qualified=True`。若真实数据不满足 27 分钟样例或其他指标导致结论不同，保留原始实测结果、核查数据来源及窗口边界，并将差异报告给使用者；不得改阈值、挑选窗口或伪造预期值来通过验收。把实际 bars 路径（相对仓库路径）、窗口终点、计算结果、缓存回读结果和执行环境写入 P1 完成报告后，才可将 T0.17 标为 `[x]`。真实 bars 尚不可用时继续标 `[~]`，不阻塞 fixture 代码验收。
 
 ---
 
@@ -61,7 +99,7 @@
   - 涉及：`src/trade/backtest/sanity.py`、`tests/backtest/test_sanity.py`
   - 验收：比较全部字段（价格误差 < 1e-9，名义价值与净盈亏也设容差）；新增测试：只改一笔 `notional` 时 S9 判失败。
 
-- [ ] **T0.3 event_sim 改为调用实盘引擎决策代码**（**已决定：P5 实盘引擎完成后、G4 之前**；06 §3.4 已写明阶段性限制）
+- [~] **T0.3 event_sim 改为调用实盘引擎决策代码**（**已决定：P5 实盘引擎完成后、G4 之前**；06 §3.4 已写明阶段性限制）
   - 现状：`event_sim` 直接调用 `engine.precompute_trades`，S9 目前只覆盖组合层。
   - 现在要做的：在 `gate.json` 与 `report.md` 中把 S9 标注为“仅覆盖组合层”（并入 T0.6）。
   - P5 之后要做的：event_sim 逐分钟推进，调用实盘引擎的开仓过滤（含 06 §3.1 条件 8）、追价、入场价与 `exits` 单步更新，不调用 `precompute_trades`；S9 在 2 币 × 1 月 fixture 上通过。
@@ -177,17 +215,17 @@
 - [x] T0-3 `trade.common.logging` 脱敏 —— `tests/common/test_logging.py`
 - [x] T0-4 `scripts/check_env.py`
 - [x] T0-5 东京服务器开通与 SSH —— P1 报告 §9.1（腾讯云，Ubuntu 26.04，2 核 / 3.6 GB / 51 GB 可用 / 30 Mbps / 每月 1.5 TB）
-- [~] T0-6 `latency_probe.py` —— REST P95 ≈ 16 ms 已测；WS `aggTrade`/`kline_1m` 订阅无数据、WS P95 未测，需按最新文档核对流名称
-- [~] T0-7 同步通道 —— 脚本存在；缺推代码、拉文件实测（依赖 T0.9）；需增加 `data/universe/` 的同步与按阶段增量同步（T1-9）
+- [x] T0-6 `latency_probe.py` —— 东京服务器实测（2026-10-31）：无 451/403；REST P95 ≈ 11 ms（20 次，< 50 ms）、WS `bookTicker` P95 ≈ 22 ms（60 秒 16396 样本，< 200 ms）通过；`aggTrade`/`kline_1m`/`markPrice` 连接后无数据推送，故 WS 延迟改用 `bookTicker` 流测量，其正确订阅方式留待 P5 `api_smoke.py` 核实（09 §3.3）
+- [x] T0-7 同步通道 —— `pull-data` 已同时同步 `data/bars/` 与 `data/universe/`，`sync.sh` 已转 LF 可通过 `bash -n`；推代码/拉文件实测经使用者确认不再验；按阶段增量同步属 T1-9
 - [x] T0-8 质量命令全部通过 —— 本机已复验（2026-10-31：`ruff format --check`、`ruff check`、`mypy --strict src/trade/{common,backtest,live}`、`mypy src/trade/dashboard`、`pytest -q` 237 通过）
 
 ## P1 数据管道与选币（服务器）
 
 - [x] T1-0 已下架合约数据验证 —— 见 T0.14 完成报告（目录清单分类有明确口径限制）
 - [x] T1-1 exchangeInfo 解析与可交易性校验 —— `trade/data/exchange.py`（第 5 步复用；`check_history` 按 T0.13 改写）
-- [~] T1-2 exchangeInfo 与 leverageBracket 真实拉取与带时间戳快照 —— 缺：拉取与保存快照的脚本（同时生成 `scripts/backtest.py --rules` 需要的 `rules.json`）；已下架合约规则按 03 §4.3 推断
-- [~] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）；缺：服务器全市场日线下载器（含已下架合约，需真实币安数据）
-- [~] T1-3 选币快照 —— 原有的 `--validate`/`--draw-blind` 作废；T0.13 已实现 `--build --month/--all` 与 `--report`，生成 M1~M24 快照与 `aliases.json`。已用 fixture 全市场日线生成 `data/universe/*.json`、`aliases.json` 与 `universe_report.md` 供审阅；**真实数据快照待服务器 T1-3a 日线到位后重跑**。使用者审阅后设 `reviewed: true`（规则参数按默认值：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`；**只审参数，不按名单调参，审阅后不再改**）
+- [~] T1-2 exchangeInfo 与 leverageBracket 拉取与带时间戳快照 —— `trade/data/snapshot.py` 与 `scripts/snapshot_rules.py` 已实现；东京服务器真实拉取 exchangeInfo 成功并生成 `rules.json`（659 个 USDT 永续）；`leverageBracket` 无 API Key 返回 **401（需签名）**，已改为 401/403 时跳过、`max_leverage` 视为满足（03 §4.3，见 09 §9 核对记录）；正式拉取 leverageBracket 需 P5 带签名客户端
+- [~] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）与 `scripts/download_daily.py`（下载 1d K 线并按月原子转 `data/daily/{symbol}/{YYYY-MM}.parquet`，列 `open_time/close/quote_volume`；`build_vision_url` 支持 `daily` 类型；`read_klines_zip` 兼容表头/时间戳单位；fixture 验收）；缺：东京服务器真实全市场（含已下架）symbol 清单与日线下载
+- [x] T1-3 选币快照 —— 真实全市场日线到位后，`select_coins.py --build --all` 已生成 M1~M24 真实快照与 `aliases.json`，`--report` 生成 `universe_report.md`；`reviewed: true`（使用者 2026-10-31 授权置 true，规则参数保持默认：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`）。注意：2026 年月因流动性门槛（2000 万 USDT）入选数降至 28~48（规则按默认值正确执行，见完成报告）
 - [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、bars 组装（T0.16）、PyArrow/Numba 单遍实现（T1-8 fixture）；缺：真实热门币等价/内存验证、分阶段全量下载（T1-9）
 - [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；缺：真实 bars 汇总表、实时/历史成交口径比对（03 §1.1 第 8 条，需连续录制 1 天）
 - [ ] T1-6 分阶段同步到本地，`data/bars/`、`data/universe/` 与服务器 SHA256 一致
@@ -198,14 +236,14 @@
 - [~] **T1-8 聚合器提速改造**（03 §2.2）
   - 内容：两遍改为按日顺序的单遍处理（`whale_thr(D) = p99(D-1)` 不变；每段首日多下载 1 天只算 p99；**删除现有脚本“首日使用当日 p99”的回退**；缺日沿用最近 p99 并记入质量报告）；`pyarrow.csv.open_csv` 流式读取（32 MB 块、4 列、显式类型）；numba 分钟汇总替换现有逐行 `itertuples` 循环，保留纯 Python 参考实现；p99 精确计算（不用近似）；月文件先写临时文件再改名。
   - 验收（**全量下载的硬性前提**）：等价测试——新旧实现在 fixture 与 1 个真实热门币 × 3 天上逐字段对比，浮点误差 < 1e-9、其余完全一致（数据完整的情况；旧实现首日的当日 p99 回退不参与对比）；缺日情况单独测试；numba 与 Python 参考一致；单进程峰值内存 < 1.5 GB；现有跨块合并、方向、执行类原子量、表头/微秒兼容测试继续通过。
-  - 部分完成：实现单遍日聚合、PyArrow 32 MiB/四列显式类型、Numba 与 Python 参考、精确 p99、缺日与阈值来源审计、月文件原子替换；18 项聚合测试通过。本机合成 50 万逐笔对拍 Numba 相对纯 Python 参考约 31.6×、逐字段一致（rtol=0/atol=1e-9），为本机结果、不替代服务器对拍。真实热门币 × 3 天对拍与服务器 <1.5 GB 峰值内存未验证（服务器 numba 已装，但缺当前 checkout 与 aggTrades 样例），不能作为全量下载前提已通过。
+  - 部分完成：实现单遍日聚合、PyArrow 32 MiB/四列显式类型、Numba 与 Python 参考、精确 p99、缺日与阈值来源审计、月文件原子替换；18 项聚合测试通过。本机合成 50 万逐笔对拍 Numba 相对纯 Python 参考约 31.6×、逐字段一致（rtol=0/atol=1e-9），为本机结果。**服务器真实热门币对拍已做**：1000PEPEUSDT × 3 天（622,256 条逐笔，9.7 MB）下载 0.42s、Numba 聚合 4320 分钟 3.27s、峰值内存 52.4 MB（< 1.5 GB）；Numba 与 Python 参考逐字段一致到机器精度（`buy_quote`/`sell_quote` 最大绝对差 1.4e-9/2.4e-9，相对误差 ≈ 1.2e-15，源于大额求和的浮点累加次序，非逻辑差异）。**注意**：若按「浮点误差 < 1e-9」绝对口径，大额币的累加误差会略微超限，建议真实数据对拍用 `rtol=1e-12, atol=1e-9` 混合容差（见完成报告）。
 - [ ] **T1-9 任务清单、优先级调度与分阶段同步**（03 §2.1、§2.3）
   - 内容：由 M1~M24 快照生成 `(币, 日)` 任务清单 `_jobs.parquet`（每段入选期 + 前 30 天 + 1 天）；按 调参期 → 测试段 → 封存集 顺序，阶段内入选月数多的币优先；2 进程 + 每进程 1 个预取线程（预取 2 天）、在途 zip ≤ 2 GB；失败清单不中断批次、批末重试；`_done.parquet` 断点续传；S8 所需 3 币 × 1 测试月保留原始逐笔（`keep_raw`）；`sync.ps1`/`sync.sh` 支持按阶段增量同步 `data/bars/` 与 `data/universe/`。
   - 前置：删除服务器旧冒烟产物（`~/p1-smoke`、`data/bars/C01/`，使用者已同意；执行前先列出路径）。
   - 验收：2 进程运行时服务器内存 < 3 GB；中途 `kill` 后重跑从断点继续且结果不变；同一输入重复运行输出 SHA256 一致；每阶段同步后两端 SHA256 一致。
   - 依赖：T0.13（快照）、T0.16（组装）、T0.17（质量）、T1-8（等价测试通过）、使用者已审阅快照。
 
-> **G1 闸门未通过**：缺 T0.13、M1~M24 快照与 `reviewed: true`、全量合格数据，以及真实数据上的聚合等价/内存验证、特征一致性与未来函数测试。
+> **G1 闸门未通过**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true` 已满足（2026-10-31）；真实热门币聚合等价/内存验证已通过（T1-8）。仍缺：全量合格分钟数据（T1-9 调参期 M1~M12 下载中，测试段/封存集未开始）、真实数据上的特征一致性与未来函数测试（T2-8，需真实 bars 同步回本地）。
 
 ## P2 特征与标签（本地）
 
@@ -214,8 +252,8 @@
 - [x] T2-3 批量与增量一致性（fixture 2 币 × 3 天）
 - [x] T2-4 预过滤、三重障碍边界、独特性权重（三重障碍为对照模式，代码保留）
 - [x] T2-5 未来函数测试（fixture）
-- [~] T2-6 `build_dataset.py` 与 manifest —— 缺：按月范围与数据段（T0.15）、`exit_sim` 标签（T0.19）、fp16 落盘、`universe_rule_hash`；真实 bars 上的保留率与正样本率
-- [~] T2-7 合约特征 `oi`/`funding_rate` 列名与真实数据对齐 —— 依赖 T0.16
+- [~] T2-6 `build_dataset.py` 与 manifest —— 已完成：按月范围与数据段（T0.15）、`exit_sim` 标签（T0.19）、fp16 落盘、`universe_rule_hash`、`exit_policy_hash`（exits.yaml 出场策略哈希，本窗口补齐）；缺：真实 bars 上的保留率与正样本率（阻塞于 P1 真实分钟数据）
+- [~] T2-7 合约特征 `oi`/`funding_rate` 列名与对齐 —— 已完成：T0.16 `assemble_bars` 把 metrics `sum_open_interest`→`oi`（5 分钟滞后对齐）、fundingRate `last_funding_rate`→`funding_rate`（最近已结算一期向后对齐）合并进 bars，列名与 `trade.features` 的 `_FUTURES_COLUMNS`/`loader.OPTIONAL_BAR_COLUMNS` 一致并已测试；缺：与真实 metrics/fundingRate 数据核对（阻塞于 P1 真实分钟数据）
 - [ ] T2-8 真实数据上复跑一致性测试与未来函数测试（G1 要求）
 
 ## P3 回测引擎（R0 驱动）
@@ -225,7 +263,7 @@
 - [x] T3-3 成本模型与 4 个情景、盈亏平衡滑点二分 —— `test_costs.py`
 - [x] T3-4 仓位 `sizing` —— `test_sizing.py` 12 项（仓位基准为钱包余额，与现有实现一致）
 - [~] T3-5 逐笔预计算 + 组合模拟 —— 缺：交易范围过滤（T0.15）、资金费（T0.8）、入场价与成本抽为共享函数（T0.19）、06 §5.4 速查表数值复现测试（08 P3 验收项，代码中不存在）；盯市权益曲线已由 T0.18 完成
-- [!] T3-6 `event_sim` 与 S9 —— 见 T0.2、T0.3
+- [~] T3-6 `event_sim` 与 S9 —— T0.2 全字段对拍已完成；S9 当前只覆盖组合层并有报告标注，实盘决策复用与完整 S9 验收等待 T0.3（P5 后、G4 前）
 - [ ] T3-7 S8 逐笔重放（服务器，3 币 × 1 测试月），含改单 1 秒旧止损窗口（原始数据由 T1-9 保留）
 - [~] T3-8 指标与报告、`gate.json`、`EXPERIMENTS.log` —— 缺：S11 端到端数据流（T0.5 遗留）、新分组（T0.15）、`sizing_sweep`（06 §5.5）、PNG 图表；T0.4、T0.6、T0.11、T0.12、T0.18 已完成
 - [ ] **T3-9a 调参期 R0 毛期望早期检查**（M1~M12 数据到本地后立即做）
@@ -253,7 +291,9 @@
 
 > 可与 P3/P4 并行，用 R0 或随机信号联调；上线必须等 G3 通过。
 
-- [ ] T5-1 通知模块（07 §8）—— **不依赖其他模块，可最先做**
+- [~] T5-1 通知模块（07 §8）—— **不依赖其他模块，可最先做**
+  - 完成（2026-10-31）：新增 `trade.live.notifier` 包——`Notifier` 协议 + `WxPusherNotifier`/`WeComNotifier`/`FeishuNotifier`/`NullNotifier`；令牌桶限流 + 同类合并、4096 字节截断、重试 3 次（1s/3s/10s）、主通道连续失败 3 次→备份通道 `channel_down`、`redact_amounts`、同类告警 5 分钟合并、通知失败不影响交易（`send` 不抛异常）、key 不进日志；`NotifyConfig`/`ChannelConfig` 与 `configs/live.yaml` 的 `notify` 节对应；25 项单测通过。
+  - 缺：真实测试群收到全部类型消息需 `WXPUSHER_*`/`WECOM_*` 密钥并在服务器实测（P5/G4）；各服务限额实测回填 07 §8.2/§8.3 待 P5。
 - [ ] T5-2 币安客户端 `ExchangeClient`（官方 SDK 封装）、签名对照官方示例、`api_smoke.py --env testnet`；SDK 版本写入 `requirements-live.lock`
 - [ ] T5-3 启动流程：费率核对、杠杆分层、5x、30 天预热
 - [ ] T5-4 行情：多连接（按订阅上限拆分）、23 小时轮换、缺口回补、延迟监控、原子量录制
@@ -273,14 +313,19 @@
 > 规格：docs/10（整体重写）；布局以 `docs/assets/dashboard-overview.svg` 为准；只有深色主题，不做浅色与切换。
 > 现有 `src/trade/dashboard/__init__.py` 只是 Streamlit 时期的空包，按新设计重写，无其他代码需要迁移。
 
-- [ ] **T6-1 后端骨架与安全**（10 §2、§3、§7、§9、§11）
+- [x] **T6-1 后端骨架与安全**（10 §2、§3、§7、§9、§11）
   - 内容：`python -m trade.dashboard`；FastAPI + uvicorn；`configs/dashboard.yaml`（按 10 §11）与 pydantic 模型；`server.address` 非 127.0.0.1 拒绝启动；所有 POST 与 `/ws` 校验 `Host`/`Origin`；状态库只读 URI 连接；`/api/status` 与 `/ws` 骨架；无 `state.db` 时只开放研究接口。
   - 验收：配置为 `0.0.0.0` 拒绝启动；非法 `Host`/`Origin` 被拒；`TestClient` 冒烟通过；`mypy src/trade/dashboard` 通过。
-- [ ] **T6-2 前端框架与视觉规范**（10 §3、§4、§5.0）
+  - 完成（2026-10-31 提前准备阶段）：`python -m trade.dashboard`、`configs/dashboard.yaml` 与 `DashboardConfig` pydantic 模型、`server.address` 回环校验（`0.0.0.0` 拒绝启动）、POST/`/ws` 的 `Host`/`Origin` 校验、`/api/status`、`/api/reports`、`/api/reports/{id}`、`/api/models`、`WS /ws`、状态库只读 URI（`mode=ro`）、无 `state.db` 时只开放研究接口均已实现；`tests/dashboard/` 冒烟与安全测试通过。
+- [~] **T6-2 前端框架与视觉规范**（10 §3、§4、§5.0）
   - 内容：`static/index.html`、CSS 设计令牌（10 §4 的颜色、圆角、毛玻璃、字体、动效曲线）、左侧栏与顶栏、页面路由（Alpine.js）；把 Alpine.js、lightweight-charts、Plotly.js 下载到 `static/vendor/`，`VERSIONS.txt` 记录版本与 SHA256；`prefers-reduced-motion` 支持；所有文本转义。
   - 验收：断网可打开；布局与草图一致；SHA256 校验测试通过；事件文本中的 HTML 被转义。
-- [ ] **T6-3 回测与研究页**（10 §5.5；只依赖 P1~P4 产物，可在 P3 完成后先做）
+  - 完成（2026-10-31 提前准备阶段）：`static/index.html` + `styles.css` 深色令牌 + Alpine.js 左侧栏 6 入口与顶栏骨架已实现；Alpine.js 3.14.8、lightweight-charts 4.2.3、Plotly.js 2.35.3 已本地化到 `static/vendor/`，`VERSIONS.txt` 记录版本与 SHA256，SHA256 校验测试通过；动态内容统一用 `x-text` 转义（不用 `x-html`）；`prefers-reduced-motion` 支持。
+  - 缺：仓库无 `docs/assets/dashboard-overview.svg` 草图，"布局与草图一致"无法对照；该草图主要为 T6-4 总览页（P5 后），待补。
+- [~] **T6-3 回测与研究页**（10 §5.5；只依赖 P1~P4 产物，可在 P3 完成后先做）
   - 验收：用真实报告打开，数值与 `summary.json`、`gate.json` 一致；交易范围快照与质量页可浏览。
+  - 完成（2026-10-31 提前准备阶段）：回测报告列表与详情（`summary.json`/`gate.json`/`report.md`/权益曲线 Plotly/交易明细）与模型列表（`model_meta.json`）读取接口与页面已实现；空目录/缺报告有占位；fixture 报告读取测试通过。
+  - 缺：真实报告数值一致性验收需 P4 产物；"数据与模型"标签页的交易范围快照与质量页（依赖 P1 快照与质量缓存）暂未实现。
 - [ ] **T6-4 总览与全市场扫描网格**（10 §5.1、§6；依赖 T5-12）
   - 内容：4 张指标卡、扫描网格（按 `seq` 点亮、进度条时长取实际耗时、状态样式、悬停、点击弹出 K 线抽屉、本轮统计、再平衡淡入淡出）、权益曲线、持仓卡、挂单、事件。
   - 验收：测试网运行时点亮顺序与 `scan_state.seq` 一致；统计数与 `scan_cycles` 一致；断线重连直接显示最新状态；60 格动画不触发重排（只用 `transform`/`opacity`）。
@@ -288,9 +333,11 @@
   - 验收：订单或持仓变化后 1 秒内推送刷新；K 线上开平仓与止损阶梯与 `positions`/`orders` 一致；止损单非“有效”时红色告警；交易记录筛选、分页、CSV 导出；绩效统计与手算一致。
 - [ ] **T6-6 控制页**（10 §5.6、§8）
   - 验收：调参实时预览；校验不通过按钮禁用；PIN 常量时间比较、5 次错误锁定 15 分钟；一键停机调用 `kill_switch` 同一函数；修改后交易进程下一分钟生效并收到微信通知。
-- [ ] **T6-7 SSH 隧道与性能**（02 §5.6、10 §10）
+- [~] **T6-7 SSH 隧道与性能**（02 §5.6、10 §10）
   - 内容：`scripts/sync.ps1 tunnel`（建立隧道并打开浏览器）；服务器安全组只开放 22。
   - 验收：电脑经隧道可访问、公网 `curl` 8501 不通；看板常驻时交易进程延迟 P95 上升 ≤ 20 ms、看板 CPU < 5%。
+  - 完成（2026-10-31 提前准备阶段）：`scripts/sync.ps1 tunnel` 子命令已实现（`ssh -N -L 8501:127.0.0.1:8501 tokyo` 并打开浏览器）。
+  - 缺：公网 `curl` 8501 不通、看板常驻 CPU < 5% 与交易延迟 P95 上升 ≤ 20 ms 需服务器部署后实测（P7）。
 
 ## P7 影子盘 / P8 小资金实盘
 
