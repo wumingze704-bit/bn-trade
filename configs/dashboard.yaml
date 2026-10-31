@@ -1,0 +1,26 @@
+# 看板配置。规格：docs/10-可视化看板.md §11
+# 字段与 pydantic 模型 trade.dashboard.config.DashboardConfig 一一对应，未知字段报错。
+server:
+  address: 127.0.0.1 # 只允许回环地址；访问经 SSH 隧道（10 §2）
+  port: 8501
+paths:
+  state_db: ./artifacts/live/state.db # 不存在则隐藏实盘页面
+  live_dir: ./artifacts/live
+  reports_dir: ./artifacts/reports
+  models_dir: ./artifacts/models
+push_sec:
+  status: 5
+  db_poll: 1 # WebSocket 推送前查询状态库变更的间隔
+cache_sec:
+  realtime: 2
+  research: 600
+display:
+  tz: Asia/Shanghai
+  amount_decimals: 4
+  kline_max_bars: 720
+  equity_max_points: 2000
+control:
+  enabled: true # false 时整个看板只读
+  pin_env: DASHBOARD_CONTROL_PIN
+  max_pin_failures: 5
+  lock_minutes: 15

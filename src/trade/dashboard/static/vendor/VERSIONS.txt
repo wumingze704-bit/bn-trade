@@ -1,0 +1,5 @@
+# 第三方前端库本地化记录（10 §3）。不走 CDN，离线可用。
+# 格式：文件名 版本 sha256
+alpinejs.min.js 3.14.8 b600e363d99d95444db54acbfb2deffec9ae792aa99a09229bcda078e5b55643
+plotly.min.js 2.35.3 fc84e3cfa55d23d3654c562ea5deb3c274eb6972a6adf66941d1a821e34825e4
+lightweight-charts.standalone.production.js 4.2.3 c7dda807d662a95b3d257119ed315cec669e3bdf5aaece75c480a39307f23540

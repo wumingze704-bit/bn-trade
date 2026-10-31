@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>trade 看板</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script defer src="/vendor/alpinejs.min.js"></script>
+  <script defer src="/vendor/plotly.min.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body x-data="dashboard()" x-init="init()">
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">trade<span class="dot">·</span>看板</div>
+      <nav>
+        <template x-for="entry in nav" :key="entry.key">
+          <button class="nav-item" :class="{ active: page === entry.key }"
+                  @click="setPage(entry.key)" x-text="entry.label"></button>
+        </template>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="conn-row">
+          <span class="conn-dot" :class="{ on: wsConnected }"></span>
+          <span x-text="wsConnected ? 'WebSocket 已连接' : 'WebSocket 断开'"></span>
+        </div>
+        <div class="conn-row muted">SSH 隧道 · 127.0.0.1:8501</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="mode-tag" x-text="modeLabel"></span>
+          <span class="chip muted" x-show="!liveAvailable">研究模式（无状态库）</span>
+        </div>
+        <div class="topbar-right">
+          <span class="clock" x-text="clockBeijing"></span>
+          <span class="clock muted" x-text="clockUtc"></span>
+        </div>
+      </header>
+
+      <section class="content">
+        <div x-show="page === 'research'" class="page">
+          <h1 class="page-title">回测与研究</h1>
+          <div class="tabs">
+            <button class="tab" :class="{ active: researchTab === 'reports' }"
+                    @click="researchTab = 'reports'">回测报告</button>
+            <button class="tab" :class="{ active: researchTab === 'models' }"
+                    @click="researchTab = 'models'">数据与模型</button>
+          </div>
+
+          <div x-show="researchTab === 'reports'">
+            <div class="panel" x-show="!reports.length">
+              <p class="empty">暂无回测报告。运行 <code>scripts/backtest.py</code> 后，
+              产物将出现在 <code>artifacts/reports/&lt;run_id&gt;</code>。</p>
+            </div>
+            <div class="report-layout" x-show="reports.length">
+              <div class="report-list">
+                <template x-for="r in reports" :key="r.run_id">
+                  <button class="report-item"
+                          :class="{ active: selectedReport && selectedReport.run_id === r.run_id }"
+                          @click="selectReport(r.run_id)">
+                    <span class="report-id" x-text="r.run_id"></span>
+                    <span class="badge" x-show="r.final">final</span>
+                    <span class="report-meta muted" x-text="formatMtime(r.mtime_ms)"></span>
+                  </button>
+                </template>
+              </div>
+              <div class="report-detail" x-show="selectedReport">
+                <template x-if="selectedReport">
+                  <div>
+                    <div class="card">
+                      <h2 class="card-title" x-text="selectedReport.run_id"></h2>
+                      <p class="muted" x-text="'数据来源：' + (selectedReport.source || '未知')"></p>
+                    </div>
+
+                    <div class="card" x-show="selectedReport.gate">
+                      <h3 class="card-title">闸门判定（gate.json）</h3>
+                      <table class="kv">
+                        <tr><th>gate</th><td x-text="fmt(selectedReport.gate.gate)"></td></tr>
+                        <tr><th>source</th><td x-text="selectedReport.gate.source"></td></tr>
+                      </table>
+                      <details x-show="selectedReport.gate.sanity">
+                        <summary>健全性检验</summary>
+                        <table class="kv">
+                          <template x-for="(v, k) in selectedReport.gate.sanity" :key="k">
+                            <tr><th x-text="k"></th><td x-text="v"></td></tr>
+                          </template>
+                        </table>
+                      </details>
+                      <details x-show="selectedReport.gate.g2_bootstrap">
+                        <summary>统计显著性（G2 bootstrap）</summary>
+                        <pre class="raw"
+                             x-text="JSON.stringify(selectedReport.gate.g2_bootstrap, null, 2)"></pre>
+                      </details>
+                    </div>
+
+                    <div class="card" x-show="selectedReport.summary">
+                      <h3 class="card-title">各情景核心指标（summary.json）</h3>
+                      <table class="data">
+                        <thead><tr><th>情景</th><th>运行</th><th>净收益 USDT</th>
+                        <th>净收益率</th><th>PF</th><th>笔数</th></tr></thead>
+                        <tbody>
+                          <template x-for="(scen, scenName) in selectedReport.summary" :key="scenName">
+                            <template x-for="(m, runName) in scen" :key="runName">
+                              <tr>
+                                <td x-text="scenName"></td>
+                                <td x-text="runName"></td>
+                                <td x-text="fmtMoney(m.net_return_usdt)"></td>
+                                <td x-text="fmtPct(m.net_return_pct)"></td>
+                                <td x-text="fmt(m.profit_factor)"></td>
+                                <td x-text="fmt(m.n_trades)"></td>
+                              </tr>
+                            </template>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div class="card">
+                      <h3 class="card-title">权益曲线</h3>
+                      <div x-ref="equityChart" class="chart" x-show="selectedReport.equity.length"></div>
+                      <p class="empty" x-show="!selectedReport.equity.length">无权益曲线数据。</p>
+                    </div>
+
+                    <div class="card" x-show="selectedReport.trades.length">
+                      <h3 class="card-title">交易明细（前 2000 笔）</h3>
+                      <table class="data trades">
+                        <thead><tr><th>币</th><th>出场类型</th><th>入场价</th>
+                        <th>出场价</th><th>净盈亏</th><th>MFE R</th></tr></thead>
+                        <tbody>
+                          <template x-for="t in selectedReport.trades" :key="t.signal_time + t.symbol">
+                            <tr>
+                              <td x-text="t.symbol"></td>
+                              <td x-text="t.exit_type"></td>
+                              <td x-text="fmtMoney(t.entry_price)"></td>
+                              <td x-text="fmtMoney(t.exit_price)"></td>
+                              <td :class="t.net_pnl >= 0 ? 'pos' : 'neg'" x-text="fmtMoney(t.net_pnl)"></td>
+                              <td x-text="fmt(t.mfe_r)"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div class="card" x-show="selectedReport.report_md">
+                      <h3 class="card-title">报告原文（report.md）</h3>
+                      <pre class="raw" x-text="selectedReport.report_md"></pre>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div x-show="researchTab === 'models'">
+            <div class="panel" x-show="!models.length">
+              <p class="empty">暂无模型产物。P4 训练完成后，模型目录将出现在
+              <code>artifacts/models/&lt;model_id&gt;</code>。</p>
+            </div>
+            <template x-for="m in models" :key="m.model_id">
+              <div class="card">
+                <h3 class="card-title" x-text="m.model_id"></h3>
+                <pre class="raw" x-text="JSON.stringify(m.meta, null, 2)" x-show="m.meta"></pre>
+                <p class="empty" x-show="!m.meta">无 model_meta.json。</p>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <template x-for="entry in livePages" :key="entry.key">
+          <div x-show="page === entry.key" class="page">
+            <h1 class="page-title" x-text="entry.label"></h1>
+            <div class="panel">
+              <p class="empty"
+                 x-text="'本页依赖 P5 实盘引擎与状态库（state.db / trade.live.control），暂不实施。'"></p>
+            </div>
+          </div>
+        </template>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
