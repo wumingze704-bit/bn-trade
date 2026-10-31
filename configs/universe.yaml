@@ -1,7 +1,8 @@
 # 规则化月度选币配置（03 §4.6）。
 # 数据窗口不在此重复配置，统一取 base.yaml 的 data_window。
 # reviewed 由使用者审阅首份快照后手动改为 true（08 G1）；Agent 不得自行设置。
-reviewed: false
+# 使用者已于 2026-10-31 明确授权置 true（见完成报告）。
+reviewed: true
 btc_context: BTCUSDT
 rule:
   rebalance: monthly # 每个 UTC 自然月 1 日 00:00 再平衡

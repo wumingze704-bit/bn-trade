@@ -46,6 +46,22 @@ MINUTE_ATOMIC_COLUMNS = (
     "hi_post_3s",
     "lo_post_3s",
 )
+
+# K 线 12 列（03 §1.2），1m 与 1d 共用
+KLINE_CSV_COLUMNS = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume",
+    "count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+)
 _DAY_MS = 86_400_000
 
 
@@ -663,3 +679,47 @@ def read_aggtrades_zip(path: str | Path) -> Iterable[pd.DataFrame]:
             header = has_header(handle.readline().decode("utf-8").strip())
         with archive.open(csv_name) as handle:
             yield from _read_arrow_chunks(handle, header=header)
+
+
+def read_klines_zip(path: str | Path) -> pd.DataFrame:
+    """读取 Binance K 线月度 ZIP（1m/1d 通用），兼容表头与时间戳单位（03 §1.1）。
+
+    Args:
+        path: K 线 zip 文件路径。
+
+    Returns:
+        11 列 DataFrame（去掉 `ignore`），`open_time`/`close_time` 为 int64 毫秒，
+        数值列为 float64，按 `open_time` 升序去重。
+
+    Raises:
+        ValueError: zip 内没有 CSV，或列数不符。
+    """
+    import zipfile
+
+    file_path = Path(path)
+    with zipfile.ZipFile(file_path) as archive:
+        csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+        if not csv_names:
+            raise ValueError(f"zip 内没有 CSV：{file_path}")
+        with archive.open(csv_names[0]) as handle:
+            header = 0 if has_header(handle.readline().decode("utf-8").strip()) else None
+    frame = pd.read_csv(file_path, compression="zip", header=header)
+    if header is None:
+        if len(frame.columns) != len(KLINE_CSV_COLUMNS):
+            raise ValueError(
+                f"CSV 列数不符：{file_path}，期望 {len(KLINE_CSV_COLUMNS)}，"
+                f"实际 {len(frame.columns)}"
+            )
+        frame.columns = list(KLINE_CSV_COLUMNS)
+    frame = frame.rename(columns=lambda column: str(column).strip())
+    for column in ("open_time", "close_time"):
+        frame[column] = normalize_timestamp_ms(frame[column]).astype("int64")
+    frame = frame.drop(columns="ignore", errors="ignore")
+    for column in frame.columns:
+        if column not in ("open_time", "close_time"):
+            frame[column] = frame[column].astype("float64")
+    return (
+        frame.sort_values("open_time")
+        .drop_duplicates("open_time", keep="last")
+        .reset_index(drop=True)
+    )

@@ -20,6 +20,9 @@ class SymbolInfo(BaseModel):
     symbol: str
     contract_type: str = Field(alias="contractType")
     quote_asset: str = Field(alias="quoteAsset")
+    base_asset: str = Field(default="", alias="baseAsset")
+    underlying_type: str = Field(default="", alias="underlyingType")
+    underlying_sub_type: list[str] = Field(default_factory=list, alias="underlyingSubType")
     status: str
     onboard_date: int | None = Field(default=None, alias="onboardDate")
     filters: list[dict[str, Any]] = Field(default_factory=list)

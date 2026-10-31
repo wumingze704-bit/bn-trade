@@ -115,6 +115,13 @@ def test_build_vision_url_klines() -> None:
     )
 
 
+def test_build_vision_url_daily() -> None:
+    assert (
+        build_vision_url("BTCUSDT", "daily", "2024-01")
+        == "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2024-01.zip"
+    )
+
+
 def test_build_vision_url_aggtrades_daily() -> None:
     assert (
         build_vision_url("BTCUSDT", "aggtrades", "2024-01-02")

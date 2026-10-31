@@ -1,0 +1,86 @@
+{
+  "symbols": [
+    {
+      "symbol": "SOLUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "baseAsset": "SOL",
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.01" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "CLUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "baseAsset": "CL",
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "status": "TRADING",
+      "onboardDate": 1743436800000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.001" },
+        { "filterType": "LOT_SIZE", "stepSize": "1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "USDCUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "baseAsset": "USDC",
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.0001" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "AAPLUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "USDT",
+      "baseAsset": "AAPL",
+      "underlyingType": "STOCK",
+      "underlyingSubType": ["TradFi"],
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": [
+        { "filterType": "PRICE_FILTER", "tickSize": "0.01" },
+        { "filterType": "LOT_SIZE", "stepSize": "0.1" },
+        { "filterType": "MIN_NOTIONAL", "notional": "5" }
+      ]
+    },
+    {
+      "symbol": "BTCUSDT_210925",
+      "contractType": "CURRENT_QUARTER",
+      "quoteAsset": "USDT",
+      "baseAsset": "BTC",
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": []
+    },
+    {
+      "symbol": "ETHUSDT",
+      "contractType": "PERPETUAL",
+      "quoteAsset": "BUSD",
+      "baseAsset": "ETH",
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "status": "TRADING",
+      "onboardDate": 1597021200000,
+      "filters": []
+    }
+  ]
+}

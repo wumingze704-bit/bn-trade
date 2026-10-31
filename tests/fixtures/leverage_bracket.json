@@ -1,0 +1,28 @@
+[
+  {
+    "symbol": "SOLUSDT",
+    "brackets": [
+      { "bracket": 1, "initialLeverage": 1, "notionalCap": 500000, "notionalFloor": 0, "maintMarginRatio": 0.004, "cum": 0.0 },
+      { "bracket": 2, "initialLeverage": 20, "notionalCap": 5000000, "notionalFloor": 500000, "maintMarginRatio": 0.005, "cum": 2000.0 }
+    ]
+  },
+  {
+    "symbol": "CLUSDT",
+    "brackets": [
+      { "bracket": 1, "initialLeverage": 1, "notionalCap": 50000, "notionalFloor": 0, "maintMarginRatio": 0.006, "cum": 0.0 },
+      { "bracket": 2, "initialLeverage": 50, "notionalCap": 500000, "notionalFloor": 50000, "maintMarginRatio": 0.008, "cum": 200.0 }
+    ]
+  },
+  {
+    "symbol": "USDCUSDT",
+    "brackets": [
+      { "bracket": 1, "initialLeverage": 75, "notionalCap": 1000000, "notionalFloor": 0, "maintMarginRatio": 0.004, "cum": 0.0 }
+    ]
+  },
+  {
+    "symbol": "AAPLUSDT",
+    "brackets": [
+      { "bracket": 1, "initialLeverage": 20, "notionalCap": 500000, "notionalFloor": 0, "maintMarginRatio": 0.004, "cum": 0.0 }
+    ]
+  }
+]

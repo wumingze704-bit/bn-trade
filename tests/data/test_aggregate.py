@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from trade.data.aggregate import (
+    KLINE_CSV_COLUMNS,
     MINUTE_ATOMIC_COLUMNS,
     aggregate_aggtrades,
     aggregate_aggtrades_day,
@@ -27,6 +28,7 @@ from trade.data.aggregate import (
     normalize_timestamp_ms,
     read_aggtrades_csv,
     read_aggtrades_zip,
+    read_klines_zip,
     write_monthly_bars,
 )
 from trade.data.loader import load_bars
@@ -365,6 +367,36 @@ def test_read_aggtrades_zip_streams_header_and_normalizes_microseconds(tmp_path:
     assert list(chunks[0].columns) == ["price", "quantity", "transact_time", "is_buyer_maker"]
     assert chunks[0]["transact_time"].tolist() == [1_720_000_000_000]
     assert bool(chunks[0]["is_buyer_maker"].iloc[0])
+
+
+def test_read_klines_zip_with_header(tmp_path: Path) -> None:
+    payload = ",".join(KLINE_CSV_COLUMNS) + "\n"
+    payload += "1720000000000,100,102,99,101,10,1720086399999,1010,100,5,505,0\n"
+    path = tmp_path / "klines.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("BTCUSDT-1d-2024-01.csv", payload)
+
+    frame = read_klines_zip(path)
+
+    assert list(frame.columns) == [c for c in KLINE_CSV_COLUMNS if c != "ignore"]
+    assert frame["open_time"].tolist() == [1_720_000_000_000]
+    assert frame["close"].tolist() == [101.0]
+    assert frame["quote_volume"].tolist() == [1010.0]
+    assert frame["open_time"].dtype == "int64"
+
+
+def test_read_klines_zip_no_header_normalizes_microseconds(tmp_path: Path) -> None:
+    payload = "1720000000000000,100,102,99,101,10,1720086399999999,1010,100,5,505,0\n"
+    path = tmp_path / "klines_noheader.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("BTCUSDT-1d-2024-01.csv", payload)
+
+    frame = read_klines_zip(path)
+
+    assert list(frame.columns) == [c for c in KLINE_CSV_COLUMNS if c != "ignore"]
+    assert frame["open_time"].tolist() == [1_720_000_000_000]  # 微秒已除以 1000
+    assert frame["close_time"].tolist() == [1_720_086_399_999]
+    assert frame["close"].tolist() == [101.0]
 
 
 def test_aggregate_cli_builds_one_coin_three_day_month_file(tmp_path: Path) -> None:

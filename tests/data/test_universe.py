@@ -69,7 +69,7 @@ def _cfg(**rule_overrides) -> UniverseConfig:
 
 def test_load_universe_config_defaults() -> None:
     cfg = load_universe_config(CONFIGS / "universe.yaml")
-    assert cfg.reviewed is False
+    assert cfg.reviewed is True  # 使用者已审阅首份快照（2026-10-31）
     assert cfg.rule.top_n == 60
     assert cfg.rule.new_entry_delay_days == 2
     assert cfg.rule.min_daily_quote_median == 20_000_000

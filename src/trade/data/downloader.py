@@ -155,7 +155,7 @@ def build_vision_url(symbol: str, data_type: str, period: str) -> str:
 
     Args:
         symbol: 合约 symbol（如 BTCUSDT）。
-        data_type: `klines` / `aggtrades` / `fundingrate` / `metrics`。
+        data_type: `klines`（1m）/ `daily`（1d）/ `aggtrades` / `fundingrate` / `metrics`。
         period: 时间段标识，月 `YYYY-MM` 或日 `YYYY-MM-DD`。
 
     Returns:
@@ -166,6 +166,8 @@ def build_vision_url(symbol: str, data_type: str, period: str) -> str:
     """
     if data_type == "klines":
         return f"{VISION_BASE}/data/futures/um/monthly/klines/{symbol}/1m/{symbol}-1m-{period}.zip"
+    if data_type == "daily":
+        return f"{VISION_BASE}/data/futures/um/monthly/klines/{symbol}/1d/{symbol}-1d-{period}.zip"
     if data_type == "aggtrades":
         return (
             f"{VISION_BASE}/data/futures/um/daily/aggTrades/{symbol}/"
