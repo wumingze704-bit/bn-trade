@@ -26,23 +26,11 @@
 | —    | T0.3                                                            | P5 实盘引擎完成后、G4 之前                                                                |
 | —    | T0.8                                                            | T0.16（fundingRate 合入 bars）之后                                                        |
 
-### 阶段执行顺序与新窗口指令
+### 阶段执行顺序
 
 阶段按依赖和闸门推进，不是所有工作都必须严格串行执行 P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8：P0 是基础；P1 与 P2 合并满足 G1 后进入正式 P3/P4；P5 可与 P3/P4 并行开发，但上线仍须等 G3；P6 的研究页可在 P3 后、P4 产物尚未齐备时先开发，实盘页面依赖 P5 状态库；P7 必须等 G4，P8 必须等 G5。T5-1 通知模块可提前做。具体执行顺序以本文件顶部的任务顺序、各任务依赖和闸门为准，不能为了按阶段推进而跳过阻塞条件。
 
-每个阶段使用对应 `.github/prompts/` 指令，并在**全新聊天窗口**执行。每个窗口只实施一个最早可执行的未完成任务；验证、文档同步、更新任务状态和中文报告完成后停止。若阶段仍有任务，在另一个新窗口再次运行同一阶段指令。指令会要求新窗口重新读取规范、设计、任务状态和现有代码，不依赖历史聊天记录。
-
-| 阶段 | 新窗口指令 |
-| :--- | :--- |
-| P0 工程骨架与环境 | ✅ 已完成（指令已删除） |
-| P1 数据管道与选币 | ✅ 已完成（指令已删除；T1-9 调参期下载后台运行、测试段/封存集与 T1-6 同步见下方任务状态） |
-| P2 特征与标签 | [.github/prompts/trade-p2.prompt.md](../.github/prompts/trade-p2.prompt.md) |
-| P3 回测引擎 | [.github/prompts/trade-p3.prompt.md](../.github/prompts/trade-p3.prompt.md) |
-| P4 模型训练与正式回测 | [.github/prompts/trade-p4.prompt.md](../.github/prompts/trade-p4.prompt.md) |
-| P5 测试网实盘引擎 | [.github/prompts/trade-p5.prompt.md](../.github/prompts/trade-p5.prompt.md) |
-| P6 可视化看板 | [.github/prompts/trade-p6.prompt.md](../.github/prompts/trade-p6.prompt.md) |
-| P7 影子盘与部署 | [.github/prompts/trade-p7.prompt.md](../.github/prompts/trade-p7.prompt.md) |
-| P8 小资金实盘 | [.github/prompts/trade-p8.prompt.md](../.github/prompts/trade-p8.prompt.md) |
+不再维护独立的阶段 prompt 指令，本文件（`docs/tasks.md`）是唯一任务清单。执行方式：每个**全新聊天窗口**只实施一个最早可执行的未完成任务；先读仓库规范 `AGENTS.md` 和该任务引用的设计章节，实施完成后运行 `AGENTS.md` §8 质量命令、同步文档、更新本文件任务状态，并在对话中给出中文完成报告后停止。若阶段仍有任务，在下一个新窗口按顶部「执行顺序」继续。每个新窗口都要重新读取规范、设计、任务状态和现有代码，不依赖历史聊天记录。
 
 ### T0.x 当前状态与接手说明
 
