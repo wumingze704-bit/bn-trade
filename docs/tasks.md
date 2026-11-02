@@ -264,7 +264,7 @@
 ## P4 模型训练与正式回测（本地，依赖 G1；T4-3 第 1 步可在调参期数据到位后提前开始）
 
 - [x] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`；已安装 torch 2.14.1+cu126，`cuda_available: true`（RTX 3060 Laptop 6GB，驱动 581.32）
-- [ ] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 `pinned_cpu`，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告
+- [~] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 pinned_cpu，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告 —— 已完成 `trade.models.dataset.WindowDataset`：索引切片（样本只存 `(sym_id, row_idx, y, r_mult, w)`、不预先展开）、币种均衡（1/该币样本数 归一化）、窗口不跨数据段、补齐分钟占比 > 20% 丢弃、GPU/CPU 一致单测（`tests/models/test_dataset.py` 6 项）；缺：入选月份过滤（内存控制）、.npy memmap（当前直接读 parquet）、pinned_cpu 退路、实测显存报告
 - [ ] T4-2 TCN 因果性单测
 - [ ] T4-3 调参期 M1~M12 两步搜索（05 §6.1）
   - 第 1 步：6 组出场与止损参数，每组重建 `exit_sim` 标签 → 训练 M0 → 验证段选阈值 → `base` 情景 PF 与净收益，选定后冻结 `exits.yaml` 与 `k_sl`；
