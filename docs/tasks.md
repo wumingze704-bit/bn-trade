@@ -178,11 +178,11 @@
   - 验收：输出通过 `load_bars` 的 schema 校验；“K 线有、逐笔缺失”的分钟被置 `is_filled = 1` 且被质量报告计入逐笔缺失；metrics 对齐的未来函数测试（T 时刻的值只出现在 `close_time ≥ T + 300000` 的分钟）。
   - 完成：`assemble_bars`/`write_monthly_bars` 与 `scripts/aggregate.py` 接入 K 线、aggTrades、metrics、settled funding；写盘先临时文件再原子替换。合成 1 币 × 3 日 CLI 测试产出完整月文件并通过 `load_bars`，覆盖缺失 K 线/逐笔分列、价格回退、metrics 滞后和 funding 结算对齐。
 
-- [~] **T0.17 质量报告按“币 × 30 天窗口”计算，并按设计口径判定**（03 §2.4、§4.2 第 7 步）
+- [x] **T0.17 质量报告按“币 × 30 天窗口”计算，并按设计口径判定**（03 §2.4、§4.2 第 7 步）
   - **口径（已决定，03 §2.4）**：以下任一条即不合格——K 线缺失分钟占比 > 1%；逐笔缺失分钟占比 > 1%；一致性误差中位数 > 2%。删除现有“`aggtrades_missing_count == 0`”的硬性要求。
   - 内容：`QualityReport` 增加逐笔缺失占比字段；按币、按 30 天窗口计算并缓存，供选币第 7 步与训练/评估使用。
   - 验收：P1 的 SOLUSDT 27 分钟缺失样例：单日窗口判不合格（约 1.9%），30 天窗口判合格（约 0.06%）；其余现有质量测试继续通过。
-  - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。真实数据抽样验证（测试段 DOGEUSDT/TONUSDT/ARBUSDT × 11 月度窗口）已运行：31/33 窗口合格，2 个边缘不合格（DOGEUSDT 首窗口逐笔缺失 13.3%、TONUSDT 下架月一致性 NaN），符合下架合约/数据源缺失的残余偏差预期（T0.14）。
+  - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。真实数据抽样验证（测试段 DOGEUSDT/TONUSDT/ARBUSDT × 11 月度窗口）已运行：31/33 窗口合格，2 个边缘不合格（DOGEUSDT 首窗口逐笔缺失 13.3%、TONUSDT 下架月一致性 NaN），符合下架合约/数据源缺失的残余偏差预期（T0.14）。全量真实 bars 质量缓存已生成（`scripts/compute_quality_cache.py` → `artifacts/quality/quality_cache.parquet`）：M1~M22 入选币 237 币 × 入选月份 = 1158 窗口，合格 1105（95.4%）；53 个不合格窗口为 K 线缺失 16、逐笔缺失 37（新币数据段短 + 热门币早期数据源缺失），一致性误差 0 超限。
 
 - [x] **T0.19 实现 `exit_sim` 标签**（04 §7.0、§7.5，05 §1、§6.1）
   - 内容：
@@ -215,7 +215,7 @@
 - [x] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）与 `scripts/download_daily.py`（下载 1d K 线并按月原子转 `data/daily/{symbol}/{YYYY-MM}.parquet`，列 `open_time/close/quote_volume`；`build_vision_url` 支持 `daily` 类型；`read_klines_zip` 兼容表头/时间戳单位；fixture 验收）；东京服务器真实全市场（含已下架）symbol 清单已由 T0.14 列出、日线下载已到位并据此生成 M1~M24 快照（T1-3）
 - [x] T1-3 选币快照 —— 真实全市场日线到位后，`select_coins.py --build --all` 已生成 M1~M24 真实快照与 `aliases.json`，`--report` 生成 `universe_report.md`；`reviewed: true`（使用者 2026-10-31 授权置 true，规则参数保持默认：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`）。注意：2026 年月因流动性门槛（2000 万 USDT）入选数降至 28~48（规则按默认值正确执行，见完成报告）
 - [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、bars 组装（T0.16）、PyArrow/Numba 单遍实现（T1-8 fixture）；真实热门币等价/内存验证已由 T1-8 完成（1000PEPEUSDT × 3 天，峰值内存 52.4 MB）；缺：分阶段全量下载的服务器端验收（T1-9）
-- [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；缺：全量真实 bars 汇总表（可在本地跑 `compute_quality`，数据已到位）、实时/历史成交口径比对（03 §1.1 第 8 条，需服务器连续录制 1 天）
+- [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；全量真实 bars 汇总表已生成（`artifacts/quality/quality_cache.parquet`，237 币 × 入选月份 1158 窗口，合格 95.4%）；缺：实时/历史成交口径比对（03 §1.1 第 8 条，需服务器连续录制 1 天）
 - [~] T1-6 分阶段同步到本地，`data/bars/`、`data/universe/` 与服务器 SHA256 一致 —— 本地 M1~M22 数据已到位（246 币 + BTCUSDT）；缺：与服务器两端 SHA256 对比验收
 - [~] **T1-7 服务器基准测试**（03 §3、08 P1）
   - 内容：实测下载速度；1 个热门币（如 1000PEPEUSDT、DOGEUSDT）与 1 个冷门币各 1 天的解析耗时与进程峰值内存；在腾讯云控制台确认流量包是否计入入方向。
