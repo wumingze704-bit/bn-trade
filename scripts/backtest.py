@@ -18,15 +18,24 @@ import pandas as pd
 from trade.backtest.costs import FeeSchedule
 from trade.backtest.engine import BacktestConfig, TradeRule, run_backtest
 from trade.backtest.event_sim import event_sim
-from trade.backtest.metrics import compute_metrics, daily_block_bootstrap_ci
+from trade.backtest.metrics import (
+    compute_metrics,
+    daily_block_bootstrap_ci,
+    daily_returns,
+    kurtosis,
+    sharpe,
+    skew,
+)
 from trade.backtest.r0 import TrainConfig
 from trade.backtest.report import (
     append_experiments_log,
     compute_experiment_hash,
     experiments_log_path,
+    read_experiments_log,
     write_report,
 )
 from trade.backtest.sanity import (
+    S11_DSR_THRESHOLD,
     compute_random_entry_candidates,
     random_entry_baseline,
     run_sanity_checks,
@@ -34,6 +43,7 @@ from trade.backtest.sanity import (
     s5_time_stability,
     s6_concentration,
     s9_compare,
+    s11_deflated_sharpe,
 )
 from trade.common.config import BaseConfig, load_config
 from trade.common.exits import ExitConfig
@@ -308,26 +318,7 @@ def main() -> None:
             reference_result, backtest_cfg.reference.initial_equity, group="new_entry"
         )["profit_factor"]
         s10 = "passed" if ne_pf >= 1.0 else "failed"
-    sanity = run_sanity_checks(
-        s1="passed" if s1["passed"] else "failed",
-        s4=s4,
-        s5=s5,
-        s6=s6,
-        s9=s9,
-        s8="not_run_待真实数据",
-        s10=s10,
-        s11="not_run",
-    )
-    write_report(
-        report_dir,
-        args.run_id,
-        source="real",
-        run_results=run_results,
-        reference_metrics=reference_metrics,
-        sanity_results=sanity,
-        initial_equity=backtest_cfg.reference.initial_equity,
-        g2_bootstrap=g2_bootstrap,
-    )
+
     config_hash = compute_experiment_hash(
         {
             "base": base.model_dump(mode="json"),
@@ -349,11 +340,63 @@ def main() -> None:
             "signals": args.signals,
         },
     )
+
+    # S11 试验次数登记（06 §7 S11）：先写入本次运行的 Sharpe/skew/kurtosis/n_obs，
+    # 再读取 EXPERIMENTS.log 中测试段上全部配置的 Sharpe，计算 Deflated Sharpe 概率。
+    reference_returns = daily_returns(
+        reference_result.equity_curve, backtest_cfg.reference.initial_equity
+    )
+    reference_sharpe = sharpe(reference_returns)
+    reference_skew = skew(reference_returns)
+    reference_kurtosis = kurtosis(reference_returns)
+    reference_n_obs = len(reference_returns)
+    log_path = experiments_log_path(base.paths.artifact_root)
     append_experiments_log(
-        experiments_log_path(base.paths.artifact_root),
+        log_path,
         args.run_id,
         config_hash,
-        reference_metrics,
+        {
+            **reference_metrics,
+            "sharpe": reference_sharpe,
+            "skew": reference_skew,
+            "kurtosis": reference_kurtosis,
+            "n_obs": float(reference_n_obs),
+        },
+    )
+    trial_sharpes = [
+        float(row["sharpe"])
+        for row in read_experiments_log(log_path)
+        if row.get("sharpe") is not None
+    ]
+    s11 = s11_deflated_sharpe(
+        trial_sharpes, reference_sharpe, reference_skew, reference_kurtosis, reference_n_obs
+    )
+    if reference_n_obs <= 1 or not trial_sharpes:
+        s11_status = "not_run"
+    else:
+        flag = "passed" if s11["dsr"] >= S11_DSR_THRESHOLD else "failed"
+        s11_status = f"{flag}（N={int(s11['n_trials'])}，DSR={s11['dsr']:.3f}）"
+
+    sanity = run_sanity_checks(
+        s1="passed" if s1["passed"] else "failed",
+        s4=s4,
+        s5=s5,
+        s6=s6,
+        s9=s9,
+        s8="not_run_待真实数据",
+        s10=s10,
+        s11=s11_status,
+    )
+    write_report(
+        report_dir,
+        args.run_id,
+        source="real",
+        run_results=run_results,
+        reference_metrics=reference_metrics,
+        sanity_results=sanity,
+        initial_equity=backtest_cfg.reference.initial_equity,
+        g2_bootstrap=g2_bootstrap,
+        s11=s11,
     )
     if args.final:
         final_log = base.paths.artifact_root / "reports" / "FINAL_RUNS.log"

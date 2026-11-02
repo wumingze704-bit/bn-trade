@@ -14,6 +14,7 @@ from trade.backtest.sanity import (
     s5_time_stability,
     s6_concentration,
     s9_compare,
+    s11_deflated_sharpe,
 )
 
 
@@ -196,3 +197,21 @@ def test_random_entry_baseline固定种子可复现():
     b = random_entry_baseline(reference, candidates, n_iters=200, seed=3)
     assert a == b
     assert a["passed"] == 1.0
+
+
+def test_s11_deflated_sharpe():
+    out = s11_deflated_sharpe(
+        trial_sharpes=[0.2, 0.4, 0.6, 0.8, 1.0],
+        sharpe=1.0,
+        skew=0.0,
+        kurtosis=3.0,
+        n_obs=500,
+    )
+    assert out["n_trials"] == 5.0
+    assert abs(out["dsr"] - 0.661699205746612) < 1e-12
+
+
+def test_s11_deflated_sharpe空试验列表dsr为0():
+    out = s11_deflated_sharpe([], 1.0, 0.0, 3.0, 500)
+    assert out["n_trials"] == 0.0
+    assert out["dsr"] == 0.0

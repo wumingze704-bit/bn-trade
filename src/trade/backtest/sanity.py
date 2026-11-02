@@ -52,6 +52,10 @@ def expected_max_sharpe_ratio(mean: float, std: float, n_trials: int) -> float:
     return mean + std * max_z
 
 
+# S11 的 DSR 警示阈值（06 §7 S11：概率 < 0.9 时报告首页标红警示）。
+S11_DSR_THRESHOLD = 0.9
+
+
 def deflated_sharpe(
     sharpe: float,
     trial_sharpes: list[float],
@@ -98,6 +102,34 @@ def deflated_sharpe(
     sr0 = expected_max_sharpe_ratio(mean, std, n_trials)
     z_score = (sharpe - sr0) * math.sqrt(n_obs - 1) / math.sqrt(variance_factor)
     return float(NormalDist().cdf(z_score))
+
+
+def s11_deflated_sharpe(
+    trial_sharpes: list[float],
+    sharpe: float,
+    skew: float,
+    kurtosis: float,
+    n_obs: int,
+) -> dict[str, float]:
+    """S11 试验次数登记：由各试验夏普计算 Deflated Sharpe 概率（06 §7 S11）。
+
+    从 `EXPERIMENTS.log` 收集测试段上各配置的夏普作为 `trial_sharpes`（含当前
+    运行），调用 `deflated_sharpe` 得到 DSR，并返回试验数 N。
+
+    Args:
+        trial_sharpes: 测试段上各配置的夏普比率（与 `sharpe` 同周期单位）。
+        sharpe: 当前运行的日收益年化夏普。
+        skew: 当前运行收益偏度（无量纲）。
+        kurtosis: 当前运行收益峰度（正态为 3，无量纲）。
+        n_obs: 当前运行收益观测数（日数，须 > 1）。
+
+    Returns:
+        {"n_trials": 试验数 N, "dsr": DSR 概率（0~1）}。
+    """
+    return {
+        "n_trials": float(len(trial_sharpes)),
+        "dsr": deflated_sharpe(sharpe, trial_sharpes, skew, kurtosis, n_obs),
+    }
 
 
 def s6_concentration(

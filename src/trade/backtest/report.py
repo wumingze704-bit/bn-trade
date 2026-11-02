@@ -15,6 +15,7 @@ import pandas as pd  # type: ignore[import-untyped]
 
 from trade.backtest.engine import ExecutedTrade, PortfolioResult, SkippedSignal
 from trade.backtest.metrics import compute_metrics
+from trade.backtest.sanity import S11_DSR_THRESHOLD
 
 
 def compute_experiment_hash(
@@ -142,11 +143,13 @@ def write_report(
     sanity_results: dict[str, str],
     initial_equity: float,
     g2_bootstrap: dict[str, dict[str, float]] | None = None,
+    s11: dict[str, float] | None = None,
 ) -> None:
     """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。
 
     `run_results` 为 run → scenario → PortfolioResult；每笔交易与放弃信号保留真实的
-    run 与 scenario（06 §8，T0.11）。
+    run 与 scenario（06 §8，T0.11）。`s11` 为 S11 的 `{"n_trials", "dsr"}`，用于
+    报告首页展示 Deflated Sharpe 概率（06 §7 S11）。
     """
     report_dir.mkdir(parents=True, exist_ok=True)
     trade_frames: list[pd.DataFrame] = []
@@ -180,7 +183,7 @@ def write_report(
         json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (report_dir / "report.md").write_text(
-        _render_report_md(run_id, source, summary, reference_metrics, sanity_results),
+        _render_report_md(run_id, source, summary, reference_metrics, sanity_results, s11),
         encoding="utf-8",
     )
 
@@ -191,6 +194,7 @@ def _render_report_md(
     summary: dict[str, dict[str, dict[str, float]]],
     reference_metrics: dict[str, float],
     sanity_results: dict[str, str],
+    s11: dict[str, float] | None = None,
 ) -> str:
     lines = [
         f"# 回测报告 {run_id}",
@@ -210,6 +214,16 @@ def _render_report_md(
         "funding_fee",
     ):
         lines.append(f"- {key}: {reference_metrics.get(key)}")
+    if s11 is not None:
+        n_trials = int(s11["n_trials"])
+        dsr = float(s11["dsr"])
+        lines.append(f"- Deflated Sharpe（S11）：DSR={dsr:.3f}（试验数 N={n_trials}）")
+        if dsr < S11_DSR_THRESHOLD:
+            warn = (
+                f"> ⚠️ **警示**：Deflated Sharpe 概率 < {S11_DSR_THRESHOLD}，"
+                "存在数据窥探风险（06 §7 S11）。"
+            )
+            lines.append(warn)
     lines += [
         "",
         "## 2. 各情景核心指标（reference / user）",
@@ -237,7 +251,11 @@ def append_experiments_log(
     config_hash: str,
     metrics: dict[str, float],
 ) -> None:
-    """在 EXPERIMENTS.log 追加一行（06 §8，用于 S11）。"""
+    """在 EXPERIMENTS.log 追加一行（06 §8，用于 S11）。
+
+    除核心指标外，记录 S11 所需的 `sharpe`/`skew`/`kurtosis`/`n_obs`（缺失时为
+    null，向后兼容旧日志）。周期单位见 `trade.backtest.sanity.deflated_sharpe`。
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "ts": datetime.now(UTC).isoformat(),
@@ -246,6 +264,31 @@ def append_experiments_log(
         "net_return_usdt": metrics.get("net_return_usdt"),
         "profit_factor": metrics.get("profit_factor"),
         "n_trades": metrics.get("n_trades"),
+        "sharpe": metrics.get("sharpe"),
+        "skew": metrics.get("skew"),
+        "kurtosis": metrics.get("kurtosis"),
+        "n_obs": metrics.get("n_obs"),
     }
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def read_experiments_log(log_path: Path) -> list[dict[str, object]]:
+    """读取 EXPERIMENTS.log 的全部行（06 §8，用于 S11）。
+
+    Args:
+        log_path: EXPERIMENTS.log 路径。
+
+    Returns:
+        按行序的字典列表；文件不存在时返回空列表。
+
+    Raises:
+        json.JSONDecodeError: 某行不是合法 JSON 时抛出。
+    """
+    if not log_path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows

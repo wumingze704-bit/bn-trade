@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from scripts.build_dataset import build_dataset
+from scripts.build_dataset import _load_tick_size_by_alias, build_dataset
 from tests.features.helpers import make_bars
 from trade.common.config import BaseConfig
 from trade.common.exits import ExitConfig
@@ -129,3 +129,24 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
     assert (data_root / "labels" / "test_run" / "C01.parquet").exists()
     saved = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert saved["feature_hash"] == manifest["feature_hash"]
+
+
+def test_load_tick_size_by_alias(tmp_path) -> None:
+    rules_path = tmp_path / "rules.json"
+    aliases_path = tmp_path / "aliases.json"
+    rules_path.write_text(
+        json.dumps(
+            {
+                "SOLUSDT": {"tick_size": 0.01},
+                "SUIUSDT": {"tick_size": 0.0001},
+                "MISSINGUSDT": {"tick_size": 0.001},
+            }
+        ),
+        encoding="utf-8",
+    )
+    aliases_path.write_text(
+        json.dumps({"SOLUSDT": "C01", "SUIUSDT": "C02", "NOLISTUSDT": "C99"}),
+        encoding="utf-8",
+    )
+    result = _load_tick_size_by_alias(rules_path, aliases_path)
+    assert result == {"C01": 0.01, "C02": 0.0001}

@@ -40,6 +40,30 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _load_tick_size_by_alias(rules_path: Path, aliases_path: Path) -> dict[str, float]:
+    """从交易规则与别名快照构造 alias -> 价格步长映射。
+
+    规格：docs/04-特征与标签.md §7.5（exit_sim 标签的止损/点差取整用真实 tick_size，
+    与回测同口径）。只取 aliases.json 中历史上入选过的币，不覆盖全市场。
+
+    Args:
+        rules_path: artifacts/exchange_info/rules.json（symbol -> {tick_size, ...}）。
+        aliases_path: data/universe/aliases.json（symbol -> alias）。
+
+    Returns:
+        alias -> 价格步长；缺失 symbol 或 tick_size 的币不写入（由 build_dataset 回退
+        默认 0.01）。
+    """
+    rules = json.loads(rules_path.read_text(encoding="utf-8"))
+    symbol_to_alias = json.loads(aliases_path.read_text(encoding="utf-8"))
+    tick_size_by_alias: dict[str, float] = {}
+    for symbol, alias in symbol_to_alias.items():
+        rule = rules.get(symbol)
+        if rule is not None and "tick_size" in rule:
+            tick_size_by_alias[alias] = float(rule["tick_size"])
+    return tick_size_by_alias
+
+
 def build_dataset(
     run_id: str,
     base_cfg: BaseConfig,
@@ -267,7 +291,18 @@ def main(argv: list[str] | None = None) -> int:
     backtest_cfg = load_config(BacktestConfig, resolve(args.backtest))
 
     notional_ref = sizing_cfg.initial_equity * sizing_cfg.position_frac * float(sizing_cfg.leverage)
-    coins = collect_universe_coins(base_cfg.paths.data_root, universe_months(base_cfg))
+    months = universe_months(base_cfg)
+    # 只用 M1~M{months-holdout_months} 收集币：封存集（M23~M24）才首次入选的新币
+    # 本地无 bars，且红线 2 禁止加载封存集数据（03 §6、08 G1）。
+    # 用 len(months)-holdout_months 而非 -holdout_months，避免 holdout_months=0 时
+    # Python 切片 [:-0] 退化为 [:0]（空列表）。
+    coins = collect_universe_coins(
+        base_cfg.paths.data_root, months[: len(months) - base_cfg.data_window.holdout_months]
+    )
+    tick_size_by_alias = _load_tick_size_by_alias(
+        base_cfg.paths.artifact_root / "exchange_info" / "rules.json",
+        base_cfg.paths.data_root / "universe" / "aliases.json",
+    )
     manifest = build_dataset(
         args.run_id,
         base_cfg,
@@ -278,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         include_holdout=args.final,
         universe_cfg=universe_cfg,
         exits_cfg=exits_cfg,
+        tick_size_by_alias=tick_size_by_alias,
         half_spread_min=backtest_cfg.costs.half_spread_min,
         slip_min=backtest_cfg.costs.slip_min,
         Y=backtest_cfg.costs.Y,

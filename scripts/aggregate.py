@@ -125,8 +125,6 @@ def main(argv: list[str] | None = None) -> int:
     funding_path = funding_dir / f"{args.symbol}-fundingRate-{args.month}.zip"
     if not kline_path.is_file():
         raise FileNotFoundError(f"未找到月度 1m K 线：{kline_path}")
-    if not funding_path.is_file():
-        raise FileNotFoundError(f"未找到月度 fundingRate：{funding_path}")
 
     start_ms, end_ms = _month_bounds(args.month)
     klines = _read_zip_frame(kline_path, KLINE_COLUMNS)
@@ -137,7 +135,9 @@ def main(argv: list[str] | None = None) -> int:
         if metrics_paths
         else None
     )
-    funding = _read_zip_frame(funding_path, FUNDING_COLUMNS)
+    # 资金费缺失（如下架合约某月无 fundingRate 归档）降级为 None，资金费计 0
+    # （06 §3.3、T0.8；`assemble_bars` 会把 funding_rate 置 NaN，回测与特征按缺失计 0）。
+    funding = _read_zip_frame(funding_path, FUNDING_COLUMNS) if funding_path.is_file() else None
 
     available_zips: dict[date, Path] = {}
     for zip_path in aggtrades_dir.glob(f"{args.symbol}-aggTrades-*.zip"):

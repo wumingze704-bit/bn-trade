@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from trade.backtest.engine import ExecutedTrade, PortfolioResult
-from trade.backtest.metrics import compute_metrics, daily_block_bootstrap_ci
+from trade.backtest.metrics import compute_metrics, daily_block_bootstrap_ci, kurtosis, skew
 
 
 def _trade(symbol="A", exit_type="tp", net_pnl=1.0, gross=1.5, exit_code=3) -> ExecutedTrade:
@@ -115,3 +115,30 @@ def test_daily_block_bootstrap_ci空交易():
     out = daily_block_bootstrap_ci([], n_iters=10, seed=1)
     assert out["passed"] is False
     assert out["n_trades"] == 0.0
+
+
+def test_skew_kurtosis正态分布():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    returns = pd.Series(rng.normal(0.0, 0.01, size=100_000))
+    # 正态分布：偏度≈0、峰度≈3（总体矩口径，06 §7 S11）。
+    assert abs(skew(returns)) < 0.05
+    assert abs(kurtosis(returns) - 3.0) < 0.1
+
+
+def test_skew_kurtosis二点分布总体矩():
+    import pandas as pd
+
+    # ±1 交替：均值 0、σ=1、E[x³]=0、E[x⁴]=1 → 偏度 0、峰度 1。
+    returns = pd.Series([1.0, -1.0] * 20)
+    assert skew(returns) == pytest.approx(0.0, abs=1e-12)
+    assert kurtosis(returns) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_skew_kurtosis样本不足返回默认():
+    import pandas as pd
+
+    assert skew(pd.Series([0.01, 0.02])) == 0.0
+    assert kurtosis(pd.Series([0.01, 0.02, 0.03])) == 3.0

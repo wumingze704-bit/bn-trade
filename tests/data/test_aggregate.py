@@ -500,3 +500,81 @@ def test_aggregate_cli_builds_one_coin_three_day_month_file(tmp_path: Path) -> N
     assert loaded.loc[0, "funding_rate"] == 0.0001
     assert threshold_cache.loc[0, "p99_source_date"].isoformat() == "2025-12-31"
     assert threshold_cache["missing_day"].sum() == 28
+
+
+def test_aggregate_cli_funding_missing_degrades_to_zero(tmp_path: Path) -> None:
+    """fundingRate 归档缺失（如下架合约某月）时聚合不失败，资金费列置 NaN（计 0）。"""
+    from scripts.aggregate import main
+
+    raw_root = tmp_path / "raw"
+    bars_root = tmp_path / "bars"
+    alias = "C02"
+    symbol = "TONUSDT"
+    month_start_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
+    minute_count = 24 * 60
+    open_times = month_start_ms + np.arange(minute_count, dtype="int64") * 60_000
+    klines = pd.DataFrame(
+        {
+            "open_time": open_times,
+            "open": np.full(minute_count, 100.0),
+            "high": np.full(minute_count, 101.0),
+            "low": np.full(minute_count, 99.0),
+            "close": np.full(minute_count, 100.0),
+            "volume": np.ones(minute_count),
+            "close_time": open_times + 59_999,
+            "quote_volume": np.full(minute_count, 100.0),
+            "count": np.ones(minute_count, dtype="int64"),
+            "taker_buy_volume": np.full(minute_count, 0.5),
+            "taker_buy_quote_volume": np.full(minute_count, 50.0),
+            "ignore": np.zeros(minute_count, dtype="int64"),
+        }
+    )
+
+    def write_csv_zip(path: Path, frame: pd.DataFrame) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(f"{path.stem}.csv", frame.to_csv(index=False))
+
+    write_csv_zip(raw_root / "klines" / alias / f"{symbol}-1m-2026-01.zip", klines)
+    # 故意不写 fundingRate 归档，模拟该月 fundingRate 缺失。
+    trades = pd.DataFrame(
+        {
+            "agg_trade_id": [1],
+            "price": [100.0],
+            "quantity": [1.0],
+            "first_trade_id": [1],
+            "last_trade_id": [1],
+            "transact_time": [month_start_ms + 500],
+            "is_buyer_maker": [False],
+        }
+    )
+    write_csv_zip(raw_root / "aggtrades" / alias / f"{symbol}-aggTrades-2026-01-01.zip", trades)
+
+    aliases_path = tmp_path / "aliases.json"
+    aliases_path.write_text(json.dumps({symbol: alias}), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--aliases",
+            str(aliases_path),
+            "--symbol",
+            symbol,
+            "--month",
+            "2026-01",
+            "--raw-dir",
+            str(raw_root),
+            "--bars-dir",
+            str(bars_root),
+            "--keep-raw",
+        ]
+    )
+
+    assert exit_code == 0
+    loaded = load_bars(
+        bars_root.parent,
+        alias,
+        month_start_ms,
+        month_start_ms + 2 * 86_400_000,
+        holdout_start_ms=month_start_ms + 2 * 86_400_000 + 1,
+    )
+    assert loaded["funding_rate"].isna().all()

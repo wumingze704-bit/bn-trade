@@ -6,9 +6,11 @@ import json
 
 from trade.backtest.engine import ExecutedTrade, PortfolioResult
 from trade.backtest.report import (
+    append_experiments_log,
     compute_experiment_hash,
     experiments_log_path,
     gate_payload,
+    read_experiments_log,
     write_report,
 )
 
@@ -110,3 +112,31 @@ def test_experiment_hash对相同配置稳定且追踪参数与输入(tmp_path):
 
 def test_experiments_log_path位于统一报告目录(tmp_path):
     assert experiments_log_path(tmp_path) == tmp_path / "reports" / "EXPERIMENTS.log"
+
+
+def test_append_experiments_log记录S11字段(tmp_path):
+    log_path = tmp_path / "reports" / "EXPERIMENTS.log"
+    append_experiments_log(
+        log_path,
+        "run1",
+        "hash1",
+        {
+            "net_return_usdt": 1.0,
+            "profit_factor": 1.2,
+            "n_trades": 3.0,
+            "sharpe": 0.8,
+            "skew": -0.1,
+            "kurtosis": 3.5,
+            "n_obs": 120.0,
+        },
+    )
+    rows = read_experiments_log(log_path)
+    assert len(rows) == 1
+    assert rows[0]["sharpe"] == 0.8
+    assert rows[0]["skew"] == -0.1
+    assert rows[0]["kurtosis"] == 3.5
+    assert rows[0]["n_obs"] == 120.0
+
+
+def test_read_experiments_log文件不存在返回空(tmp_path):
+    assert read_experiments_log(tmp_path / "reports" / "EXPERIMENTS.log") == []

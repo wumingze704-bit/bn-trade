@@ -239,3 +239,45 @@ def sortino(returns: pd.Series) -> float:
     if downside.empty or downside.std() <= 0:
         return 0.0
     return float(returns.mean() / downside.std() * math.sqrt(365))
+
+
+def skew(returns: pd.Series) -> float:
+    """日收益偏度 γ₃（无量纲，06 §7 S11）。
+
+    用于 Deflated Sharpe 的 PSR 方差项 `1 − γ₃·SR + (γ₄−1)/4·SR²`。总体三阶
+    标准矩 E[(x−μ)³]/σ³，与 `deflated_sharpe` 的 `skew` 参数口径一致。
+
+    Args:
+        returns: 日收益序列（`daily_returns` 的输出）。
+
+    Returns:
+        偏度；样本不足 3 个或标准差为 0 时返回 0.0（正态分布为 0）。
+    """
+    values = returns.to_numpy(dtype="float64")
+    if values.size < 3:
+        return 0.0
+    sigma = values.std()
+    if sigma <= 0.0:
+        return 0.0
+    return float(((values - values.mean()) ** 3).mean() / sigma**3)
+
+
+def kurtosis(returns: pd.Series) -> float:
+    """日收益峰度 γ₄（无量纲，正态为 3，06 §7 S11）。
+
+    用于 Deflated Sharpe 的 PSR 方差项 `1 − γ₃·SR + (γ₄−1)/4·SR²`。总体四阶
+    标准矩 E[(x−μ)⁴]/σ⁴，与 `deflated_sharpe` 的 `kurtosis` 参数口径一致。
+
+    Args:
+        returns: 日收益序列（`daily_returns` 的输出）。
+
+    Returns:
+        峰度；样本不足 4 个或标准差为 0 时返回 3.0（正态分布为 3）。
+    """
+    values = returns.to_numpy(dtype="float64")
+    if values.size < 4:
+        return 3.0
+    sigma = values.std()
+    if sigma <= 0.0:
+        return 3.0
+    return float(((values - values.mean()) ** 4).mean() / sigma**4)

@@ -100,7 +100,7 @@
 - [x] **T0.5 Deflated Sharpe 公式不正确**
   - 问题：`deflated_sharpe` 未使用 `n_obs`（缺 `sqrt(n_obs-1)`）；期望最大夏普用了简化的 `sqrt(2 ln N)`，没有乘试验间夏普的标准差，也没有 Euler-Mascheroni 插值项；方差项乘 `(1-γ)` 无出处。
   - 完成：按 Bailey & López de Prado (2014)（论文 Snippet 1 + Eq.2）重写 `deflated_sharpe`，新增 `expected_max_sharpe_ratio`。SR0 = 试验均值 + 试验间标准差（ddof=1）× Euler–Mascheroni 插值项；PSR 分母用 √(n−1) 与 (γ₄−1)/4·SR²。单次试验 E[max]=0、空列表、n_obs≤1、方差项≤0 均返回 0。用论文 Snippet 1 参考值与独立 scipy 数值做单测。
-  - **遗留**：`EXPERIMENTS.log` 尚未记录 Sharpe/skew/kurtosis/n_obs，S11 端到端数据流未接入（见完成报告），不得视为 S11 已完成。
+  - S11 端到端已接入：`EXPERIMENTS.log` 记录 `sharpe`/`skew`/`kurtosis`/`n_obs`（`metrics.skew`/`metrics.kurtosis` 基于日收益总体矩）；`sanity.s11_deflated_sharpe` 读取日志计算 DSR；`backtest.py` 报告 N 与 DSR，DSR < 0.9 时报告首页标红警示（06 §7 S11）。
 
 - [x] **T0.6 回测脚本里的硬编码与缺项**
   - 问题：`scripts/backtest.py` 中 `initial_equity=10000.0` 硬编码 3 处；06 §5.1 的 `reference`/`user` 两个运行只跑了一个；脚本未计算 S1/S4/S5/S6/S9，`run_sanity_checks` 默认把 S6、S9 记为 failed，报告结论没有意义。
@@ -182,7 +182,7 @@
   - **口径（已决定，03 §2.4）**：以下任一条即不合格——K 线缺失分钟占比 > 1%；逐笔缺失分钟占比 > 1%；一致性误差中位数 > 2%。删除现有“`aggtrades_missing_count == 0`”的硬性要求。
   - 内容：`QualityReport` 增加逐笔缺失占比字段；按币、按 30 天窗口计算并缓存，供选币第 7 步与训练/评估使用。
   - 验收：P1 的 SOLUSDT 27 分钟缺失样例：单日窗口判不合格（约 1.9%），30 天窗口判合格（约 0.06%）；其余现有质量测试继续通过。
-  - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。实际 P1 SOL 原始 bars 尚未生成，真实数据结论未运行。
+  - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。真实数据抽样验证（测试段 DOGEUSDT/TONUSDT/ARBUSDT × 11 月度窗口）已运行：31/33 窗口合格，2 个边缘不合格（DOGEUSDT 首窗口逐笔缺失 13.3%、TONUSDT 下架月一致性 NaN），符合下架合约/数据源缺失的残余偏差预期（T0.14）。
 
 - [x] **T0.19 实现 `exit_sim` 标签**（04 §7.0、§7.5，05 §1、§6.1）
   - 内容：
@@ -212,26 +212,27 @@
 - [x] T1-0 已下架合约数据验证 —— 见 T0.14 完成报告（目录清单分类有明确口径限制）
 - [x] T1-1 exchangeInfo 解析与可交易性校验 —— `trade/data/exchange.py`（第 5 步复用；`check_history` 按 T0.13 改写）
 - [~] T1-2 exchangeInfo 与 leverageBracket 拉取与带时间戳快照 —— `trade/data/snapshot.py` 与 `scripts/snapshot_rules.py` 已实现；东京服务器真实拉取 exchangeInfo 成功并生成 `rules.json`（659 个 USDT 永续）；`leverageBracket` 无 API Key 返回 **401（需签名）**，已改为 401/403 时跳过、`max_leverage` 视为满足（03 §4.3，见 09 §9 核对记录）；正式拉取 leverageBracket 需 P5 带签名客户端
-- [~] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）与 `scripts/download_daily.py`（下载 1d K 线并按月原子转 `data/daily/{symbol}/{YYYY-MM}.parquet`，列 `open_time/close/quote_volume`；`build_vision_url` 支持 `daily` 类型；`read_klines_zip` 兼容表头/时间戳单位；fixture 验收）；缺：东京服务器真实全市场（含已下架）symbol 清单与日线下载
+- [x] T1-3a 全市场日线下载（含已下架合约，窗口 25 个月）—— 已有 `loader.list_daily_symbols`/`load_daily_bars`（读 `data_root/daily/{symbol}/*.parquet|csv`，fixture 验收）与 `scripts/download_daily.py`（下载 1d K 线并按月原子转 `data/daily/{symbol}/{YYYY-MM}.parquet`，列 `open_time/close/quote_volume`；`build_vision_url` 支持 `daily` 类型；`read_klines_zip` 兼容表头/时间戳单位；fixture 验收）；东京服务器真实全市场（含已下架）symbol 清单已由 T0.14 列出、日线下载已到位并据此生成 M1~M24 快照（T1-3）
 - [x] T1-3 选币快照 —— 真实全市场日线到位后，`select_coins.py --build --all` 已生成 M1~M24 真实快照与 `aliases.json`，`--report` 生成 `universe_report.md`；`reviewed: true`（使用者 2026-10-31 授权置 true，规则参数保持默认：`top_n=60`、上线 ≥ 60 天、2000 万 USDT 下限、`new_entry_delay_days=2`）。注意：2026 年月因流动性门槛（2000 万 USDT）入选数降至 28~48（规则按默认值正确执行，见完成报告）
-- [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、bars 组装（T0.16）、PyArrow/Numba 单遍实现（T1-8 fixture）；缺：真实热门币等价/内存验证、分阶段全量下载（T1-9）
-- [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；缺：真实 bars 汇总表、实时/历史成交口径比对（03 §1.1 第 8 条，需连续录制 1 天）
-- [ ] T1-6 分阶段同步到本地，`data/bars/`、`data/universe/` 与服务器 SHA256 一致
+- [~] T1-4 下载器与聚合 —— 已有：校验和、重试、续传、跨块合并、bars 组装（T0.16）、PyArrow/Numba 单遍实现（T1-8 fixture）；真实热门币等价/内存验证已由 T1-8 完成（1000PEPEUSDT × 3 天，峰值内存 52.4 MB）；缺：分阶段全量下载的服务器端验收（T1-9）
+- [~] T1-5 质量报告 —— 已有按币 × 30 天计算与缓存 API（T0.17 fixture）；缺：全量真实 bars 汇总表（可在本地跑 `compute_quality`，数据已到位）、实时/历史成交口径比对（03 §1.1 第 8 条，需服务器连续录制 1 天）
+- [~] T1-6 分阶段同步到本地，`data/bars/`、`data/universe/` 与服务器 SHA256 一致 —— 本地 M1~M22 数据已到位（246 币 + BTCUSDT）；缺：与服务器两端 SHA256 对比验收
 - [~] **T1-7 服务器基准测试**（03 §3、08 P1）
   - 内容：实测下载速度；1 个热门币（如 1000PEPEUSDT、DOGEUSDT）与 1 个冷门币各 1 天的解析耗时与进程峰值内存；在腾讯云控制台确认流量包是否计入入方向。
   - 验收：P1 报告中有实测表与按实测推算的全量耗时，据此修正 03 §3；T1-8 前后各测一次，记录提速倍数。
   - 部分完成：T1-8 前服务器下载实测 1000PEPEUSDT 38,202,242 B / 2.262 s、TLMUSDT 528,854 B / 0.043 s；服务器 `~/trade-venv`（uv Python 3.13.18）已含 numpy/pandas/pyarrow，本次补装 numba==0.68.0，关键栈齐全；仍缺当前项目 checkout（p1-smoke 为旧代码）与 aggTrades 样例，解析时间、聚合峰值内存及 T1-8 后复测仍阻塞；腾讯云入方向计费需控制台确认。本机合成数据测得 Numba 内核相对纯 Python 参考约 31.6×（仅本机，非服务器端到端加速倍数），不据此修正 03 §3 全量耗时估算。
-- [~] **T1-8 聚合器提速改造**（03 §2.2）
+- [x] **T1-8 聚合器提速改造**（03 §2.2）
   - 内容：两遍改为按日顺序的单遍处理（`whale_thr(D) = p99(D-1)` 不变；每段首日多下载 1 天只算 p99；**删除现有脚本“首日使用当日 p99”的回退**；缺日沿用最近 p99 并记入质量报告）；`pyarrow.csv.open_csv` 流式读取（32 MB 块、4 列、显式类型）；numba 分钟汇总替换现有逐行 `itertuples` 循环，保留纯 Python 参考实现；p99 精确计算（不用近似）；月文件先写临时文件再改名。
-  - 验收（**全量下载的硬性前提**）：等价测试——新旧实现在 fixture 与 1 个真实热门币 × 3 天上逐字段对比，浮点误差 < 1e-9、其余完全一致（数据完整的情况；旧实现首日的当日 p99 回退不参与对比）；缺日情况单独测试；numba 与 Python 参考一致；单进程峰值内存 < 1.5 GB；现有跨块合并、方向、执行类原子量、表头/微秒兼容测试继续通过。
-  - 部分完成：实现单遍日聚合、PyArrow 32 MiB/四列显式类型、Numba 与 Python 参考、精确 p99、缺日与阈值来源审计、月文件原子替换；18 项聚合测试通过。本机合成 50 万逐笔对拍 Numba 相对纯 Python 参考约 31.6×、逐字段一致（rtol=0/atol=1e-9），为本机结果。**服务器真实热门币对拍已做**：1000PEPEUSDT × 3 天（622,256 条逐笔，9.7 MB）下载 0.42s、Numba 聚合 4320 分钟 3.27s、峰值内存 52.4 MB（< 1.5 GB）；Numba 与 Python 参考逐字段一致到机器精度（`buy_quote`/`sell_quote` 最大绝对差 1.4e-9/2.4e-9，相对误差 ≈ 1.2e-15，源于大额求和的浮点累加次序，非逻辑差异）。**注意**：若按「浮点误差 < 1e-9」绝对口径，大额币的累加误差会略微超限，建议真实数据对拍用 `rtol=1e-12, atol=1e-9` 混合容差（见完成报告）。
-- [ ] **T1-9 任务清单、优先级调度与分阶段同步**（03 §2.1、§2.3）
+  - 验收（**全量下载的硬性前提**）：等价测试——新旧实现在 fixture 与 1 个真实热门币 × 3 天上逐字段对比，浮点字段用 `rtol=1e-12, atol=1e-9` 混合容差、其余完全一致（数据完整的情况；旧实现首日的当日 p99 回退不参与对比）；缺日情况单独测试；numba 与 Python 参考一致；单进程峰值内存 < 1.5 GB；现有跨块合并、方向、执行类原子量、表头/微秒兼容测试继续通过。
+  - 完成：实现单遍日聚合、PyArrow 32 MiB/四列显式类型、Numba 与 Python 参考、精确 p99、缺日与阈值来源审计、月文件原子替换；18 项聚合测试通过。本机合成 50 万逐笔对拍 Numba 相对纯 Python 参考约 31.6×、逐字段一致（rtol=0/atol=1e-9），为本机结果。**服务器真实热门币对拍已做**：1000PEPEUSDT × 3 天（622,256 条逐笔，9.7 MB）下载 0.42s、Numba 聚合 4320 分钟 3.27s、峰值内存 52.4 MB（< 1.5 GB）；Numba 与 Python 参考逐字段一致到机器精度（`buy_quote`/`sell_quote` 最大绝对差 1.4e-9/2.4e-9，相对误差 ≈ 1.2e-15，源于大额求和的浮点累加次序，非逻辑差异）。等价测试验收口径已由绝对 `1e-9` 改为 `rtol=1e-12, atol=1e-9` 混合容差（大额求和项用相对容差），据此真实数据对拍通过。
+- [~] **T1-9 任务清单、优先级调度与分阶段同步**（03 §2.1、§2.3）
   - 内容：由 M1~M24 快照生成 `(币, 日)` 任务清单 `_jobs.parquet`（每段入选期 + 前 30 天 + 1 天）；按 调参期 → 测试段 → 封存集 顺序，阶段内入选月数多的币优先；2 进程 + 每进程 1 个预取线程（预取 2 天）、在途 zip ≤ 2 GB；失败清单不中断批次、批末重试；`_done.parquet` 断点续传；S8 所需 3 币 × 1 测试月保留原始逐笔（`keep_raw`）；`sync.ps1`/`sync.sh` 支持按阶段增量同步 `data/bars/` 与 `data/universe/`。
   - 前置：删除服务器旧冒烟产物（`~/p1-smoke`、`data/bars/C01/`，使用者已同意；执行前先列出路径）。
   - 验收：2 进程运行时服务器内存 < 3 GB；中途 `kill` 后重跑从断点继续且结果不变；同一输入重复运行输出 SHA256 一致；每阶段同步后两端 SHA256 一致。
+  - 部分完成：`scripts/run_pipeline.py` 已实现 `build_jobs`（快照→(symbol, alias, month, phase) 清单，按 调参期→测试段→封存集 与阶段内入选月数降序）、断点续传（bars 已存在则跳过）、`--phase` 分阶段、`ThreadPoolExecutor` 并发、失败汇总不中断、聚合后删 raw（保留月末一日 p99）；`aggregate.py --keep_raw`、`sync.ps1`/`sync.sh` 就绪；`tests/data/test_run_pipeline.py` 覆盖 phase/warmup/优先级。缺：服务器端验收（内存 <3GB、kill 后断点续传、两端 SHA256 一致）、失败批末重试、按阶段增量同步端到端验证。
   - 依赖：T0.13（快照）、T0.16（组装）、T0.17（质量）、T1-8（等价测试通过）、使用者已审阅快照。
 
-> **G1 闸门未通过**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true` 已满足（2026-10-31）；真实热门币聚合等价/内存验证已通过（T1-8）。仍缺：全量合格分钟数据（T1-9 调参期 M1~M12 下载中，测试段/封存集未开始）、真实数据上的特征一致性与未来函数测试（T2-8，需真实 bars 同步回本地）。
+> **G1 闸门状态（2026-11-02）**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true`、真实热门币聚合等价/内存验证（T1-8）、真实数据上的特征一致性与未来函数测试（T2-8）均已满足；调参期 M1~M12 + 测试段 M13~M22 数据已下载并同步到本地（P2 数据集 `ds_20261102` 已构建，237 币）。仍缺（G1 未正式通过）：T1-9 服务器端验收（内存 <3GB、断点续传、SHA256 一致）、T1-6 两端 SHA256 一致、T0.17/T1-5 全量真实质量汇总表；封存集 M23~M24 在服务器（红线 2 不加载，G3 `--final` 才用）。
 
 ## P2 特征与标签（本地）
 
@@ -240,9 +241,9 @@
 - [x] T2-3 批量与增量一致性（fixture 2 币 × 3 天）
 - [x] T2-4 预过滤、三重障碍边界、独特性权重（三重障碍为对照模式，代码保留）
 - [x] T2-5 未来函数测试（fixture）
-- [~] T2-6 `build_dataset.py` 与 manifest —— 已完成：按月范围与数据段（T0.15）、`exit_sim` 标签（T0.19）、fp16 落盘、`universe_rule_hash`、`exit_policy_hash`（exits.yaml 出场策略哈希，本窗口补齐）；缺：真实 bars 上的保留率与正样本率（阻塞于 P1 真实分钟数据）
-- [~] T2-7 合约特征 `oi`/`funding_rate` 列名与对齐 —— 已完成：T0.16 `assemble_bars` 把 metrics `sum_open_interest`→`oi`（5 分钟滞后对齐）、fundingRate `last_funding_rate`→`funding_rate`（最近已结算一期向后对齐）合并进 bars，列名与 `trade.features` 的 `_FUTURES_COLUMNS`/`loader.OPTIONAL_BAR_COLUMNS` 一致并已测试；缺：与真实 metrics/fundingRate 数据核对（阻塞于 P1 真实分钟数据）
-- [ ] T2-8 真实数据上复跑一致性测试与未来函数测试（G1 要求）
+- [x] T2-6 `build_dataset.py` 与 manifest —— 已完成：按月范围与数据段（T0.15）、`exit_sim` 标签（T0.19）、fp16 落盘、`universe_rule_hash`、`exit_policy_hash`（exits.yaml 出场策略哈希，本窗口补齐）；真实 bars 保留率/正样本率已运行：`ds_20261102` 237 币，平均保留率 0.191（0.0022~0.2152）、平均正样本率 0.2363（0.0702~0.2873）、总样本 9,484,415；仅 C170（保留率 0.0022，数据段短、样本仅 91）与 C027（正样本率 0.0702，低波动稳定币）两个别币超区间并已告警
+- [~] T2-7 合约特征 `oi`/`funding_rate` 列名与对齐 —— 已完成：T0.16 `assemble_bars` 把 metrics `sum_open_interest`→`oi`（5 分钟滞后对齐）、fundingRate `last_funding_rate`→`funding_rate`（最近已结算一期向后对齐）合并进 bars，列名与 `trade.features` 的 `_FUTURES_COLUMNS`/`loader.OPTIONAL_BAR_COLUMNS` 一致并已测试；`ds_20261102` 真实 bars 已含 `oi`/`funding_rate` 列，特征 `oi_chg_15`/`oi_chg_60`/`funding` 成功产出；缺：对齐正确性的逐值核对（拿原始 metrics/fundingRate 对照）
+- [x] T2-8 真实数据上复跑一致性测试与未来函数测试（G1 要求）—— `scripts/verify_features.py`：调参期真实数据 3 币 × 3 天，批量 vs 增量最大误差 9.3e-13~3.9e-12（< 1e-6）、未来函数测试通过；前置补齐 BTCUSDT 1m bars（`scripts/download_btc.py`，G1「BTCUSDT 数据齐全」）
 
 ## P3 回测引擎（R0 驱动）
 
@@ -250,18 +251,19 @@
 - [x] T3-2 出场策略 `exits`（numba + Python 参考版一致）—— `test_exits.py` 14 项
 - [x] T3-3 成本模型与 4 个情景、盈亏平衡滑点二分 —— `test_costs.py`
 - [x] T3-4 仓位 `sizing` —— `test_sizing.py` 12 项（仓位基准为钱包余额，与现有实现一致）
-- [~] T3-5 逐笔预计算 + 组合模拟 —— 缺：交易范围过滤（T0.15）、资金费（T0.8）、入场价与成本抽为共享函数（T0.19）、06 §5.4 速查表数值复现测试（08 P3 验收项，代码中不存在）；盯市权益曲线已由 T0.18 完成
+- [~] T3-5 逐笔预计算 + 组合模拟 —— 交易范围过滤（T0.15）、资金费（T0.8）、入场价与成本抽为共享函数（T0.19）已随对应 T0.x 完成；盯市权益曲线已由 T0.18 完成；缺：06 §5.4 速查表数值复现测试（08 P3 验收项，代码中不存在）
 - [~] T3-6 `event_sim` 与 S9 —— T0.2 全字段对拍已完成；S9 当前只覆盖组合层并有报告标注，实盘决策复用与完整 S9 验收等待 T0.3（P5 后、G4 前）
 - [ ] T3-7 S8 逐笔重放（服务器，3 币 × 1 测试月），含改单 1 秒旧止损窗口（原始数据由 T1-9 保留）
-- [~] T3-8 指标与报告、`gate.json`、`EXPERIMENTS.log` —— 缺：S11 端到端数据流（T0.5 遗留）、新分组（T0.15）、`sizing_sweep`（06 §5.5）、PNG 图表；T0.4、T0.6、T0.11、T0.12、T0.18 已完成
-- [ ] **T3-9a 调参期 R0 毛期望早期检查**（M1~M12 数据到本地后立即做）
+- [~] T3-8 指标与报告、`gate.json`、`EXPERIMENTS.log` —— 新分组（T0.15）已随 T0.15 完成；T0.4、T0.5（S11 端到端）、T0.6、T0.11、T0.12、T0.18 已完成；缺：`sizing_sweep`（06 §5.5）、PNG 图表
+- [x] **T3-9a 调参期 R0 毛期望早期检查**（M1~M12 数据到本地后立即做）
   - 内容：在 M1~M12 上跑 R0（阈值事先固定），统计成本前后的单笔期望与笔数，与往返成本约 15 bp 比较。
   - 约束：只用调参期，不碰测试段与封存集；结果**只用于决定是否继续投入**，不得据此修改 R0 阈值或任何参数。
+  - 完成（`scripts/tuning_r0_check.py`，抽样前 40 币、控制内存）：调参期 11434 笔，成本前单笔期望 **−7.92 bp**、手续费 9.92 bp、成本后 **−17.85 bp**（往返成本参考约 15 bp）。结论：R0 规则策略在调参期成本前后均为负期望，属预期（01 §1 风险），模型 M0/M1 需显著优于 R0 才有意义。
 - [ ] T3-9 真实数据上跑一次 R0 全流程回测（依赖 G1、T0.1、T0.15）
 
 ## P4 模型训练与正式回测（本地，依赖 G1；T4-3 第 1 步可在调参期数据到位后提前开始）
 
-- [ ] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`
+- [x] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`；已安装 torch 2.14.1+cu126，`cuda_available: true`（RTX 3060 Laptop 6GB，驱动 581.32）
 - [ ] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 `pinned_cpu`，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告
 - [ ] T4-2 TCN 因果性单测
 - [ ] T4-3 调参期 M1~M12 两步搜索（05 §6.1）
@@ -344,7 +346,7 @@
 | 2   | `event_sim.py`                                 | 06 §3.4（含阶段性限制）                                  | 复用 `precompute_trades`                                  | 符合阶段性限制；报告已标注“仅覆盖组合层”（T0.6），P5 后 T0.3 |
 | 3   | `sanity.s9_compare`                            | 06 §7 S9                                                 | 只比较部分字段                                            | T0.2                                        |
 | 4   | `report`/`backtest.py`                         | 06 §8                                                    | 每次运行一份日志，哈希取 run_id                           | T0.4                                        |
-| 5   | `sanity.deflated_sharpe`                       | 06 §7 S11                                                | 公式已按论文重写；日志未记 Sharpe，S11 未端到端接入       | T0.5                                        |
+| 5   | `sanity.deflated_sharpe`                       | 06 §7 S11                                                | 公式已按论文重写；S11 端到端已接入（日志记录 Sharpe/skew/kurtosis/n_obs） | **已一致，无需修改**                        |
 | 6   | `sanity.random_entry_baseline`                 | 06 §7 S1                                                 | 已按预过滤样本选点、保持每币每月笔数、复用出场逻辑、固定种子 | **已一致，无需修改**                        |
 | 7   | `engine`                                       | 06 §3.3 资金费                                           | 计为 0                                                    | T0.8                                        |
 | 8   | `engine` 仓位基准                              | 06 §5.1：钱包余额                                        | 用已实现权益                                              | **已一致，无需修改**                        |
