@@ -16,6 +16,7 @@ from trade.common.config import BaseConfig, load_config
 from trade.data.loader import (
     collect_universe_coins,
     load_bars,
+    load_universe_snapshot,
     rebalance_ms_of,
     universe_months,
     window_bounds,
@@ -43,7 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     build_months = months[: len(months) - holdout_months]
     coins = collect_universe_coins(data_root, build_months)
     wb = window_bounds(base_cfg)
-    window_ends = [rebalance_ms_of(month) for month in build_months]
+    # 质量结论只在「该币入选的月份」的再平衡时点计算（03 §2.4 第 7 步），
+    # 未入选的月份该币无数据，不产生质量结论。
+    symbol_months: dict[str, list[str]] = {}
+    for month in build_months:
+        snapshot = load_universe_snapshot(data_root, month)
+        for coin in snapshot.coins:
+            symbol_months.setdefault(coin.symbol, []).append(month)
 
     if args.limit is not None:
         coins = coins[: args.limit]
@@ -59,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=False,
         )
+        window_ends = [rebalance_ms_of(month) for month in symbol_months[symbol]]
         reports = compute_quality_windows(symbol, bars, window_ends)
         frames.append(reports)
         print(f"[{idx}/{len(coins)}] {symbol} ({alias}) rows={len(bars)}")
