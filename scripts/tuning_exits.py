@@ -38,14 +38,15 @@ from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
 from trade.models.lightgbm import tabular_features_matrix, train_lgbm
 
-# 6 组出场/止损参数（05 §6.1 第 1 步表）：H_max/k_trail 改 exits.yaml，k_sl 改标签止损系数。
+# 6 组出场/止损参数（第 2 轮：聚焦止损宽度）。H_max/k_trail 固定为第 1 轮最优
+# （H_max=120、k_trail=1.5），k_sl 与 sl_min 放网格（05 §6.1 允许在调参期搜索）。
 _EXIT_GRID: list[dict[str, float]] = [
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.0},
-    {"H_max": 60.0, "k_trail": 1.5, "k_sl": 1.0},
-    {"H_max": 240.0, "k_trail": 1.5, "k_sl": 1.0},
-    {"H_max": 120.0, "k_trail": 1.0, "k_sl": 1.0},
-    {"H_max": 120.0, "k_trail": 2.0, "k_sl": 1.0},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.3},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.0, "sl_min": 0.005},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.5, "sl_min": 0.005},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.0, "sl_min": 0.005},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.5, "sl_min": 0.008},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.0, "sl_min": 0.010},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.012},
 ]
 
 # 阈值网格（05 §7.2：0.30~0.80，步长 0.02）
@@ -173,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             update={"H_max": int(grid["H_max"]), "k_trail": grid["k_trail"]}
         )
         k_sl = grid["k_sl"]
+        sl_min = grid["sl_min"]
 
         # 重建 exit_sim 标签（调参期），并组装 M0 特征
         x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts = [], [], [], [], [], []
@@ -181,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                 info["bars"],
                 info["sample_positions"],
                 k_sl=k_sl,
-                sl_min=features_cfg.label.sl_min,
+                sl_min=sl_min,
                 sl_max=features_cfg.label.sl_max,
                 H_label=features_cfg.label.H_label,
                 entry_latency_ms=features_cfg.label.entry_latency_ms,
@@ -275,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                 exit_cfg=exit_cfg,
                 sizing_cfg=sizing_cfg,
                 k_sl=k_sl,
-                sl_min=features_cfg.label.sl_min,
+                sl_min=sl_min,
                 sl_max=features_cfg.label.sl_max,
                 H_label=features_cfg.label.H_label,
             )
