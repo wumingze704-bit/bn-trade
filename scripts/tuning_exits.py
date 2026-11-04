@@ -52,6 +52,9 @@ _EXIT_GRID: list[dict[str, float]] = [
 # 阈值网格（05 §7.2：0.30~0.80，步长 0.02）
 _THETA_GRID = [round(0.30 + 0.02 * i, 2) for i in range(26)]
 
+# 训练样本上限：超过则按固定种子下采样，控制内存（可复现；LightGBM 直方图对样本数不敏感）。
+_MAX_SAMPLES = 2_000_000
+
 
 def _resolve(root: Path, value: str) -> Path:
     path = Path(value)
@@ -225,12 +228,39 @@ def main(argv: list[str] | None = None) -> int:
             print(f"组 {gi + 1}：无样本", flush=True)
             continue
 
-        x_all = np.concatenate(x_parts).astype("float32")
-        y_all = np.concatenate(y_parts)
-        w_all = np.concatenate(w_parts)
-        m_all = np.concatenate(m_parts)
-        ot_all = np.concatenate(ot_parts)
-        sym_all = np.concatenate(sym_parts)
+        # 内存保护：样本过多时先按固定种子下采样，再拼接（避免峰值内存超限）。
+        n_total = sum(len(p) for p in y_parts)
+        rng = np.random.default_rng(42)
+        keep = (
+            np.sort(rng.choice(n_total, _MAX_SAMPLES, replace=False))
+            if n_total > _MAX_SAMPLES
+            else None
+        )
+        xl, yl, wl, ml, ol, sl2 = [], [], [], [], [], []
+        offset = 0
+        for xp, yp, wp, mp, otp, sp in zip(
+            x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts, strict=True
+        ):
+            n = len(yp)
+            local = (
+                np.arange(n)
+                if keep is None
+                else keep[(keep >= offset) & (keep < offset + n)] - offset
+            )
+            xl.append(xp[local])
+            yl.append(yp[local])
+            wl.append(wp[local])
+            ml.append(mp[local])
+            ol.append(otp[local])
+            sl2.append(sp[local])
+            offset += n
+
+        x_all = np.concatenate(xl)
+        y_all = np.concatenate(yl)
+        w_all = np.concatenate(wl)
+        m_all = np.concatenate(ml)
+        ot_all = np.concatenate(ol)
+        sym_all = np.concatenate(sl2)
 
         train_mask = (m_all >= 1) & (m_all <= 9)
         val_mask = (m_all >= 10) & (m_all <= 12)
