@@ -38,15 +38,15 @@ from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
 from trade.models.lightgbm import tabular_features_matrix, train_lgbm
 
-# 6 组出场/止损参数（第 2 轮：聚焦止损宽度）。H_max/k_trail 固定为第 1 轮最优
-# （H_max=120、k_trail=1.5），k_sl 与 sl_min 放网格（05 §6.1 允许在调参期搜索）。
+# 6 组出场/止损参数（第 3 轮：加密宽止损 + 提高 sl_max）。H_max/k_trail 固定 120/1.5，
+# 止损上限 sl_max 提到 2.5%，sl_min 在 1.0%~1.8% 加密（组 6 附近）。
 _EXIT_GRID: list[dict[str, float]] = [
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.0, "sl_min": 0.005},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.5, "sl_min": 0.005},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.0, "sl_min": 0.005},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 1.5, "sl_min": 0.008},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.0, "sl_min": 0.010},
-    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.012},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.010, "sl_max": 0.025},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.012, "sl_max": 0.025},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.014, "sl_max": 0.025},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 3.0, "sl_min": 0.012, "sl_max": 0.025},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 3.0, "sl_min": 0.015, "sl_max": 0.025},
+    {"H_max": 120.0, "k_trail": 1.5, "k_sl": 3.0, "sl_min": 0.018, "sl_max": 0.025},
 ]
 
 # 阈值网格（05 §7.2：0.30~0.80，步长 0.02）
@@ -175,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         k_sl = grid["k_sl"]
         sl_min = grid["sl_min"]
+        sl_max = grid["sl_max"]
 
         # 重建 exit_sim 标签（调参期），并组装 M0 特征
         x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts = [], [], [], [], [], []
@@ -184,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 info["sample_positions"],
                 k_sl=k_sl,
                 sl_min=sl_min,
-                sl_max=features_cfg.label.sl_max,
+                sl_max=sl_max,
                 H_label=features_cfg.label.H_label,
                 entry_latency_ms=features_cfg.label.entry_latency_ms,
                 y_min_r=features_cfg.label.y_min_r,
@@ -231,8 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         ot_all = np.concatenate(ot_parts)
         sym_all = np.concatenate(sym_parts)
 
-        train_mask = (m_all >= 1) & (m_all <= 10)
-        val_mask = (m_all >= 11) & (m_all <= 12)
+        train_mask = (m_all >= 1) & (m_all <= 9)
+        val_mask = (m_all >= 10) & (m_all <= 12)
         if train_mask.sum() == 0 or val_mask.sum() == 0:
             print(f"组 {gi + 1}：训练/验证样本为空", flush=True)
             continue
@@ -278,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
                 sizing_cfg=sizing_cfg,
                 k_sl=k_sl,
                 sl_min=sl_min,
-                sl_max=features_cfg.label.sl_max,
+                sl_max=sl_max,
                 H_label=features_cfg.label.H_label,
             )
             all_trades.extend(trades)
@@ -300,8 +301,8 @@ def main(argv: list[str] | None = None) -> int:
             pf = float(metrics.get("profit_factor") or 0.0)
             net = float(metrics.get("net_return_usdt") or 0.0)
             n_trades = float(metrics.get("n_trades") or 0.0)
-            # 约束：验证段（2 个月约 60 天）日均交易 ≥ 3 笔 → 总 ≥ 180
-            if n_trades < 180:
+            # 约束：验证段（M10~M12 约 90 天）日均交易 ≥ 3 笔 → 总 ≥ 270
+            if n_trades < 270:
                 continue
             if pf > best_pf:
                 best_theta, best_pf, best_net = theta, pf, net
