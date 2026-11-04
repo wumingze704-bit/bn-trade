@@ -22,10 +22,10 @@ prefilter:
 
 label:
   mode: exit_sim # exit_sim | triple_barrier（04 §7.5 默认 exit_sim）
-  k_sl: 1.0 # 止损 ATR 系数（04 §7.1）
+  k_sl: 2.5 # 止损 ATR 系数（04 §7.1；T4-3 调参后由 1.0 放宽）
   rr: 2.0 # 盈亏比（04 §7.1）
-  sl_min: 0.005 # 止损幅度下限 0.5%（04 §7.1）
-  sl_max: 0.015 # 止损幅度上限 1.5%（04 §7.1）
+  sl_min: 0.010 # 止损幅度下限 1.0%（04 §7.1；T4-3 调参后由 0.5% 放宽）
+  sl_max: 0.025 # 止损幅度上限 2.5%（04 §7.1；T4-3 调参后由 1.5% 放宽）
   H_label: 60 # 时间障碍根数（04 §7.1）
   entry_latency_ms: 1000 # 入场延迟：1000 → p_1s / hi_post_1s；3000 → p_3s / hi_post_3s
   c_rt: 0.0012 # 固定往返成本估计 0.12%（04 §7.2，triple_barrier 用）

@@ -266,7 +266,7 @@
 - [x] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`；已安装 torch 2.14.1+cu126，`cuda_available: true`（RTX 3060 Laptop 6GB，驱动 581.32）
 - [~] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 pinned_cpu，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告 —— 已完成 `trade.models.dataset.WindowDataset`：索引切片（样本只存 `(sym_id, row_idx, y, r_mult, w)`、不预先展开）、币种均衡（1/该币样本数 归一化）、窗口不跨数据段、补齐分钟占比 > 20% 丢弃、GPU/CPU 一致单测（`tests/models/test_dataset.py` 6 项）；缺：入选月份过滤（内存控制）、.npy memmap（当前直接读 parquet）、pinned_cpu 退路、实测显存报告
 - [x] T4-2 TCN 因果性单测 —— `trade.models.tcn.TCNModel` 已实现（因果 TCN 残差块 × 4 + 注意力池化 + 双头），`tests/models/test_tcn.py` 3 项通过（前向形状、因果性：改 t+1 之后不变、感受野 ≥ L）
-- [~] T4-3 调参期 M1~M12 两步搜索（05 §6.1）—— 第 1 步完成：`scripts/tuning_exits.py` 全量（237 币 × 6 组）结果：组 1~6 的 PF 分别 0.754/0.615/0.683/0.710/0.773/0.976，净收益均 < 0（-452.94/-350.24/-656.75/-740.80/-243.70/-30.62）；按「PF 最高」选组 6（H_max=120、k_trail=1.5、k_sl=1.3），但净收益未 > 0（M0 在调参期验证段负期望，与 T3-9a 的 R0 负期望一致）；第 2 步（模型超参最多 24 组）未开始
+- [~] T4-3 调参期 M1~M12 两步搜索（05 §6.1）—— 第 1 步完成：诊断发现止损过紧（sl_min=0.5% 假突破扫损 41.8%、每笔亏 62bp），放宽止损后第 3 轮（验证段 M10~M12、sl_max=2.5%）6 组全部 PF>1 且净收益>0（组 1~6 PF：1.473/1.033/1.026/1.001/1.039/1.087，净收益 +1322/+104/+262/+16/+117/+946）；按「PF 最高」选组 1（H_max=120、k_trail=1.5、k_sl=2.5、sl_min=1.0%、sl_max=2.5%）并冻结进 features.yaml；第 2 步（模型超参最多 24 组）未开始
   - 第 1 步：6 组出场与止损参数，每组重建 `exit_sim` 标签 → 训练 M0 → 验证段选阈值 → `base` 情景 PF 与净收益，选定后冻结 `exits.yaml` 与 `k_sl`；
   - 第 2 步：固定第 1 步结果，模型超参最多 24 组；
   - 两步合计 ≤ 30 组，全部登记 `EXPERIMENTS.log`（含失败组）；`y_min_r` 不参与搜索。
@@ -284,18 +284,36 @@
 - [~] T5-1 通知模块（07 §8）—— **不依赖其他模块，可最先做**
   - 完成（2026-10-31）：新增 `trade.live.notifier` 包——`Notifier` 协议 + `WxPusherNotifier`/`WeComNotifier`/`FeishuNotifier`/`NullNotifier`；令牌桶限流 + 同类合并、4096 字节截断、重试 3 次（1s/3s/10s）、主通道连续失败 3 次→备份通道 `channel_down`、`redact_amounts`、同类告警 5 分钟合并、通知失败不影响交易（`send` 不抛异常）、key 不进日志；`NotifyConfig`/`ChannelConfig` 与 `configs/live.yaml` 的 `notify` 节对应；25 项单测通过。
   - 缺：真实测试群收到全部类型消息需 `WXPUSHER_*`/`WECOM_*` 密钥并在服务器实测（P5/G4）；各服务限额实测回填 07 §8.2/§8.3 待 P5。
-- [ ] T5-2 币安客户端 `ExchangeClient`（官方 SDK 封装）、签名对照官方示例、`api_smoke.py --env testnet`；SDK 版本写入 `requirements-live.lock`
-- [ ] T5-3 启动流程：费率核对、杠杆分层、5x、30 天预热
-- [ ] T5-4 行情：多连接（按订阅上限拆分）、23 小时轮换、缺口回补、延迟监控、原子量录制
-- [ ] T5-5 月度再平衡（07 §3.5）：调用同一个 `build_universe()`；新进入币按 `universe.yaml: rule.new_entry_delay_days` 只监控 + 订单流预热；退出币持仓保留至平仓；失败沿用上月；全市场日线拉取权重实测；60 币满负荷下 CPU / 内存 / 延迟实测
-- [ ] T5-6 交易引擎时序、推理线程池、状态库记录
-- [ ] T5-7 订单：IOC 开仓、先止损后止盈、OCO 模拟、追踪改单先挂新后撤旧、幂等 clientOrderId（alias 取 `aliases.json`）；仓位基准取 `walletBalance`（07 R1、06 §5.1）
-- [ ] T5-8 对账 6 种情况
-- [ ] T5-9 风控 R1~R14、安全模式、Kill Switch
-- [ ] T5-10 `trade.live.control` 与 `set_sizing.py` 白名单与校验
-- [ ] **T5-12 看板所需的状态库数据**（07 §3.4、§6.1）
-  - 内容：新增 `scan_cycles`、`scan_state` 表，主循环每轮决策结束后一次事务写入交易范围内全部币的处理结果（含 `seq` 处理顺序与 `status`）；`events.notified` 字段；`orders`/`fills`/`positions` 永久保留，其余表按 07 §6.1 清理；对账时用 `userTrades`/`income` 补齐断线缺口（7 天内）。
-  - 验收：写入失败只记日志、不影响交易；决策路径延迟不因写入增加（`latency` 表对比）；补齐逻辑在模拟断线 10 分钟的测试中补全缺失成交。
+- [~] T5-2 币安客户端 `ExchangeClient`、签名对照官方示例、`api_smoke.py --env testnet`；SDK 版本锁定
+  - 完成：`trade.live.exchange`（`endpoints`/`models`/`signing`/`client`/`ws`）。HMAC-SHA256 用官方文档示例 Key+载荷单测校验一致；Ed25519 用 `cryptography` 往返单测（本地无 `cryptography` 时 skip）；`ExchangeClient` 以 httpx 实现 REST 封装（ping/time/exchangeInfo/klines/aggTrades/bookTicker/commissionRate/leverageBracket/账户/订单/algoOrder/userTrades/income/listenKey）；`scripts/api_smoke.py --env {testnet|mainnet}`；SDK 版本 `binance-sdk-derivatives-trading-usds-futures==18.2.0` 已在 `requirements-live.lock`。
+  - 缺：官方 SDK 实际封装未启用（本地无 SDK，服务器联调时接入）；`api_smoke.py` 真实跑通、算法条件单是否被测试网支持需在服务器实测（09 §7）。
+- [~] T5-3 启动流程：费率核对、杠杆分层、5x、30 天预热
+  - 完成：`trade.live.engine` 启动校验纯函数（时钟 >500ms 退出、`fee_reject_live` 实际吃单费率 > 配置 × 1.2 拒绝 live）、`LiveEngine` 组装入口、`trade.live.config`（LiveConfig/load_sizing_config/load_exits_config）。
+  - 缺：完整 10 步启动串联、模型加载（依赖 `trade.models.artifact`，尚未实现）、`paper` 模式真实启动到订阅行情需服务器。
+- [~] T5-4 行情：多连接、23 小时轮换、缺口回补、延迟监控、原子量录制
+  - 完成：`trade.live.exchange.ws`（WsConnection + kline/aggTrade/bookTicker 解析单测）；`trade.live.bar_builder`（缺口判定、分钟完整判定、原子量聚合单测）；`trade.live.health`（LatencyMonitor R10 持续 10 秒、OrderErrorMonitor R11、WeightUsage 09 §6）；`trade.live.market_data`（订阅币种计算、23h 轮换、listenKey 30min 续期）。
+  - 缺：真实 WS 连接/订阅方式待服务器实测（09 §9 记录 `aggTrade`/`kline_1m` 组合流无数据）；原子量 parquet 每小时落盘未接。
+- [~] T5-5 月度再平衡（07 §3.5）
+  - 完成：`trade.live.market_data.Rebalancer` 复用 `trade.data.universe.build_universe()`+`assign_aliases`；`new_entrants`/`exited_symbols`/`rebalance_due` 纯函数单测。
+  - 缺：全市场日线拉取权重实测、60 币满负荷容量实测需服务器；**已解决（2026-11-04 使用者决定）**：交易范围 = 月度选币 `U(R)` ∪ 动态候选池（涨幅榜前 20，`candidate_pool`），取并集、范围最大；`market_data.trading_scope`/`top_gainers` 已实现并单测。
+- [~] T5-6 交易引擎时序、推理线程池、状态库记录
+  - 完成：`trade.live.engine.LiveEngine` 主循环骨架、`trade.live.store` 的 `latency`/`equity_snapshots` 表写入。
+  - 缺：特征/推理/预过滤/排序下单的分钟事件流串联依赖 `trade.features` 增量接口与模型产物（`trade.models.artifact` 未实现）；`scan_cycles`/`scan_state` 每轮决策事务写入已由 `Store.write_scan` 提供（T5-12）。
+- [~] T5-7 订单：IOC 开仓、先止损后止盈、追踪改单先挂新后撤旧、幂等 clientOrderId
+  - 完成：`trade.live.orders.OrderManager`——`build_order_id`（≤36 字符）、`compute_limit_price`（tickSize 向下取整）、`round_step_qty`；开仓 LIMIT IOC；`place_protective_orders` 止损先于止盈（红线 9）；`move_stop` 先挂新单确认成功再撤旧单、撤旧失败保留两张（红线 13）；超时/5xx 先按 clientOrderId 查询再重发（幂等）。单测覆盖全部状态机路径。
+  - 缺：算法条件单真实参数（`algoType`/`triggerPriceType` 等）需服务器实测确认；仓位基准取 `walletBalance` 已在 sizing（回测实盘共用）。
+- [~] T5-8 对账 6 种情况
+  - 完成：`trade.live.reconcile`——`reconcile_positions` 覆盖 07 §6.2 六种情况（接管/改单未完成/已平仓/补挂止损/孤儿挂单/数量不一致）+ `reconcile_fills` 补齐成交/资金费/手续费/撤单差异；单测覆盖。
+  - 缺：7 天内断线缺口真实回补、`kill -9` 重启对账需服务器 G4。
+- [~] T5-9 风控 R1~R14、安全模式、Kill Switch
+  - 完成：`trade.live.risk.RiskEngine`（R2/R3/R4/R5/R6/R7/R8/R9/R11/R12/R13/R14 单测；R1 由 sizing 决定；R10 由 `LatencyMonitor`）；`scripts/kill_switch.py`（halt_flag + 撤 trd- 挂单 + MARKET reduceOnly 平仓 + REST 确认，不依赖主进程）。
+  - 缺：kill_switch 三种入口真实演练、R6/R8/418 自动触发停机需服务器。
+- [~] T5-10 `trade.live.control` 与 `set_sizing.py` 白名单与校验
+  - 完成：`trade.live.control`（白名单 10 键、写入前用实时权益做 06 §5.4 校验、`effective_sizing` 合并）、`scripts/set_sizing.py --show/--reset/--position-frac`；单测覆盖白名单拒绝/非法值拒绝/合法覆盖。
+  - 缺：`set_sizing.py` 真实冒烟、看板控制入口（依赖 dashboard 控制表）。
+- [~] **T5-12 看板所需的状态库数据**（07 §3.4、§6.1）
+  - 完成：`trade.live.store` 新增 `scan_cycles`/`scan_state` 表（`Store.write_scan` 一次事务写入全部币含 `seq`/`status`）；`events.notified` 字段 + `mark_event_notified`；`orders`/`fills`/`positions` 永久保留；`reconcile_fills` 用 `userTrades`/`income` 补断线缺口。
+  - 缺：断线 10 分钟模拟补全缺失成交需在服务器验证；其余表按 `retention_days` 清理的定时任务未实现。
 - [ ] T5-11 G4 测试网 ≥ 7 天演练（含一次月度再平衡演练；Kill Switch 用电脑命令行、电脑看板、手机 SSH 各一次）；**G4 之前完成 T0.3**
 
 ## P6 可视化看板（FastAPI + 静态前端，深色 iOS 风格，SSH 隧道访问）
