@@ -1,0 +1,343 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" font-family="-apple-system, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B0B10"/>
+      <stop offset="1" stop-color="#0E1018"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0.3" cy="0.2" r="0.6">
+      <stop offset="0" stop-color="#0A84FF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#0A84FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.85" cy="0.8" r="0.5">
+      <stop offset="0" stop-color="#BF5AF2" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#BF5AF2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#30D158" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#30D158" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="logo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#64D2FF"/>
+      <stop offset="1" stop-color="#BF5AF2"/>
+    </linearGradient>
+    <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0A84FF" stop-opacity="0"/>
+      <stop offset="1" stop-color="#64D2FF" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .card{fill:#1C1C1E;fill-opacity:0.72;stroke:#FFFFFF;stroke-opacity:0.08}
+      .t1{fill:#F5F5F7}
+      .t2{fill:#8E8E93}
+      .t3{fill:#48484A}
+      .g{fill:#30D158}
+      .r{fill:#FF453A}
+      .b{fill:#0A84FF}
+      .o{fill:#FF9F0A}
+      .h{font-weight:600}
+      .cell{fill:#2C2C2E;fill-opacity:0.55}
+      .pend{fill:#1C1C1E;fill-opacity:0.5;stroke:#FFFFFF;stroke-opacity:0.04}
+      .pref{fill:#0A84FF;fill-opacity:0.16;stroke:#0A84FF;stroke-opacity:0.55}
+      .sig{fill:#30D158;fill-opacity:0.16;stroke:#30D158;stroke-opacity:0.8}
+      .hold{fill:#30D158;fill-opacity:0.10;stroke:#30D158;stroke-width:1.6}
+      .skip{fill:#FF9F0A;fill-opacity:0.12;stroke:#FF9F0A;stroke-opacity:0.7;stroke-dasharray:3 2}
+      .cur{fill:#FFFFFF;fill-opacity:0.10;stroke:#FFFFFF;stroke-opacity:0.9;stroke-width:1.4}
+      .ringbg{fill:none;stroke:#FFFFFF;stroke-opacity:0.10;stroke-width:2.2}
+      .sym{font-size:10.5px}
+      .chip{fill:#FFFFFF;fill-opacity:0.07}
+    </style>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1440" height="900" fill="url(#bg)"/>
+  <rect width="1440" height="900" fill="url(#glowA)"/>
+  <rect width="1440" height="900" fill="url(#glowB)"/>
+
+  <!-- 侧边栏 -->
+  <rect x="0" y="0" width="220" height="900" fill="#111114" fill-opacity="0.85"/>
+  <line x1="220" y1="0" x2="220" y2="900" stroke="#FFFFFF" stroke-opacity="0.06"/>
+  <rect x="24" y="34" width="30" height="30" rx="9" fill="url(#logo)"/>
+  <text x="66" y="55" class="t1 h" font-size="17">bn-trade</text>
+
+  <rect x="14" y="96" width="192" height="38" rx="10" fill="#2C2C2E"/>
+  <circle cx="38" cy="115" r="7" fill="#0A84FF"/>
+  <text x="56" y="120" class="t1 h" font-size="14">总览</text>
+  <circle cx="38" cy="159" r="7" fill="none" stroke="#8E8E93" stroke-width="1.6"/>
+  <text x="56" y="164" class="t2" font-size="14">持仓与挂单</text>
+  <circle cx="38" cy="203" r="7" fill="none" stroke="#8E8E93" stroke-width="1.6"/>
+  <text x="56" y="208" class="t2" font-size="14">交易记录</text>
+  <circle cx="38" cy="247" r="7" fill="none" stroke="#8E8E93" stroke-width="1.6"/>
+  <text x="56" y="252" class="t2" font-size="14">绩效</text>
+  <circle cx="38" cy="291" r="7" fill="none" stroke="#8E8E93" stroke-width="1.6"/>
+  <text x="56" y="296" class="t2" font-size="14">回测报告</text>
+  <circle cx="38" cy="335" r="7" fill="none" stroke="#8E8E93" stroke-width="1.6"/>
+  <text x="56" y="340" class="t2" font-size="14">控制</text>
+
+  <rect x="14" y="704" width="192" height="168" rx="14" fill="#1C1C1E" fill-opacity="0.7" stroke="#FFFFFF" stroke-opacity="0.06"/>
+  <text x="30" y="730" class="t2" font-size="11">连接状态</text>
+  <circle cx="34" cy="752" r="4" class="g"/><text x="46" y="756" class="t1" font-size="12">行情 WS</text><text x="190" y="756" class="t2" font-size="12" text-anchor="end">12 ms</text>
+  <circle cx="34" cy="776" r="4" class="g"/><text x="46" y="780" class="t1" font-size="12">用户数据流</text><text x="190" y="780" class="t2" font-size="12" text-anchor="end">正常</text>
+  <circle cx="34" cy="800" r="4" class="g"/><text x="46" y="804" class="t1" font-size="12">请求权重</text><text x="190" y="804" class="t2" font-size="12" text-anchor="end">18%</text>
+  <circle cx="34" cy="824" r="4" class="g"/><text x="46" y="828" class="t1" font-size="12">微信推送</text><text x="190" y="828" class="t2" font-size="12" text-anchor="end">正常</text>
+  <text x="30" y="856" class="t3" font-size="10.5">SSH 隧道 · localhost:8501</text>
+
+  <!-- 顶栏 -->
+  <text x="240" y="60" class="t1 h" font-size="28">总览</text>
+  <rect x="320" y="38" width="112" height="26" rx="13" fill="#FF9F0A" fill-opacity="0.16" stroke="#FF9F0A" stroke-opacity="0.5"/>
+  <text x="376" y="56" class="o h" font-size="12" text-anchor="middle">影子盘 SHADOW</text>
+  <rect x="442" y="38" width="86" height="26" rx="13" class="chip"/>
+  <circle cx="458" cy="51" r="4" class="g"/><text x="468" y="56" class="t1" font-size="12">心跳 3 秒</text>
+  <rect x="538" y="38" width="150" height="26" rx="13" class="chip"/>
+  <text x="613" y="56" class="t2" font-size="12" text-anchor="middle">TCN · 20261101_a1b2</text>
+  <rect x="698" y="38" width="92" height="26" rx="13" class="chip"/>
+  <text x="744" y="56" class="t2" font-size="12" text-anchor="middle">20% × 5x</text>
+  <text x="1420" y="50" class="t1 h" font-size="15" text-anchor="end">北京 15:42:07</text>
+  <text x="1420" y="68" class="t2" font-size="11" text-anchor="end">UTC 07:42:07 · 下一根收盘 53 秒</text>
+
+  <!-- KPI -->
+  <rect x="240" y="88" width="286" height="104" rx="18" class="card"/>
+  <text x="262" y="116" class="t2" font-size="12">权益</text>
+  <text x="262" y="154" class="t1 h" font-size="30">10.8421</text>
+  <text x="392" y="154" class="t2" font-size="14">USDT</text>
+  <text x="262" y="178" class="g" font-size="12">+0.8421 · +8.42% 自启动</text>
+
+  <rect x="538" y="88" width="286" height="104" rx="18" class="card"/>
+  <text x="560" y="116" class="t2" font-size="12">今日盈亏</text>
+  <text x="560" y="154" class="g h" font-size="30">+0.3120</text>
+  <text x="560" y="178" class="t2" font-size="12">+2.96% · 日亏损停止线 −5%</text>
+
+  <rect x="836" y="88" width="286" height="104" rx="18" class="card"/>
+  <text x="858" y="116" class="t2" font-size="12">持仓</text>
+  <text x="858" y="154" class="t1 h" font-size="30">2 / 3</text>
+  <text x="858" y="178" class="t2" font-size="12">保证金占用 40% · 均有止损</text>
+  <circle cx="1090" cy="122" r="16" fill="none" stroke="#FFFFFF" stroke-opacity="0.1" stroke-width="5"/>
+  <circle cx="1090" cy="122" r="16" fill="none" stroke="#30D158" stroke-width="5" stroke-linecap="round" stroke-dasharray="67 101" transform="rotate(-90 1090 122)"/>
+
+  <rect x="1134" y="88" width="286" height="104" rx="18" class="card"/>
+  <text x="1156" y="116" class="t2" font-size="12">今日交易</text>
+  <text x="1156" y="154" class="t1 h" font-size="30">7</text>
+  <text x="1182" y="154" class="t2" font-size="14">笔 · 胜 4</text>
+  <text x="1156" y="178" class="t2" font-size="12">PF 1.62 · 单笔期望 +6.1 bp</text>
+
+  <!-- 扫描网格 -->
+  <rect x="240" y="212" width="660" height="320" rx="20" class="card"/>
+  <text x="262" y="244" class="t1 h" font-size="16">全市场扫描</text>
+  <text x="354" y="244" class="t2" font-size="12">2026-10 交易范围 · 60 个币 · θ = 0.55</text>
+  <text x="262" y="266" class="t2" font-size="12">15:42 这一根：已处理 37 / 60 · 预过滤 9 · 信号 2 · 开仓 1</text>
+  <circle cx="660" cy="240" r="4" class="b"/><text x="668" y="244" class="t2" font-size="11">预过滤</text>
+  <circle cx="718" cy="240" r="4" class="g"/><text x="726" y="244" class="t2" font-size="11">信号</text>
+  <circle cx="764" cy="240" r="4.5" fill="none" stroke="#30D158" stroke-width="1.6"/><text x="772" y="244" class="t2" font-size="11">持仓</text>
+  <circle cx="810" cy="240" r="4" class="o"/><text x="818" y="244" class="t2" font-size="11">跳过/观察</text>
+  <rect x="260" y="278" width="616" height="4" rx="2" fill="#FFFFFF" fill-opacity="0.08"/>
+  <rect x="260" y="278" width="380" height="4" rx="2" fill="url(#sweep)"/>
+  <circle cx="640" cy="280" r="4" fill="#64D2FF" filter="url(#glow)"/>
+
+  <!-- 第 1 行 -->
+  <g>
+    <rect x="260" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="273" cy="311" r="7" class="ringbg"/><text x="285" y="315" class="t2 sym">SOL</text>
+    <rect x="322" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="335" cy="311" r="7" class="ringbg"/><text x="347" y="315" class="t2 sym">SUI</text>
+    <rect x="384" y="294" width="58" height="34" rx="9" class="pref"/><circle cx="397" cy="311" r="7" class="ringbg"/><circle cx="397" cy="311" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="18 44" transform="rotate(-90 397 311)"/><text x="409" y="315" class="t1 sym">PEPE</text>
+    <rect x="446" y="294" width="58" height="34" rx="9" class="hold"/><circle cx="459" cy="311" r="7" class="ringbg"/><text x="471" y="315" class="t1 sym">WIF</text>
+    <rect x="504" y="290" width="66" height="42" rx="12" fill="none" stroke="#30D158" stroke-opacity="0.35" stroke-width="2"/>
+    <rect x="508" y="294" width="58" height="34" rx="9" class="sig" filter="url(#glow)"/><circle cx="521" cy="311" r="7" class="ringbg"/><circle cx="521" cy="311" r="7" fill="none" stroke="#30D158" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="27.7 44" transform="rotate(-90 521 311)"/><text x="533" y="315" class="t1 sym h">TRB</text>
+    <rect x="570" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="583" cy="311" r="7" class="ringbg"/><text x="595" y="315" class="t2 sym">ZEN</text>
+    <rect x="632" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="645" cy="311" r="7" class="ringbg"/><text x="657" y="315" class="t2 sym">ONDO</text>
+    <rect x="694" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="707" cy="311" r="7" class="ringbg"/><text x="719" y="315" class="t2 sym">DOGE</text>
+    <rect x="756" y="294" width="58" height="34" rx="9" class="cell"/><circle cx="769" cy="311" r="7" class="ringbg"/><text x="781" y="315" class="t2 sym">LINK</text>
+    <rect x="818" y="294" width="58" height="34" rx="9" class="pref"/><circle cx="831" cy="311" r="7" class="ringbg"/><circle cx="831" cy="311" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="16.7 44" transform="rotate(-90 831 311)"/><text x="843" y="315" class="t1 sym">ENA</text>
+  </g>
+  <!-- 第 2 行 -->
+  <g>
+    <rect x="260" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="273" cy="349" r="7" class="ringbg"/><text x="285" y="353" class="t2 sym">TAO</text>
+    <rect x="322" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="335" cy="349" r="7" class="ringbg"/><text x="347" y="353" class="t2 sym">ARB</text>
+    <rect x="384" y="332" width="58" height="34" rx="9" class="pref"/><circle cx="397" cy="349" r="7" class="ringbg"/><circle cx="397" cy="349" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="22.9 44" transform="rotate(-90 397 349)"/><text x="409" y="353" class="t1 sym">AVAX</text>
+    <rect x="446" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="459" cy="349" r="7" class="ringbg"/><text x="471" y="353" class="t2 sym">FET</text>
+    <rect x="508" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="521" cy="349" r="7" class="ringbg"/><text x="533" y="353" class="t2 sym">XRP</text>
+    <rect x="570" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="583" cy="349" r="7" class="ringbg"/><text x="595" y="353" class="t2 sym">ADA</text>
+    <rect x="632" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="645" cy="349" r="7" class="ringbg"/><text x="657" y="353" class="t2 sym">BNB</text>
+    <rect x="694" y="332" width="58" height="34" rx="9" class="pref"/><circle cx="707" cy="349" r="7" class="ringbg"/><circle cx="707" cy="349" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="12.8 44" transform="rotate(-90 707 349)"/><text x="719" y="353" class="t1 sym">DOT</text>
+    <rect x="756" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="769" cy="349" r="7" class="ringbg"/><text x="781" y="353" class="t2 sym">NEAR</text>
+    <rect x="818" y="332" width="58" height="34" rx="9" class="cell"/><circle cx="831" cy="349" r="7" class="ringbg"/><text x="843" y="353" class="t2 sym">APT</text>
+  </g>
+  <!-- 第 3 行 -->
+  <g>
+    <rect x="260" y="370" width="58" height="34" rx="9" class="skip"/><circle cx="273" cy="387" r="7" class="ringbg"/><circle cx="273" cy="387" r="7" fill="none" stroke="#FF9F0A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="25.5 44" transform="rotate(-90 273 387)"/><text x="285" y="391" class="t1 sym">OP</text>
+    <rect x="322" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="335" cy="387" r="7" class="ringbg"/><text x="347" y="391" class="t2 sym">INJ</text>
+    <rect x="384" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="397" cy="387" r="7" class="ringbg"/><text x="409" y="391" class="t2 sym">TIA</text>
+    <rect x="446" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="459" cy="387" r="7" class="ringbg"/><text x="471" y="391" class="t2 sym">SEI</text>
+    <rect x="508" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="521" cy="387" r="7" class="ringbg"/><text x="533" y="391" class="t2 sym">WLD</text>
+    <rect x="570" y="370" width="58" height="34" rx="9" class="pref"/><circle cx="583" cy="387" r="7" class="ringbg"/><circle cx="583" cy="387" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="19.4 44" transform="rotate(-90 583 387)"/><text x="595" y="391" class="t1 sym">JUP</text>
+    <rect x="632" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="645" cy="387" r="7" class="ringbg"/><text x="657" y="391" class="t2 sym">PYTH</text>
+    <rect x="694" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="707" cy="387" r="7" class="ringbg"/><text x="719" y="391" class="t2 sym">LTC</text>
+    <rect x="756" y="370" width="58" height="34" rx="9" class="pref"/><circle cx="769" cy="387" r="7" class="ringbg"/><circle cx="769" cy="387" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="14.5 44" transform="rotate(-90 769 387)"/><text x="781" y="391" class="t1 sym">FIL</text>
+    <rect x="818" y="370" width="58" height="34" rx="9" class="cell"/><circle cx="831" cy="387" r="7" class="ringbg"/><text x="843" y="391" class="t2 sym">ATOM</text>
+  </g>
+  <!-- 第 4 行（扫描进行中） -->
+  <g>
+    <rect x="260" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="273" cy="425" r="7" class="ringbg"/><text x="285" y="429" class="t2 sym">AAVE</text>
+    <rect x="322" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="335" cy="425" r="7" class="ringbg"/><text x="347" y="429" class="t2 sym">UNI</text>
+    <rect x="384" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="397" cy="425" r="7" class="ringbg"/><text x="409" y="429" class="t2 sym">LDO</text>
+    <rect x="446" y="408" width="58" height="34" rx="9" class="pref"/><circle cx="459" cy="425" r="7" class="ringbg"/><circle cx="459" cy="425" r="7" fill="none" stroke="#0A84FF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="20.7 44" transform="rotate(-90 459 425)"/><text x="471" y="429" class="t1 sym">BONK</text>
+    <rect x="508" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="521" cy="425" r="7" class="ringbg"/><text x="533" y="429" class="t2 sym">CRV</text>
+    <rect x="570" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="583" cy="425" r="7" class="ringbg"/><text x="595" y="429" class="t2 sym">ORDI</text>
+    <rect x="632" y="408" width="58" height="34" rx="9" class="cell"/><circle cx="645" cy="425" r="7" class="ringbg"/><text x="657" y="429" class="t2 sym">FLOKI</text>
+    <rect x="694" y="408" width="58" height="34" rx="9" class="cur" filter="url(#glow)"/><circle cx="707" cy="425" r="7" class="ringbg"/><circle cx="707" cy="425" r="7" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="9 44" transform="rotate(-90 707 425)"/><text x="719" y="429" class="t1 sym h">SHIB</text>
+    <rect x="756" y="408" width="58" height="34" rx="9" class="pend"/><circle cx="769" cy="425" r="7" class="ringbg"/><text x="781" y="429" class="t3 sym">ENS</text>
+    <rect x="818" y="408" width="58" height="34" rx="9" class="pend"/><circle cx="831" cy="425" r="7" class="ringbg"/><text x="843" y="429" class="t3 sym">GALA</text>
+  </g>
+  <!-- 第 5 行（待处理） -->
+  <g>
+    <rect x="260" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="273" cy="463" r="7" class="ringbg"/><text x="285" y="467" class="t3 sym">SAND</text>
+    <rect x="322" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="335" cy="463" r="7" class="ringbg"/><text x="347" y="467" class="t3 sym">IMX</text>
+    <rect x="384" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="397" cy="463" r="7" class="ringbg"/><text x="409" y="467" class="t3 sym">STX</text>
+    <rect x="446" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="459" cy="463" r="7" class="ringbg"/><text x="471" y="467" class="t3 sym">TON</text>
+    <rect x="508" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="521" cy="463" r="7" class="ringbg"/><text x="533" y="467" class="t3 sym">HBAR</text>
+    <rect x="570" y="446" width="58" height="34" rx="9" class="pend" stroke="#FF9F0A" stroke-opacity="0.6"/><circle cx="583" cy="463" r="3.5" class="o"/><text x="592" y="467" class="o sym">EIGEN</text>
+    <rect x="632" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="645" cy="463" r="7" class="ringbg"/><text x="657" y="467" class="t3 sym">ICP</text>
+    <rect x="694" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="707" cy="463" r="7" class="ringbg"/><text x="719" y="467" class="t3 sym">ETC</text>
+    <rect x="756" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="769" cy="463" r="7" class="ringbg"/><text x="781" y="467" class="t3 sym">BCH</text>
+    <rect x="818" y="446" width="58" height="34" rx="9" class="pend"/><circle cx="831" cy="463" r="7" class="ringbg"/><text x="843" y="467" class="t3 sym">TRX</text>
+  </g>
+  <!-- 第 6 行（待处理） -->
+  <g>
+    <rect x="260" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="273" cy="501" r="7" class="ringbg"/><text x="285" y="505" class="t3 sym">ALGO</text>
+    <rect x="322" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="335" cy="501" r="7" class="ringbg"/><text x="347" y="505" class="t3 sym">ZRO</text>
+    <rect x="384" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="397" cy="501" r="7" class="ringbg"/><text x="409" y="505" class="t3 sym">STRK</text>
+    <rect x="446" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="459" cy="501" r="7" class="ringbg"/><text x="471" y="505" class="t3 sym" font-size="10">PENDLE</text>
+    <rect x="508" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="521" cy="501" r="7" class="ringbg"/><text x="533" y="505" class="t3 sym">JTO</text>
+    <rect x="570" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="583" cy="501" r="7" class="ringbg"/><text x="595" y="505" class="t3 sym">NOT</text>
+    <rect x="632" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="645" cy="501" r="7" class="ringbg"/><text x="657" y="505" class="t3 sym" font-size="10">PEOPLE</text>
+    <rect x="694" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="707" cy="501" r="7" class="ringbg"/><text x="719" y="505" class="t3 sym">TURBO</text>
+    <rect x="756" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="769" cy="501" r="7" class="ringbg"/><text x="781" y="505" class="t3 sym">BOME</text>
+    <rect x="818" y="484" width="58" height="34" rx="9" class="pend"/><circle cx="831" cy="501" r="7" class="ringbg"/><text x="843" y="505" class="t3 sym">SATS</text>
+  </g>
+  <!-- 悬停提示示例 -->
+  <rect x="540" y="232" width="0" height="0"/>
+  <g>
+    <rect x="566" y="300" width="0" height="0"/>
+  </g>
+
+  <!-- 权益曲线 -->
+  <rect x="920" y="212" width="500" height="320" rx="20" class="card"/>
+  <text x="942" y="244" class="t1 h" font-size="16">权益曲线</text>
+  <rect x="1236" y="228" width="164" height="26" rx="8" fill="#FFFFFF" fill-opacity="0.07"/>
+  <rect x="1238" y="230" width="40" height="22" rx="6" fill="#636366" fill-opacity="0.55"/>
+  <text x="1258" y="245" class="t1" font-size="11" text-anchor="middle">1D</text>
+  <text x="1299" y="245" class="t2" font-size="11" text-anchor="middle">1W</text>
+  <text x="1339" y="245" class="t2" font-size="11" text-anchor="middle">1M</text>
+  <text x="1379" y="245" class="t2" font-size="11" text-anchor="middle">全部</text>
+  <text x="942" y="282" class="t1 h" font-size="26">10.8421</text>
+  <text x="1060" y="282" class="t2" font-size="13">USDT</text>
+  <text x="942" y="304" class="g" font-size="12">+8.42% · 最大回撤 3.1%（含浮动盈亏）</text>
+  <line x1="940" y1="360" x2="1400" y2="360" stroke="#FFFFFF" stroke-opacity="0.05"/>
+  <line x1="940" y1="420" x2="1400" y2="420" stroke="#FFFFFF" stroke-opacity="0.05"/>
+  <line x1="940" y1="480" x2="1400" y2="480" stroke="#FFFFFF" stroke-opacity="0.05"/>
+  <path d="M940,470 L960,462 L980,468 L1000,455 L1020,448 L1040,452 L1060,440 L1080,430 L1100,436 L1120,425 L1140,428 L1160,412 L1180,405 L1200,414 L1220,398 L1240,390 L1260,396 L1280,380 L1300,372 L1320,378 L1340,362 L1360,355 L1380,348 L1400,340 L1400,500 L940,500 Z" fill="url(#eqFill)"/>
+  <path d="M940,470 L960,462 L980,468 L1000,455 L1020,448 L1040,452 L1060,440 L1080,430 L1100,436 L1120,425 L1140,428 L1160,412 L1180,405 L1200,414 L1220,398 L1240,390 L1260,396 L1280,380 L1300,372 L1320,378 L1340,362 L1360,355 L1380,348 L1400,340" fill="none" stroke="#30D158" stroke-width="2.4" stroke-linejoin="round"/>
+  <circle cx="1400" cy="340" r="5" fill="#30D158" filter="url(#glow)"/>
+  <line x1="1200" y1="320" x2="1200" y2="500" stroke="#FFFFFF" stroke-opacity="0.2" stroke-dasharray="3 3"/>
+  <rect x="1150" y="322" width="100" height="40" rx="8" fill="#2C2C2E" fill-opacity="0.95"/>
+  <text x="1160" y="338" class="t2" font-size="10">10-18 15:00</text>
+  <text x="1160" y="354" class="t1" font-size="11">10.3110 USDT</text>
+  <text x="940" y="520" class="t3" font-size="10">10-01</text>
+  <text x="1050" y="520" class="t3" font-size="10">10-08</text>
+  <text x="1160" y="520" class="t3" font-size="10">10-15</text>
+  <text x="1270" y="520" class="t3" font-size="10">10-22</text>
+  <text x="1380" y="520" class="t3" font-size="10">10-29</text>
+
+  <!-- 当前持仓 -->
+  <rect x="240" y="552" width="520" height="324" rx="20" class="card"/>
+  <text x="262" y="584" class="t1 h" font-size="16">当前持仓</text>
+  <text x="340" y="584" class="t2" font-size="12">2 / 3</text>
+
+  <rect x="256" y="600" width="488" height="124" rx="14" fill="#2C2C2E" fill-opacity="0.45"/>
+  <text x="274" y="628" class="t1 h" font-size="15">TRBUSDT</text>
+  <rect x="352" y="614" width="46" height="20" rx="10" fill="#30D158" fill-opacity="0.18"/>
+  <text x="375" y="628" class="g" font-size="11" text-anchor="middle">多 5x</text>
+  <rect x="404" y="614" width="40" height="20" rx="10" fill="#0A84FF" fill-opacity="0.18"/>
+  <text x="424" y="628" class="b" font-size="11" text-anchor="middle">新开</text>
+  <text x="274" y="652" class="t2" font-size="12">入场 0.4598 · 现价 0.4651 · 名义 10.02 USDT</text>
+  <text x="726" y="632" class="g h" font-size="22" text-anchor="end">+1.15R</text>
+  <text x="726" y="652" class="g" font-size="12" text-anchor="end">+0.115 USDT</text>
+  <rect x="274" y="666" width="122" height="22" rx="11" class="chip"/>
+  <text x="335" y="681" class="t2" font-size="11" text-anchor="middle">初始止损 0.4552</text>
+  <rect x="404" y="666" width="122" height="22" rx="11" class="chip"/>
+  <text x="465" y="681" class="t2" font-size="11" text-anchor="middle">封顶止盈 0.4782</text>
+  <text x="274" y="710" class="t2" font-size="11">持仓 6 / 120 分钟</text>
+  <rect x="380" y="704" width="346" height="5" rx="2.5" fill="#FFFFFF" fill-opacity="0.08"/>
+  <rect x="380" y="704" width="17" height="5" rx="2.5" fill="#0A84FF"/>
+
+  <rect x="256" y="736" width="488" height="124" rx="14" fill="#2C2C2E" fill-opacity="0.45"/>
+  <text x="274" y="764" class="t1 h" font-size="15">WIFUSDT</text>
+  <rect x="350" y="750" width="46" height="20" rx="10" fill="#30D158" fill-opacity="0.18"/>
+  <text x="373" y="764" class="g" font-size="11" text-anchor="middle">多 5x</text>
+  <text x="274" y="788" class="t2" font-size="12">入场 1.7920 · 现价 1.8655 · 名义 10.00 USDT</text>
+  <text x="726" y="768" class="g h" font-size="22" text-anchor="end">+2.31R</text>
+  <text x="726" y="788" class="g" font-size="12" text-anchor="end">+0.410 USDT</text>
+  <rect x="274" y="802" width="132" height="22" rx="11" fill="#0A84FF" fill-opacity="0.18"/>
+  <text x="340" y="817" class="b" font-size="11" text-anchor="middle">追踪止损 1.8320</text>
+  <rect x="414" y="802" width="106" height="22" rx="11" class="chip"/>
+  <text x="467" y="817" class="t2" font-size="11" text-anchor="middle">止损上移 3 次</text>
+  <path d="M560,830 L590,830 L590,820 L620,820 L620,812 L650,812 L650,806 L680,806 L680,800 L726,800" fill="none" stroke="#0A84FF" stroke-width="1.8"/>
+  <text x="274" y="846" class="t2" font-size="11">持仓 47 / 120 分钟</text>
+  <rect x="380" y="840" width="346" height="5" rx="2.5" fill="#FFFFFF" fill-opacity="0.08"/>
+  <rect x="380" y="840" width="135" height="5" rx="2.5" fill="#0A84FF"/>
+
+  <!-- 挂单 -->
+  <rect x="780" y="552" width="320" height="324" rx="20" class="card"/>
+  <text x="802" y="584" class="t1 h" font-size="16">挂单</text>
+  <text x="846" y="584" class="t2" font-size="12">4 · 全部有效</text>
+
+  <text x="802" y="622" class="t1" font-size="13">TRB · 止损</text>
+  <text x="802" y="640" class="t2" font-size="11">条件市价 · 触发 0.4552</text>
+  <rect x="1032" y="610" width="50" height="22" rx="11" fill="#30D158" fill-opacity="0.18"/><text x="1057" y="625" class="g" font-size="11" text-anchor="middle">有效</text>
+  <line x1="802" y1="656" x2="1082" y2="656" stroke="#FFFFFF" stroke-opacity="0.06"/>
+
+  <text x="802" y="682" class="t1" font-size="13">TRB · 封顶止盈</text>
+  <text x="802" y="700" class="t2" font-size="11">限价 0.4782 · 只减仓</text>
+  <rect x="1032" y="670" width="50" height="22" rx="11" fill="#30D158" fill-opacity="0.18"/><text x="1057" y="685" class="g" font-size="11" text-anchor="middle">有效</text>
+  <line x1="802" y1="716" x2="1082" y2="716" stroke="#FFFFFF" stroke-opacity="0.06"/>
+
+  <text x="802" y="742" class="t1" font-size="13">WIF · 追踪止损 S3</text>
+  <text x="802" y="760" class="t2" font-size="11">条件市价 · 触发 1.8320 · 先挂新后撤旧</text>
+  <rect x="1032" y="730" width="50" height="22" rx="11" fill="#30D158" fill-opacity="0.18"/><text x="1057" y="745" class="g" font-size="11" text-anchor="middle">有效</text>
+  <line x1="802" y1="776" x2="1082" y2="776" stroke="#FFFFFF" stroke-opacity="0.06"/>
+
+  <text x="802" y="802" class="t1" font-size="13">WIF · 封顶止盈</text>
+  <text x="802" y="820" class="t2" font-size="11">限价 1.9410 · 只减仓</text>
+  <rect x="1032" y="790" width="50" height="22" rx="11" fill="#30D158" fill-opacity="0.18"/><text x="1057" y="805" class="g" font-size="11" text-anchor="middle">有效</text>
+  <text x="802" y="856" class="t3" font-size="10.5">来源：用户数据流推送 · 60 秒对账一次</text>
+
+  <!-- 事件 -->
+  <rect x="1120" y="552" width="300" height="324" rx="20" class="card"/>
+  <text x="1142" y="584" class="t1 h" font-size="16">事件</text>
+  <rect x="1328" y="570" width="76" height="20" rx="10" fill="#30D158" fill-opacity="0.14"/>
+  <text x="1366" y="584" class="g" font-size="10.5" text-anchor="middle">已推送微信</text>
+
+  <circle cx="1146" cy="614" r="4" class="g"/>
+  <text x="1158" y="618" class="t1" font-size="12">TRB 开仓 · IOC 全部成交</text>
+  <text x="1158" y="634" class="t3" font-size="10.5">15:42:01 · p 0.63 · 10.02 USDT</text>
+
+  <circle cx="1146" cy="660" r="4" class="b"/>
+  <text x="1158" y="664" class="t1" font-size="12">WIF 止损上移 → 追踪 1.8320</text>
+  <text x="1158" y="680" class="t3" font-size="10.5">15:41:00 · 新单确认后撤旧单</text>
+
+  <circle cx="1146" cy="706" r="4" class="o"/>
+  <text x="1158" y="710" class="t1" font-size="12">OP 信号未开仓 · 冷却期</text>
+  <text x="1158" y="726" class="t3" font-size="10.5">15:38:00 · p 0.58</text>
+
+  <circle cx="1146" cy="752" r="4" class="g"/>
+  <text x="1158" y="756" class="t1" font-size="12">SOL 保本出场 +0.03R</text>
+  <text x="1158" y="772" class="t3" font-size="10.5">15:12:00 · 持仓 34 分钟</text>
+
+  <circle cx="1146" cy="798" r="4" class="o"/>
+  <text x="1158" y="802" class="t1" font-size="12">EIGEN 新进入 · 观察中</text>
+  <text x="1158" y="818" class="t3" font-size="10.5">10-01 00:05 · 2 天后可交易</text>
+
+  <circle cx="1146" cy="844" r="4" class="r"/>
+  <text x="1158" y="848" class="t1" font-size="12">ARB 初始止损 −1.00R</text>
+  <text x="1158" y="864" class="t3" font-size="10.5">14:26:00 · 止损冷却 15 分钟</text>
+</svg>

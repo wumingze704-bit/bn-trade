@@ -35,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     base_cfg = load_config(
         BaseConfig, Path(args.base) if Path(args.base).is_absolute() else root / args.base
     )
-    universe_cfg = load_universe_config(
+    # 仅做校验：universe.yaml 必须在场且合法（后续取币走月度快照）
+    load_universe_config(
         Path(args.universe) if Path(args.universe).is_absolute() else root / args.universe
     )
     data_root = base_cfg.paths.data_root
@@ -43,7 +44,6 @@ def main(argv: list[str] | None = None) -> int:
     tuning_months_list = months[: base_cfg.data_window.tuning_months]
     coins = collect_universe_coins(data_root, tuning_months_list)[: args.limit]
     wb = window_bounds(base_cfg)
-    tuning_end_ms = months[base_cfg.data_window.tuning_months]  # M13 起点占位，实际用 rebalance
     # 直接用 M12 结束（tuning_months 个完整月后）
     from trade.data.loader import rebalance_ms_of
 

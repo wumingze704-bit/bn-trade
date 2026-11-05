@@ -1,6 +1,6 @@
 """入场价与成本计算（回测与标签共用，单一实现）。
 
-规格：docs/06-回测引擎.md §3.2、§4；docs/04-特征与标签.md §7.5
+规格：docs/06-回测引擎.md §3.2、§4；docs/04-特征与标签.md §7.3
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from trade.common.sizing import loss_rate
 
 @dataclass(frozen=True)
 class EntryParams:
-    """入场计算结果（回测与标签共用，06 §3.2、§4；04 §7.5）。"""
+    """入场计算结果（回测与标签共用，06 §3.2、§4；04 §7.3）。"""
 
     p_fill: float  # 开仓成交价 = p_raw × (1 + 半价差 + 入场滑点)
     sl: float  # 初始止损幅度（clip 到 [sl_min, sl_max]）
@@ -48,7 +48,7 @@ def compute_entry(
     """按回测口径计算入场价、初始止损与成本（06 §3.2、§4）。
 
     回测 `precompute_trades` 与标签 `exit_sim` 都调用本函数，保证两者入场价与成本
-    逐笔一致（04 §7.5「不另写一份出场逻辑」）。
+    逐笔一致（04 §7.3「不另写一份出场逻辑」）。
 
     Args:
         c_t: 信号 K 线收盘价。
@@ -58,7 +58,7 @@ def compute_entry(
         rv15: 未标准化的 15 分钟 1m 收益标准差（用于滑点）。
         qv: 信号 K 线成交额（quote_volume）。
         tick_size: 价格步长。
-        k_sl/sl_min/sl_max: 止损 ATR 系数与裁剪区间（04 §7.1）。
+        k_sl/sl_min/sl_max: 止损 ATR 系数与裁剪区间（04 §7.2）。
         notional_ref: 参考名义价值（滑点模型用，06 §4.2）。
         half_spread_min: 最小半价差（已按情景放大）。
         slip_min: 最小单边滑点（已按情景放大）。

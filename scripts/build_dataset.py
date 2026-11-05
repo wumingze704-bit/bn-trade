@@ -43,7 +43,7 @@ def _sha256_file(path: Path) -> str:
 def _load_tick_size_by_alias(rules_path: Path, aliases_path: Path) -> dict[str, float]:
     """从交易规则与别名快照构造 alias -> 价格步长映射。
 
-    规格：docs/04-特征与标签.md §7.5（exit_sim 标签的止损/点差取整用真实 tick_size，
+    规格：docs/04-特征与标签.md §7.3（exit_sim 标签的止损/点差取整用真实 tick_size，
     与回测同口径）。只取 aliases.json 中历史上入选过的币，不覆盖全市场。
 
     Args:

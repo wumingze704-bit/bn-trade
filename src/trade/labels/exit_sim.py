@@ -1,7 +1,7 @@
-"""出场模拟标签 `exit_sim`（默认，04 §7.5）。
+"""出场模拟标签 `exit_sim`（默认，04 §7.3）。
 
 复用与回测完全相同的入场价、成本与 `trade.common.exits.simulate_exit`，不另写一套
-出场逻辑（AGENTS.md §6 红线 4；04 §7.5）。
+出场逻辑（AGENTS.md §6 红线 4；04 §7.3）。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from trade.common.exits import ExitConfig, simulate_exit
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.features.kline import rv_15, true_range, wilder_atr
 
-# exit_sim 的 r_mult 截断区间（04 §7.5；triple_barrier 用 [-1.5, 3.0]，见 04 §7.2）
+# exit_sim 的 r_mult 截断区间（04 §7.3；triple_barrier 用 [-1.5, 3.0]，见 04 §7.4）
 _R_MULT_CLIP = (-1.5, 4.0)
 
 
@@ -49,7 +49,7 @@ def exit_sim(
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """对样本做出场模拟标签，返回 (labels 表, 保留下来的样本 bar 位置)。
 
-    规格：docs/04-特征与标签.md §7.5。
+    规格：docs/04-特征与标签.md §7.3。
     """
     p_col, hi_col, lo_col = _entry_columns(entry_latency_ms)
     open_time = bars["open_time"].to_numpy(dtype="int64")

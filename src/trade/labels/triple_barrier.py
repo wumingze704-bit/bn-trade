@@ -41,7 +41,7 @@ def _triple_barrier_nb(
 ) -> tuple[
     np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
 ]:
-    """numba 版三重障碍（与纯 Python 参考实现逐字段一致，04 §7.1）。"""
+    """numba 版三重障碍（与纯 Python 参考实现逐字段一致，04 §7.4）。"""
     m = sample_idx.shape[0]
     n = open_.shape[0]
     outcome = np.empty(m, dtype=np.int64)
@@ -63,7 +63,7 @@ def _triple_barrier_nb(
         bars_held[k] = 0
         t_exit[k] = 0
         keep[k] = False
-        # 数据末尾不足 H_label 根、或入场 K 线不存在：丢弃（04 §7.1/§7.2）
+        # 数据末尾不足 H_label 根、或入场 K 线不存在：丢弃（04 §7.4）
         if t + 1 >= n or t + H_label >= n:
             continue
         # 入场 K 线不得为补齐分钟（与 06 §3.1 开仓条件一致）
@@ -99,7 +99,7 @@ def _triple_barrier_nb(
             if lo <= lower:
                 res = _SL
                 exit_p = lower
-                # 跳空：j > t+1 且开盘价低于止损位时，出场价按开盘价（04 §7.1）
+                # 跳空：j > t+1 且开盘价低于止损位时，出场价按开盘价（04 §7.4）
                 if j > t + 1 and open_[j] < lower:
                     exit_p = open_[j]
                 exit_j = j
@@ -217,7 +217,7 @@ def _entry_columns(entry_latency_ms: int) -> tuple[str, str, str]:
         return "p_1s", "hi_post_1s", "lo_post_1s"
     if entry_latency_ms == 3000:
         return "p_3s", "hi_post_3s", "lo_post_3s"
-    raise ValueError(f"不支持的入场延迟：{entry_latency_ms}（04 §7.1 仅 1000/3000）")
+    raise ValueError(f"不支持的入场延迟：{entry_latency_ms}（04 §7.2 仅 1000/3000）")
 
 
 def triple_barrier(
@@ -237,7 +237,7 @@ def triple_barrier(
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """对样本做三重障碍标签，返回 (labels 表, 保留下来的样本 bar 位置)。
 
-    规格：docs/04-特征与标签.md §7.1、§7.2
+    规格：docs/04-特征与标签.md §7.2、§7.4
     """
     p_col, hi_col, lo_col = _entry_columns(entry_latency_ms)
     atr = atr_pct(
@@ -302,7 +302,7 @@ def triple_barrier(
 
 
 def uniqueness_weights(sample_idx: np.ndarray, bars_held: np.ndarray) -> np.ndarray:
-    """López de Prado 平均独特性权重（04 §7.3）。
+    """López de Prado 平均独特性权重（04 §7.5）。
 
     Args:
         sample_idx: 样本的 bar 位置（升序，同币内）。

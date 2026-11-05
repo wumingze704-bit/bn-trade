@@ -34,7 +34,7 @@
 
 ### T0.x 当前状态与接手说明
 
-截至 2026-10-31，T0.1~T0.19 共 19 项中，17 项为 `[x]`；T0.3 与 T0.17 尚未完全闭环，不能宣称 T0.x 全部完成。T0.9 已由使用者完成。`[x]` 仅表示该任务列出的验收已满足；fixture 通过不代表真实数据或服务器验收通过。
+截至 2026-11-02，T0.1~T0.19 共 19 项中，18 项为 `[x]`；仅 T0.3（P5 后改造事件模拟器并与实盘决策对拍）尚未完成，不能宣称 T0.x 全部完成。T0.9 已由使用者完成。`[x]` 仅表示该任务列出的验收已满足；fixture 通过不代表真实数据或服务器验收通过。
 
 #### T0.3：P5 后完成事件模拟器与实盘决策对拍
 
@@ -184,11 +184,11 @@
   - 验收：P1 的 SOLUSDT 27 分钟缺失样例：单日窗口判不合格（约 1.9%），30 天窗口判合格（约 0.06%）；其余现有质量测试继续通过。
   - 完成：新增显式窗口 API、原子 parquet 缓存读写；合成 27 分钟缺失样例日窗口 1.875% 不合格、30 天窗口 0.0625% 合格，并验证逐笔缺失比例、2% 一致性边界和源文件/p99 缺失诊断。真实数据抽样验证（测试段 DOGEUSDT/TONUSDT/ARBUSDT × 11 月度窗口）已运行：31/33 窗口合格，2 个边缘不合格（DOGEUSDT 首窗口逐笔缺失 13.3%、TONUSDT 下架月一致性 NaN），符合下架合约/数据源缺失的残余偏差预期（T0.14）。全量真实 bars 质量缓存已生成（`scripts/compute_quality_cache.py` → `artifacts/quality/quality_cache.parquet`）：M1~M22 入选币 237 币 × 入选月份 = 1158 窗口，合格 1105（95.4%）；53 个不合格窗口为 K 线缺失 16、逐笔缺失 37（新币数据段短 + 热门币早期数据源缺失），一致性误差 0 超限。
 
-- [x] **T0.19 实现 `exit_sim` 标签**（04 §7.0、§7.5，05 §1、§6.1）
+- [x] **T0.19 实现 `exit_sim` 标签**（04 §7.1、§7.3，05 §1、§6.1）
   - 内容：
     - `configs/features.yaml` 增加 `label.mode`（`exit_sim` 默认 / `triple_barrier`）与 `label.y_min_r: 0.25`，同步 pydantic 模型；
     - 新增 `trade.labels.exit_sim`：入场价、初始止损、成本与 `engine.precompute_trades` 完全一致——**把入场价与成本计算抽成一个共享函数**（放在 `trade.common` 或 `trade.backtest.costs`），标签与回测都调用它，并调用同一个 `trade.common.exits.simulate_exit`，不另写出场逻辑；
-    - 输出字段按 04 §7.5（`y`、`r_mult`、`exit_type`、`sl`、`ret_net`、`bars_held`、`t_exit`）；样本独特性权重与 Purge 使用 `t_exit`；
+    - 输出字段按 04 §7.3（`y`、`r_mult`、`exit_type`、`sl`、`ret_net`、`bars_held`、`t_exit`）；样本独特性权重与 Purge 使用 `t_exit`；
     - `build_dataset.py` 按 `label.mode` 选择标签；manifest 记录标签模式与 `exits.yaml` 哈希（出场参数改变即视为新数据集）。
   - 验收：同一组 bars 与信号，`exit_sim` 标签的出场时间、出场价、净收益与回测 `precompute_trades` 逐笔完全一致；`r_net ≥ 0.25` 才为正样本的边界测试；未来函数测试（修改 `t_exit` 之后的数据不影响该样本标签）；三重障碍模式的现有测试继续通过。
   - 依赖：T0.15（数据段）；资金费在 T0.8 后接入。
@@ -232,7 +232,7 @@
   - 部分完成：`scripts/run_pipeline.py` 已实现 `build_jobs`（快照→(symbol, alias, month, phase) 清单，按 调参期→测试段→封存集 与阶段内入选月数降序）、断点续传（bars 已存在则跳过）、`--phase` 分阶段、`ThreadPoolExecutor` 并发、失败汇总不中断、聚合后删 raw（保留月末一日 p99）；`aggregate.py --keep_raw`、`sync.ps1`/`sync.sh` 就绪；`tests/data/test_run_pipeline.py` 覆盖 phase/warmup/优先级。缺：服务器端验收（内存 <3GB、kill 后断点续传、两端 SHA256 一致）、失败批末重试、按阶段增量同步端到端验证。
   - 依赖：T0.13（快照）、T0.16（组装）、T0.17（质量）、T1-8（等价测试通过）、使用者已审阅快照。
 
-> **G1 闸门状态（2026-11-02）**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true`、真实热门币聚合等价/内存验证（T1-8）、真实数据上的特征一致性与未来函数测试（T2-8）均已满足；调参期 M1~M12 + 测试段 M13~M22 数据已下载并同步到本地（P2 数据集 `ds_20261102` 已构建，237 币）。仍缺（G1 未正式通过）：T1-9 服务器端验收（内存 <3GB、断点续传、SHA256 一致）、T1-6 两端 SHA256 一致、T0.17/T1-5 全量真实质量汇总表；封存集 M23~M24 在服务器（红线 2 不加载，G3 `--final` 才用）。
+> **G1 闸门状态（2026-11-02）**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true`、真实热门币聚合等价/内存验证（T1-8）、真实数据上的特征一致性与未来函数测试（T2-8）、全量真实 bars 质量汇总（T0.17，`artifacts/quality/quality_cache.parquet`，237 币 × 1158 窗口，合格 95.4%）均已满足；调参期 M1~M12 + 测试段 M13~M22 数据已下载并同步到本地（P2 数据集 `ds_20261102` 已构建，237 币）。仍缺（G1 未正式通过）：T1-9 服务器端验收（内存 <3GB、断点续传、SHA256 一致）、T1-6 两端 SHA256 一致、T1-5 的实时/历史成交口径比对（03 §1.1 第 8 条）；封存集 M23~M24 在服务器（红线 2 不加载，G3 `--final` 才用）。
 
 ## P2 特征与标签（本地）
 
@@ -318,8 +318,8 @@
 
 ## P6 可视化看板（FastAPI + 静态前端，深色 iOS 风格，SSH 隧道访问）
 
-> 规格：docs/10（整体重写）；布局以 `docs/assets/dashboard-overview.svg` 为准；只有深色主题，不做浅色与切换。
-> 现有 `src/trade/dashboard/__init__.py` 只是 Streamlit 时期的空包，按新设计重写，无其他代码需要迁移。
+> 规格：docs/10（整体重写）；布局以 `docs/dashboard-overview.svg` 为准；只有深色主题，不做浅色与切换。
+> 看板代码 `src/trade/dashboard` 已按本设计实现：`__main__.py`、`app.py`（FastAPI）、`config.py`、`reports.py`、`security.py`、`state_db.py` 与 `static/`（index.html、styles.css、app.js、vendor/）。其余实盘页面按 T6-4~T6-6 补齐。
 
 - [x] **T6-1 后端骨架与安全**（10 §2、§3、§7、§9、§11）
   - 内容：`python -m trade.dashboard`；FastAPI + uvicorn；`configs/dashboard.yaml`（按 10 §11）与 pydantic 模型；`server.address` 非 127.0.0.1 拒绝启动；所有 POST 与 `/ws` 校验 `Host`/`Origin`；状态库只读 URI 连接；`/api/status` 与 `/ws` 骨架；无 `state.db` 时只开放研究接口。
@@ -329,7 +329,7 @@
   - 内容：`static/index.html`、CSS 设计令牌（10 §4 的颜色、圆角、毛玻璃、字体、动效曲线）、左侧栏与顶栏、页面路由（Alpine.js）；把 Alpine.js、lightweight-charts、Plotly.js 下载到 `static/vendor/`，`VERSIONS.txt` 记录版本与 SHA256；`prefers-reduced-motion` 支持；所有文本转义。
   - 验收：断网可打开；布局与草图一致；SHA256 校验测试通过；事件文本中的 HTML 被转义。
   - 完成（2026-10-31 提前准备阶段）：`static/index.html` + `styles.css` 深色令牌 + Alpine.js 左侧栏 6 入口与顶栏骨架已实现；Alpine.js 3.14.8、lightweight-charts 4.2.3、Plotly.js 2.35.3 已本地化到 `static/vendor/`，`VERSIONS.txt` 记录版本与 SHA256，SHA256 校验测试通过；动态内容统一用 `x-text` 转义（不用 `x-html`）；`prefers-reduced-motion` 支持。
-  - 缺：仓库无 `docs/assets/dashboard-overview.svg` 草图，"布局与草图一致"无法对照；该草图主要为 T6-4 总览页（P5 后），待补。
+  - 缺：布局与草图逐项对照需人工验收（草图 `docs/dashboard-overview.svg` 面向 T6-4 总览页，P5 后）。
 - [~] **T6-3 回测与研究页**（10 §5.5；只依赖 P1~P4 产物，可在 P3 完成后先做）
   - 验收：用真实报告打开，数值与 `summary.json`、`gate.json` 一致；交易范围快照与质量页可浏览。
   - 完成（2026-10-31 提前准备阶段）：回测报告列表与详情（`summary.json`/`gate.json`/`report.md`/权益曲线 Plotly/交易明细）与模型列表（`model_meta.json`）读取接口与页面已实现；空目录/缺报告有占位；fixture 报告读取测试通过。
@@ -379,7 +379,7 @@
 | 17  | `quality.compute_quality`                      | 03 §2.4：三项各 1%/1%/2%，按 30 天窗口                   | 已支持分窗/缓存；真实 bars 结论未运行                      | T0.17 部分完成                              |
 | 18  | 特征流水线                                     | 03 §6、04 §5：数据段独立计算                             | 在拼接后的整段数据上计算                                  | T0.15                                       |
 | 19  | 组合模拟权益曲线                               | 06 §3.4、§5.1：回撤按盯市权益                            | 已按 `c_t` 逐分钟盯市（钱包余额 + 未实现盈亏）            | **已一致，无需修改**                        |
-| 20  | 标签                                           | 04 §7.5：默认 `exit_sim`                                 | 只有三重障碍                                              | T0.19                                       |
+| 20  | 标签                                           | 04 §7.3：默认 `exit_sim`                                 | 只有三重障碍                                              | T0.19                                       |
 | 21  | 看板                                           | 10：FastAPI + 静态前端、SSH 隧道                         | 只有 Streamlit 时期的空包；依赖仍含 streamlit、plotly     | T6-1~T6-7、T0.10                            |
 
 ## 需要使用者操作的事项（无待决策项）

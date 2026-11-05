@@ -43,7 +43,7 @@
 | `GET /fapi/v1/premiumIndex`              | 标记价格、下次资金费时间                                                       | 每 5 分钟                      |
 | `GET /fapi/v1/fundingRate`               | 历史资金费率                                                                   | 日报核算                       |
 
-> 说明：月度再平衡需要对全部 USDT 永续各拉一次日线（约数百次请求），权重以最新文档为准、**待 P5 用 `api_smoke.py` 实测**；按权重分批、跨多分钟完成，避开分钟收盘决策窗口（07 §4）。
+月度再平衡需要对全部 USDT 永续各拉一次日线（约数百次请求），权重以最新文档为准、待 P5 用 `api_smoke.py` 实测；按权重分批、跨多分钟完成，避开分钟收盘决策窗口（07 §4）。
 
 ### 3.2 账户与交易（需签名，见 §5）
 
@@ -61,9 +61,9 @@
 | 算法条件单接口（`POST /fapi/v1/algoOrder` 及对应的撤单、查询未完成条件单接口）                           | 止损单与追踪改单（07 §5.2）。自 2025-12-09 起，经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单会返回错误 `-4120`，必须走算法订单接口；参数细节以最新文档为准 |
 | `GET /fapi/v1/userTrades`                                                                                | 成交明细（对账、补记出场）                                                                                                                                        |
 | `GET /fapi/v1/income`                                                                                    | 资金费、手续费、已实现盈亏流水（日报核算、断线缺口补齐）                                                                                                          |
+| `POST` / `PUT` / `DELETE /fapi/v1/listenKey`                                                             | 创建、续期、关闭用户数据流（07 §3.1）                                                                                                                             |
 
-> 说明：`userTrades`、`allOrders` 单次查询的时间范围为最近 7 天（[币安公告](https://www.binance.com/es-LA/support/announcement/detail/6bc47f8b8a05445cb07b30454fec4084)），`income` 的查询窗口以最新文档为准，P5 用 `api_smoke.py` 核对。交易记录以状态库为准、永久保留（07 §6.1），这些接口只用于补齐断线缺口，必须在缺口发生后 7 天内执行。**看板不调用任何币安接口**（10 §1）。
-> | `POST` / `PUT` / `DELETE /fapi/v1/listenKey` | 创建、续期、关闭用户数据流 |
+`userTrades`、`allOrders` 单次查询的时间范围为最近 7 天（[币安公告](https://www.binance.com/es-LA/support/announcement/detail/6bc47f8b8a05445cb07b30454fec4084)），`income` 的查询窗口以最新文档为准，P5 用 `api_smoke.py` 核对。交易记录以状态库为准、永久保留（07 §6.1），这些接口只用于补齐断线缺口，必须在缺口发生后 7 天内执行。**看板不调用任何币安接口**（10 §1）。
 
 ### 3.3 WebSocket
 
@@ -90,7 +90,7 @@
 
 ## 4. 手续费（VIP0）
 
-- 使用者确认：**VIP0、不使用 BNB 抵扣**。配置值（`base.yaml`）：挂单 0.02%、吃单 0.05%（以币安官方费率页为准）。
+- **VIP0、不使用 BNB 抵扣**。配置值（`base.yaml`）：挂单 0.02%、吃单 0.05%（以币安官方费率页为准）。
 - 实盘启动时调用 `GET /fapi/v1/commissionRate`（任取一个交易币）读取 `makerCommissionRate`、`takerCommissionRate`，与配置比对（07 §2 第 6 步）。
 - 回测与实盘使用同一份费率配置；费率变化后必须重跑回测，因为本策略对成本极其敏感（06 §4.1）。
 
@@ -147,5 +147,5 @@
 | 2026-10-28 | Cline（东京服务器实测）    | exchangeInfo、ping 延迟 | `GET /fapi/v1/exchangeInfo` 返回 200，`futuresType=U_MARGINED`，`rateLimits.REQUEST_WEIGHT` 2400/min；**`contractType` 存在 `TRADIFI_PERPETUAL`**（TradFi，`underlyingType=EQUITY`、`underlyingSubType=["TradFi"]`），`check_contract` 按 `!= PERPETUAL` 即可阻断；REST ping 20 次 P95 ≈ 16 ms（P50 ≈ 8 ms） |
 | 2026-10-28 | Cline（东京服务器实测）    | WebSocket 行情流        | `wss://fstream.binance.com/ws/`：`btcusdt@bookTicker` 有数据；`btcusdt@aggTrade`、`btcusdt@kline_1m`、`!miniTicker@arr` 均无数据（连接成功但收不到消息）。疑似行情流命名/订阅机制变更，**待 P5 `api_smoke.py` 以最新文档实测核实**，WS 事件延迟暂记为待测                                                    |
 | 2026-10-31 | Cline（东京服务器复测）    | WebSocket 行情流        | 复测确认：`btcusdt@trade`（30 秒 P95≈14ms）与 `btcusdt@bookTicker`（60 秒 P95≈22ms）有数据；`btcusdt@aggTrade`、`btcusdt@kline_1m`、`btcusdt@markPrice`、`!miniTicker@arr` 连接成功但无数据（组合流 `SUBSCRIBE` 收到 ACK 后仍无数据）。REST P95≈11ms（20 次）。官方文档经 Cloudflare（HTTP 202）无法抓取正文，**正确订阅方式仍待 P5 `api_smoke.py` 以最新文档实测核实**；`latency_probe.py` 暂改用 `bookTicker` 测 WS 延迟                                                    |
-| 2026-10-31 | Cline（东京服务器实测）    | leverageBracket         | `GET /fapi/v1/leverageBracket` 无 API Key 返回 **401（需签名）**，且响应为数组而非对象（与 §3.2「需签名」一致，代码原误作公开接口）。P1 `snapshot_rules.py` 已改为 401/403 时跳过、`max_leverage` 视为满足（03 §4.3）；正式拉取需在 P5 用带签名客户端并解析数组 |
-| 待填写     |                            | §3 全部接口             | 初次实现时核对                                                                                                                                                                                                                                                                                               |
+| 2026-10-31 | Cline（东京服务器实测）    | leverageBracket         | `GET /fapi/v1/leverageBracket` 无 API Key 返回 **401（需签名）**，响应为数组而非对象（与 §3.2「需签名」一致）。P1 `snapshot_rules.py` 在 401/403 时跳过、`max_leverage` 视为满足（03 §4.3）；正式拉取需在 P5 用带签名客户端并解析数组 |
+| 2026-11-04 | Cline（本地开发，未实测）  | §3 全部接口            | `trade.live.exchange` 已按 §3 实现 REST 封装（`endpoints`/`models`/`signing`/`client`）与 WS 解析（`ws`）。签名：HMAC-SHA256 用官方文档示例 Key+载荷单测核对一致；Ed25519 用 `cryptography` 往返核对（本地无 `cryptography` 时 skip）。**所有接口真实行为、算法条件单 `algoOrder` 参数、测试网是否支持算法条件单、WS `aggTrade`/`kline_1m` 订阅方式均待 `scripts/api_smoke.py --env testnet` 在服务器实测后回填本表** |

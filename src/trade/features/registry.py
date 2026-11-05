@@ -85,10 +85,10 @@ class LabelCfg(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: str = Field(default="exit_sim", pattern=r"^(exit_sim|triple_barrier)$")
-    k_sl: float = Field(default=1.0, gt=0.0)
+    k_sl: float = Field(default=2.5, gt=0.0)
     rr: float = Field(default=2.0, gt=0.0)
-    sl_min: float = Field(default=0.005, gt=0.0, le=1.0)
-    sl_max: float = Field(default=0.015, gt=0.0, le=1.0)
+    sl_min: float = Field(default=0.010, gt=0.0, le=1.0)
+    sl_max: float = Field(default=0.025, gt=0.0, le=1.0)
     H_label: int = Field(default=60, ge=1)
     entry_latency_ms: int = Field(default=1000)
     c_rt: float = Field(default=0.0012, ge=0.0)

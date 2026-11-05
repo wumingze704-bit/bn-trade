@@ -1,7 +1,7 @@
 """T4-3 第 1 步：出场与止损参数搜索（用 M0 LightGBM 评估）。
 
 规格：docs/05-模型与训练.md §6.1（先定出场与止损，再调模型）。只在调参期
-（训练 M1~M10、验证 M11~M12）上搜索，6 组出场/止损参数各重建 `exit_sim` 标签、
+（训练 M1~M9、验证 M10~M12）上搜索，6 组出场/止损参数各重建 `exit_sim` 标签、
 训练 M0、在验证段选阈值、算 `base` 情景净收益与 PF，取 PF 最高且净收益 > 0 的一组。
 """
 
@@ -38,8 +38,8 @@ from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
 from trade.models.lightgbm import tabular_features_matrix, train_lgbm
 
-# 6 组出场/止损参数（第 3 轮：加密宽止损 + 提高 sl_max）。H_max/k_trail 固定 120/1.5，
-# 止损上限 sl_max 提到 2.5%，sl_min 在 1.0%~1.8% 加密（组 6 附近）。
+# 6 组出场/止损参数（05 §6.1 第 1 步）。H_max/k_trail 固定 120/1.5，sl_max 固定 2.5%，
+# 在 k_sl 2.5/3.0 与 sl_min 1.0%~1.8% 上各取 3 组。
 _EXIT_GRID: list[dict[str, float]] = [
     {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.010, "sl_max": 0.025},
     {"H_max": 120.0, "k_trail": 1.5, "k_sl": 2.5, "sl_min": 0.012, "sl_max": 0.025},
