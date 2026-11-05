@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -58,6 +60,33 @@ def _alias_for(aliases: dict[str, str], symbol: str) -> str:
     if symbol not in aliases:
         raise ValueError(f"币种不在别名表 aliases.json 中：{symbol}")
     return aliases[symbol]
+
+
+@contextmanager
+def _exclusive_lock(path: Path) -> Iterator[None]:
+    """串行化同一 alias 的 `whale_thr.parquet` 读改写（03 §2.2）。
+
+    同一币的相邻月份可能被两个并发任务同时聚合，二者都会读改写同一份阈值记录；
+    不加锁时后写者会覆盖先写者的行，输出随调度顺序变化（T1-9 可重复性）。
+
+    Args:
+        path: 锁文件路径，放在 `data/raw/locks/` 下，不进入同步与哈希对比范围。
+
+    Yields:
+        持有排他锁的上下文；POSIX 下进程被 kill 时由内核释放锁。
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows 本地开发不并发写同一 alias
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _read_zip_frame(path: Path, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -233,13 +262,15 @@ def main(argv: list[str] | None = None) -> int:
     write_monthly_bars(bars, out_path)
     threshold_path = out_path.parent / "whale_thr.parquet"
     new_thresholds = pd.DataFrame(threshold_rows)
-    if threshold_path.is_file():
-        old_thresholds = pd.read_parquet(threshold_path)
-        new_thresholds = pd.concat([old_thresholds, new_thresholds], ignore_index=True)
-    new_thresholds = new_thresholds.drop_duplicates("date", keep="last").sort_values("date")
-    temporary_threshold_path = threshold_path.with_name(f"{threshold_path.name}.tmp")
-    new_thresholds.to_parquet(temporary_threshold_path, index=False, compression="zstd")
-    temporary_threshold_path.replace(threshold_path)
+    # 同一币的相邻月份可能并发聚合，读改写阈值记录必须串行（T1-9 可重复性）。
+    with _exclusive_lock(raw_root / "locks" / f"{alias}.lock"):
+        if threshold_path.is_file():
+            old_thresholds = pd.read_parquet(threshold_path)
+            new_thresholds = pd.concat([old_thresholds, new_thresholds], ignore_index=True)
+        new_thresholds = new_thresholds.drop_duplicates("date", keep="last").sort_values("date")
+        temporary_threshold_path = threshold_path.with_name(f"{threshold_path.name}.tmp")
+        new_thresholds.to_parquet(temporary_threshold_path, index=False, compression="zstd")
+        temporary_threshold_path.replace(threshold_path)
     if not args.keep_raw:
         for day, zip_path in available_zips.items():
             if month_start_date <= day < month_end_date:
