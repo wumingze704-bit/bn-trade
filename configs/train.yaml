@@ -8,3 +8,37 @@ r0: # 规则策略 R0（05 §2）：预过滤通过 且 三条件同时满足 �
   vol_z_60: 2.0 # vol_z_60 ≥ 2.0
 
 threshold: 0.5 # 交易阈值 θ（R0 输出 p∈{0,1}，θ=0.5 时 p=1 视为开仓）
+
+# —— 模型与训练（05 §3~§6；超参只能来自本文件，代码不写死）——
+model:
+  arch: tcn # tcn | lstm | lgbm（M1 / M2 / M0）
+  window_L: 60 # 输入窗口长度；TCN 感受野 61 ≥ L（05 §3）
+  hidden: 64
+  blocks: 4
+  kernel: 3
+  dropout: 0.2 # 第 2 步搜索固定 0.2
+  loss: bce # bce | focal（第 2 步搜索项）
+  focal_gamma: 2.0
+  lambda_reg: 0.3 # Huber 辅助输出权重 λ（05 §4）
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  batch_size: 2048
+  max_epochs: 30
+  early_stopping_patience: 5
+  warmup_epochs: 1 # 前 1 个 epoch 线性预热（05 §6 第 4 条）
+  grad_clip_norm: 1.0
+  bf16: true # RTX 30 系列原生支持，不用 GradScaler（05 §6 第 4 条）
+  seeds: [42, 43, 44, 45, 46] # 种子集成（05 §6 第 4 条）
+  data_placement: gpu # gpu | pinned_cpu（显存不足退路，05 §5.1）
+  balance: loss_weight # loss_weight | sampler（05 §5.2）
+  time_decay_halflife_months: null # 第 2 步搜索固定关闭
+  lgbm_num_boost_round: 500
+  lgbm_early_stopping_rounds: 100
+
+walk_forward: # 03 §6、05 §6
+  window: expanding # expanding | rolling_12m
+  purge_bars: 60 # 边界 Purge：删除训练集末尾 H_label 根
+  embargo_days: 1 # 边界 Embargo：再删下一段开头 1 天
+  fold_train_start: "2024-10" # M1
+  max_folds: 5
+

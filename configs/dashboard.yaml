@@ -8,6 +8,13 @@ paths:
   live_dir: ./artifacts/live
   reports_dir: ./artifacts/reports
   models_dir: ./artifacts/models
+  # 研究页只读输入（10 §5.5）；文件不存在时页面显示占位，不影响实盘页面
+  data_dir: ./data
+  quality_cache: ./artifacts/quality/quality_cache.parquet
+  universe_config: ./configs/universe.yaml
+  universe_report: ./universe_report.md
+  sizing_config: ./configs/sizing.yaml # 仅用于顶栏仓位摘要与日亏损停止线显示
+  exits_config: ./configs/exits.yaml # 仅用于持仓进度条相对 H_max
 push_sec:
   status: 5
   db_poll: 1 # WebSocket 推送前查询状态库变更的间隔

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trade.features.kline import brk_60, tbr_5, vol_z_60
 from trade.labels.prefilter import prefilter_mask
+from trade.models.config import ModelConfig, WalkForwardConfig
 
 
 class R0Config(BaseModel):
@@ -24,12 +25,14 @@ class R0Config(BaseModel):
 
 
 class TrainConfig(BaseModel):
-    """configs/train.yaml 的 pydantic 模型（P3 仅含 R0 与阈值，P4 继续扩展）。"""
+    """configs/train.yaml 的 pydantic 模型（05 §2、§6）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     r0: R0Config = Field(default_factory=R0Config)
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
 
 
 def r0_signals_for_symbol(

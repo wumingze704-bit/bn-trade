@@ -36,7 +36,11 @@ class ServerConfig(BaseModel):
 
 
 class DashboardPathsConfig(BaseModel):
-    """看板读取的目录与状态库路径（10 §11）。"""
+    """看板读取的目录与状态库路径（10 §11）。
+
+    研究页只读 `data/universe/`、质量缓存、数据集 manifest 与 `configs/universe.yaml`；
+    这些路径缺失或文件不存在时页面显示占位，不影响实盘页面。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +48,12 @@ class DashboardPathsConfig(BaseModel):
     live_dir: Path
     reports_dir: Path
     models_dir: Path
+    data_dir: Path | None = None
+    quality_cache: Path | None = None
+    universe_config: Path | None = None
+    universe_report: Path | None = None
+    sizing_config: Path | None = None
+    exits_config: Path | None = None
 
 
 class PushConfig(BaseModel):

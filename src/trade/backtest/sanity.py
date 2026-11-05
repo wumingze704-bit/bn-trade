@@ -248,6 +248,19 @@ def s5_time_stability(
     }
 
 
+def s2_label_shuffle(profit_factor: float, *, max_pf: float = 1.05) -> str:
+    """S2 标签打乱判定（06 §7 S2）：打乱标签重训后 base PF 必须 ≤ 1.05。"""
+    status = "passed" if profit_factor <= max_pf else "failed"
+    return f"{status}（打乱标签后 PF={profit_factor:.3f}，上限 {max_pf:.2f}）"
+
+
+def s3_feature_shift(baseline_net: float, shifted_net: float, s1_std: float) -> str:
+    """S3 特征平移判定（06 §7 S3）：平移后净收益不高于原结果 + S1 标准差。"""
+    limit = baseline_net + s1_std
+    status = "passed" if shifted_net <= limit else "failed"
+    return f"{status}（平移后净收益 {shifted_net:.4f}，上限 {limit:.4f}）"
+
+
 def run_sanity_checks(
     *,
     s1: str = "not_run",
@@ -324,6 +337,7 @@ def compute_random_entry_candidates(
             {
                 "open_time": sym_samples["open_time"].to_numpy(dtype="int64"),
                 "p": np.ones(len(sym_samples), dtype="float64"),
+                "m": np.zeros(len(sym_samples), dtype="float64"),
             }
         )
         trades, _ = precompute_trades(

@@ -650,6 +650,7 @@ def run_backtest(
     initial_equity: float | None = None,
     trade_masks: dict[str, np.ndarray] | None = None,
     new_entry_symbols: set[str] | None = None,
+    scenario_override: Scenario | None = None,
 ) -> tuple[PortfolioResult, list[PrecomputedTrade]]:
     """运行单个成本情景的回测（06 §3.4）：预计算 + 组合模拟。
 
@@ -658,7 +659,7 @@ def run_backtest(
             条件 8）。缺省 None 表示无宇宙约束（测试/旧调用兼容）。
         new_entry_symbols: 可选，新进入组 alias 集合（03 §4.5、06 §7 S10）。
     """
-    scen = scenario(scen_name)
+    scen = scenario_override if scenario_override is not None else scenario(scen_name)
     all_trades: list[PrecomputedTrade] = []
     all_skipped: list[SkippedSignal] = []
     for symbol, bars in bars_by_symbol.items():

@@ -34,7 +34,7 @@ def compute_experiment_hash(
         OSError: 输入文件无法读取。
         TypeError: 配置值不能编码为 JSON。
     """
-    input_hashes = {name: _sha256_file(path) for name, path in sorted(input_files.items())}
+    input_hashes = {name: _sha256_path(path) for name, path in sorted(input_files.items())}
     payload = {"configs": effective_configs, "input_files": input_hashes}
     canonical = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -45,6 +45,21 @@ def compute_experiment_hash(
 def experiments_log_path(artifact_root: Path) -> Path:
     """返回统一的试验日志路径（06 §8）。"""
     return artifact_root / "reports" / "EXPERIMENTS.log"
+
+
+def _sha256_path(path: Path) -> str:
+    """计算输入文件或目录的 SHA256（选币快照是 `data/universe/` 目录）。
+
+    目录按文件名排序，逐个文件哈希后连同相对路径一起再哈希，保证内容与结构
+    变化都能反映到试验哈希中（06 §8）。
+    """
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+            digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(bytes.fromhex(_sha256_file(child)))
+        return digest.hexdigest()
+    return _sha256_file(path)
 
 
 def _sha256_file(path: Path) -> str:
@@ -114,6 +129,8 @@ def gate_payload(
     *,
     source: str,
     g2_bootstrap: dict[str, dict[str, float]] | None = None,
+    signals_kind: str | None = None,
+    model_id: str | None = None,
 ) -> dict[str, object]:
     """构造 gate.json 内容（06 §8，基于 reference 运行）。
 
@@ -126,6 +143,8 @@ def gate_payload(
         "run": "reference",
         "scenario": "base",
         "source": source,
+        "signals_kind": signals_kind,
+        "model_id": model_id,
         "metrics": reference_metrics,
         "sanity": sanity_results,
         "g2_bootstrap": g2_bootstrap,
@@ -172,6 +191,9 @@ def write_report(
     initial_equity: float,
     g2_bootstrap: dict[str, dict[str, float]] | None = None,
     s11: dict[str, float] | None = None,
+    sizing_sweep_frame: pd.DataFrame | None = None,
+    signals_kind: str | None = None,
+    model_id: str | None = None,
 ) -> None:
     """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。
 
@@ -205,7 +227,13 @@ def write_report(
         pd.concat(equity_frames, ignore_index=True).to_parquet(report_dir / "equity.parquet")
 
     gate = gate_payload(
-        run_id, reference_metrics, sanity_results, source=source, g2_bootstrap=g2_bootstrap
+        run_id,
+        reference_metrics,
+        sanity_results,
+        source=source,
+        g2_bootstrap=g2_bootstrap,
+        signals_kind=signals_kind,
+        model_id=model_id,
     )
     (report_dir / "gate.json").write_text(
         json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -214,6 +242,14 @@ def write_report(
         _render_report_md(run_id, source, summary, reference_metrics, sanity_results, s11),
         encoding="utf-8",
     )
+    if sizing_sweep_frame is not None:
+        from trade.backtest.sweep import plot_sizing_sweep, write_sizing_sweep
+
+        write_sizing_sweep(report_dir, sizing_sweep_frame)
+        plot_sizing_sweep(sizing_sweep_frame, report_dir / "sizing_sweep.png")
+    from trade.backtest.charts import write_all_charts
+
+    write_all_charts(report_dir)
 
 
 def _render_report_md(

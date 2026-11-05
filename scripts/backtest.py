@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from trade.backtest.costs import FeeSchedule
+from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import BacktestConfig, TradeRule, run_backtest
 from trade.backtest.event_sim import event_sim
 from trade.backtest.metrics import (
@@ -40,13 +41,17 @@ from trade.backtest.sanity import (
     compute_random_entry_candidates,
     random_entry_baseline,
     run_sanity_checks,
+    s2_label_shuffle,
+    s3_feature_shift,
     s4_threshold_perturb,
     s5_time_stability,
     s6_concentration,
     s9_compare,
     s11_deflated_sharpe,
 )
+from trade.backtest.sweep import sizing_sweep
 from trade.common.config import BaseConfig, load_config
+from trade.common.costs import breakeven_slip
 from trade.common.exits import ExitConfig
 from trade.common.sizing import SizingConfig
 from trade.data.loader import (
@@ -65,6 +70,12 @@ from trade.features.registry import FeaturesConfig
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="R0 信号回测")
     parser.add_argument("--signals", type=Path, required=True)
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="模型目录（读取 model_meta.json 的 threshold；模型信号时使用）",
+    )
     parser.add_argument("--rules", type=Path, required=True, help="exchangeInfo 规则快照 JSON")
     parser.add_argument("--run-id", type=str, required=True)
     parser.add_argument("--base", type=Path, default=Path("configs/base.yaml"))
@@ -80,6 +91,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="S8 逐笔重放结果 JSON（06 §7 S8）；缺省读 reports/{run_id}/s8_replay.json",
+    )
+    parser.add_argument(
+        "--signals-kind",
+        choices=("r0", "model"),
+        default=None,
+        help="信号来源：R0 规则或模型 signals（T3-9 / T4-8）；给出 --model 时默认 model",
+    )
+    parser.add_argument(
+        "--s2-result",
+        type=Path,
+        default=None,
+        help="S2 标签打乱重训结果 JSON（含 base_profit_factor）",
+    )
+    parser.add_argument(
+        "--s3-result",
+        type=Path,
+        default=None,
+        help="S3 特征平移结果 JSON（含 baseline_net / shifted_net / s1_std）",
     )
     return parser
 
@@ -99,6 +128,7 @@ def _run_scenario(
     initial_equity: float,
     trade_masks: dict[str, np.ndarray] | None = None,
     new_entry_symbols: set[str] | None = None,
+    scenario_override: object | None = None,
 ):
     """运行单个成本情景的回测（06 §3.4）。"""
     result, _ = run_backtest(
@@ -118,6 +148,7 @@ def _run_scenario(
         initial_equity=initial_equity,
         trade_masks=trade_masks,
         new_entry_symbols=new_entry_symbols,
+        scenario_override=scenario_override,  # type: ignore[arg-type]
     )
     return result
 
@@ -169,10 +200,18 @@ def s8_status(path: Path, run_id: str) -> str:
     return s8_status_from_payload(payload)
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     base = load_config(BaseConfig, args.base)
     backtest_cfg = load_config(BacktestConfig, args.backtest)
+    model_meta: dict[str, object] | None = None
+    if args.model is not None:
+        model_meta = json.loads((args.model / "model_meta.json").read_text(encoding="utf-8"))
+        backtest_cfg = backtest_cfg.model_copy(
+            update={"threshold": float(model_meta["threshold"])}  # type: ignore[arg-type]
+        )
+    signals_kind = args.signals_kind or ("model" if args.model is not None else "r0")
+    model_id = str(model_meta["model_id"]) if model_meta is not None else None
     exit_cfg = load_config(ExitConfig, args.exits)
     sizing_cfg = load_config(SizingConfig, args.sizing)
     features = load_config(FeaturesConfig, args.features)
@@ -226,6 +265,7 @@ def main() -> None:
         "user": (sizing_cfg, sizing_cfg.initial_equity),
     }
     run_results: dict[str, dict[str, object]] = {}
+    normal_scenarios = [name for name in backtest_cfg.scenarios if name != "breakeven"]
     for run_name, (sizing, equity) in runs.items():
         run_results[run_name] = {
             scen: _run_scenario(
@@ -243,11 +283,65 @@ def main() -> None:
                 trade_masks=trade_masks,
                 new_entry_symbols=new_entry_aliases,
             )
-            for scen in backtest_cfg.scenarios
+            for scen in normal_scenarios
         }
+        if "breakeven" in backtest_cfg.scenarios:
+
+            def _net(slip: float, sizing: object = sizing, equity: float = equity) -> float:
+                result = _run_scenario(
+                    bars_by_symbol,
+                    signals,
+                    rules,
+                    groups,
+                    scen="base",
+                    fees=fees,
+                    backtest_cfg=backtest_cfg,
+                    exit_cfg=exit_cfg,
+                    sizing_cfg=sizing,  # type: ignore[arg-type]
+                    features=features,
+                    initial_equity=equity,
+                    trade_masks=trade_masks,
+                    new_entry_symbols=new_entry_aliases,
+                    scenario_override=replace(scenario("base"), name="breakeven", fixed_slip=slip),
+                )
+                return float(sum(trade.net_pnl for trade in result.trades))
+
+            breakeven = breakeven_slip(net_return=_net, hi=0.01, max_iter=10)
+            run_results[run_name]["breakeven"] = _run_scenario(
+                bars_by_symbol,
+                signals,
+                rules,
+                groups,
+                scen="base",
+                fees=fees,
+                backtest_cfg=backtest_cfg,
+                exit_cfg=exit_cfg,
+                sizing_cfg=sizing,
+                features=features,
+                initial_equity=equity,
+                trade_masks=trade_masks,
+                new_entry_symbols=new_entry_aliases,
+                scenario_override=replace(scenario("base"), name="breakeven", fixed_slip=breakeven),
+            )
 
     reference_result = run_results["reference"]["base"]
     reference_metrics = compute_metrics(reference_result, backtest_cfg.reference.initial_equity)
+
+    # 仓位比例敏感性扫描（06 §5.5）：每个比例都重跑完整组合模拟。
+    sweep_frame = sizing_sweep(
+        bars_by_symbol,
+        signals,
+        rules,
+        groups,
+        fees=fees,
+        backtest_cfg=backtest_cfg,
+        exit_cfg=exit_cfg,
+        sizing_cfg=sizing_cfg,
+        features_cfg=features,
+        fractions=list(backtest_cfg.sizing_sweep.position_frac),
+        initial_equity=sizing_cfg.initial_equity,
+        trade_masks=trade_masks,
+    )
 
     # S1 随机入场基准（06 §7 S1，固定种子可复现）。
     candidates = compute_random_entry_candidates(
@@ -308,6 +402,20 @@ def main() -> None:
 
     # S6 集中度（06 §7 S6）。
     s6 = s6_concentration(reference_result, backtest_cfg.reference.initial_equity)
+
+    # S2 / S3 由训练侧脚本产出结果 JSON，这里只做判定与写入 gate（06 §7）。
+    s2_status = "not_run"
+    if args.s2_result is not None:
+        payload = json.loads(args.s2_result.read_text(encoding="utf-8"))
+        s2_status = s2_label_shuffle(float(payload["base_profit_factor"]))
+    s3_status = "not_run"
+    if args.s3_result is not None:
+        payload = json.loads(args.s3_result.read_text(encoding="utf-8"))
+        s3_status = s3_feature_shift(
+            float(payload["baseline_net"]),
+            float(payload["shifted_net"]),
+            float(payload["s1_std"]),
+        )
 
     # S9 事件驱动对拍（P5 之前仅覆盖组合层，06 §3.4）。
     event = event_sim(
@@ -412,6 +520,8 @@ def main() -> None:
 
     sanity = run_sanity_checks(
         s1="passed" if s1["passed"] else "failed",
+        s2=s2_status,
+        s3=s3_status,
         s4=s4,
         s5=s5,
         s6=s6,
@@ -430,6 +540,9 @@ def main() -> None:
         initial_equity=backtest_cfg.reference.initial_equity,
         g2_bootstrap=g2_bootstrap,
         s11=s11,
+        sizing_sweep_frame=sweep_frame,
+        signals_kind=signals_kind,
+        model_id=model_id,
     )
     if args.final:
         final_log = base.paths.artifact_root / "reports" / "FINAL_RUNS.log"
@@ -443,6 +556,7 @@ def main() -> None:
                 + "\n"
             )
     print(f"报告目录：{report_dir}")
+    return 0
 
 
 if __name__ == "__main__":
