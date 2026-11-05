@@ -20,7 +20,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from tuning_models import _load_rules, _threshold_metrics, manifest_features
+
+try:  # 直接运行 scripts/*.py 时脚本目录在 sys.path[0]
+    from tuning_models import _load_rules, _threshold_metrics, manifest_features
+except ModuleNotFoundError:  # 作为 scripts 包导入时（测试/工具）
+    from scripts.tuning_models import _load_rules, _threshold_metrics, manifest_features
 
 from trade.backtest.costs import FeeSchedule
 from trade.backtest.engine import BacktestConfig, TradeRule
