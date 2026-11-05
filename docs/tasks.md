@@ -266,9 +266,11 @@
 - [x] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`；已安装 torch 2.14.1+cu126，`cuda_available: true`（RTX 3060 Laptop 6GB，驱动 581.32）
 - [~] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 pinned_cpu，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告 —— 已完成 `trade.models.dataset.WindowDataset`：索引切片（样本只存 `(sym_id, row_idx, y, r_mult, w)`、不预先展开）、币种均衡（1/该币样本数 归一化）、窗口不跨数据段、补齐分钟占比 > 20% 丢弃、GPU/CPU 一致单测（`tests/models/test_dataset.py` 6 项）；缺：入选月份过滤（内存控制）、.npy memmap（当前直接读 parquet）、pinned_cpu 退路、实测显存报告
 - [x] T4-2 TCN 因果性单测 —— `trade.models.tcn.TCNModel` 已实现（因果 TCN 残差块 × 4 + 注意力池化 + 双头），`tests/models/test_tcn.py` 3 项通过（前向形状、因果性：改 t+1 之后不变、感受野 ≥ L）
-- [~] T4-3 调参期 M1~M12 两步搜索（05 §6.1）—— 第 1 步完成：诊断发现止损过紧（sl_min=0.5% 假突破扫损 41.8%、每笔亏 62bp），放宽止损后第 3 轮（验证段 M10~M12、sl_max=2.5%）6 组全部 PF>1 且净收益>0（组 1~6 PF：1.473/1.033/1.026/1.001/1.039/1.087，净收益 +1322/+104/+262/+16/+117/+946）；按「PF 最高」选组 1（H_max=120、k_trail=1.5、k_sl=2.5、sl_min=1.0%、sl_max=2.5%）并冻结进 features.yaml；第 2 步（模型超参最多 24 组）未开始
+- [~] T4-3 调参期 M1~M12 两步搜索（05 §6.1）—— 第 1 步完成：诊断发现止损过紧（sl_min=0.5% 假突破扫损 41.8%、每笔亏 62bp），放宽止损后第 3 轮（验证段 M10~M12、sl_max=2.5%）6 组全部 PF>1 且净收益>0（组 1~6 PF：1.473/1.033/1.026/1.001/1.039/1.087，净收益 +1322/+104/+262/+16/+117/+946）；按「PF 最高」选组 1（H_max=120、k_trail=1.5、k_sl=2.5、sl_min=1.0%、sl_max=2.5%）并冻结进 features.yaml；第 2 步（模型超参）未开始
   - 第 1 步：6 组出场与止损参数，每组重建 `exit_sim` 标签 → 训练 M0 → 验证段选阈值 → `base` 情景 PF 与净收益，选定后冻结 `exits.yaml` 与 `k_sl`；
-  - 第 2 步：固定第 1 步结果，模型超参最多 24 组；
+  - 试验登记：第 1 步实际运行 18 组（3 轮 × 6 组，含失败的组），已逐组补登 `artifacts/reports/EXPERIMENTS.log`（`--backfill-log`，可重复执行不重复登记）；18 组计入 05 §6.1 的 30 组预算，剩余 12 组留给第 2 步。历史轮次当时未打印每组的笔数，`n_trades` 记 null（run_id 带 `_n_missing`），不估算。
+  - 组 1 体检（只报告、不参与选择）：`scripts/tuning_exits.py --checkup --checkup-group 1 --theta 0.34` 用冻结参数复现组 1 的 M0，在验证段 M10~M12 跑 `base`/`stress`/`hell` 与盈亏平衡滑点，并把「复现」行写入 `EXPERIMENTS.log`；本次真实运行在标签重建阶段被中止（使用者要求取消），未产生结果，不写未运行的数字。
+  - 第 2 步：固定第 1 步结果，模型超参按 05 §6.1 的候选范围；
   - 两步合计 ≤ 30 组，全部登记 `EXPERIMENTS.log`（含失败组）；`y_min_r` 不参与搜索。
 - [ ] T4-4 M0 / M1 / M2 训练、早停、bf16、种子集成；同种子两次 PR-AUC 差 < 0.002
 - [ ] T4-5 校准与阈值（只在各折验证集选），`model_meta.json` 字段齐全（含 `label.mode`、`y_min_r`、`exit_policy`、`universe_rule_hash`）
