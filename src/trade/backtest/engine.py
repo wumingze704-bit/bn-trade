@@ -124,6 +124,13 @@ class PrecomputedTrade:
     step_size: float = 0.0
     min_notional: float = 0.0
     new_entry: bool = False
+    # 以下字段供 S8 逐笔重放复用同一套入场成本与出场参数（06 §7 S8），不进报告 schema。
+    atr_abs: float = 0.0
+    slip_stop: float = 0.0
+    slip_exit: float = 0.0
+    half_spread: float = 0.0
+    notional_ref: float = 0.0
+    h_max: int = 0
 
 
 @dataclass
@@ -483,6 +490,12 @@ def precompute_trades(
                 step_size=rule.step_size,
                 min_notional=rule.min_notional,
                 new_entry=new_entry,
+                atr_abs=atr_abs,
+                slip_stop=slip_stop,
+                slip_exit=slip_,
+                half_spread=hs,
+                notional_ref=notional_ref,
+                h_max=H_max,
             )
         )
     return trades, skipped

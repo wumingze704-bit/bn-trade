@@ -260,7 +260,11 @@
 - [x] T3-4 仓位 `sizing` —— `test_sizing.py` 12 项（仓位基准为钱包余额，与现有实现一致）
 - [~] T3-5 逐笔预计算 + 组合模拟 —— 交易范围过滤（T0.15）、资金费（T0.8）、入场价与成本抽为共享函数（T0.19）已随对应 T0.x 完成；盯市权益曲线已由 T0.18 完成；缺：06 §5.4 速查表数值复现测试（08 P3 验收项，代码中不存在）
 - [~] T3-6 `event_sim` 与 S9 —— T0.2 全字段对拍已完成；S9 当前只覆盖组合层并有报告标注，实盘决策复用与完整 S9 验收等待 T0.3（P5 后、G4 前）
-- [ ] T3-7 S8 逐笔重放（服务器，3 币 × 1 测试月），含改单 1 秒旧止损窗口（原始数据由 T1-9 保留）
+- [x] T3-7 S8 逐笔重放（服务器，3 币 × 1 测试月），含改单 1 秒旧止损窗口（原始数据由 T1-9 保留）—— **代码与 fixture 单测完成，真实测试段运行留待正式回测**：
+  - 实现：`trade.backtest.replay`（`replay_trade` / `replay_month` / `compare_s8` / `s8_payload`，逐笔重放复用 `trade.common.exits` 的 `floor_tick` / `ceil_tick` / `initial_stop` / `take_profit_price` / `update_stop_after_bar`，收盘新止损 1 秒后才生效，窗口内旧止损仍有效）；`scripts/s8_replay.py`（服务器入口，写 `s8_replay.json` / `s8_replay.parquet` 并回填 `gate.json`）；`scripts/backtest.py` 的 S8 改为读 `s8_replay.json`（`--s8-result`），不再是硬编码 `not_run`；`scripts/download.py` 新增 `--symbols`。
+  - 单测：`tests/backtest/test_replay.py` 14 项（同根 K 线逐笔顺序、1 秒旧止损窗口、跳空与补齐分钟、逐笔级不比 K 线级乐观、净收益差异分母、判定阈值与状态文本、日度归档读取、按月装载窗口、`gate.json` 回填、`scripts/backtest.py` 状态读取、`scripts/s8_replay.py` 端到端 fixture 运行）。
+  - 原始数据：服务器保留 2026-02（测试段 M17）XRPUSDT / ARBUSDT / STRKUSDT 的日度 aggTrades 共 84 个（约 224 MB，`data/raw/aggtrades/{alias}/`）；选取规则与重下命令见 03 §2.2，选定后不得更改。
+  - **未运行**：真实测试段的 S8（按任务要求不在本次运行），正式回测后执行 `python scripts/s8_replay.py --run-id <run_id> --signals <signals.parquet> --rules <rules.json>`。
 - [~] T3-8 指标与报告、`gate.json`、`EXPERIMENTS.log` —— 新分组（T0.15）已随 T0.15 完成；T0.4、T0.5（S11 端到端）、T0.6、T0.11、T0.12、T0.18 已完成；缺：`sizing_sweep`（06 §5.5）、PNG 图表
 - [x] **T3-9a 调参期 R0 毛期望早期检查**（M1~M12 数据到本地后立即做）
   - 内容：在 M1~M12 上跑 R0（阈值事先固定），统计成本前后的单笔期望与笔数，与往返成本约 15 bp 比较。

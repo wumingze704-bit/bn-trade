@@ -107,15 +107,142 @@ class ExitResult:
 
 
 @njit
-def _floor_tick(x: float, tick: float) -> float:
+def floor_tick(x: float, tick: float) -> float:
     """价格向下取整到 tickSize（06 §3.2）。"""
     return math.floor(x / tick + 1e-9) * tick
 
 
 @njit
-def _ceil_tick(x: float, tick: float) -> float:
+def ceil_tick(x: float, tick: float) -> float:
     """价格向上取整到 tickSize（限价止盈卖出向上取整，保守）。"""
     return math.ceil(x / tick - 1e-9) * tick
+
+
+def initial_stop(p_fill: float, sl: float, tick_size: float) -> float:
+    """初始止损价 `D0`（06 §3.2）：`P_fill × (1 − sl)` 向下取整到 tickSize。"""
+    return float(floor_tick(p_fill * (1.0 - sl), tick_size))
+
+
+def take_profit_price(p_fill: float, sl: float, cfg: ExitConfig, tick_size: float) -> float:
+    """封顶止盈价 `cap`（06 §3.3）。
+
+    `trail` 用 `P_fill + tp_cap_r × R`，`fixed` 用 `P_fill × (1 + rr × sl)`，
+    两者都向上取整到 tickSize。
+    """
+    r_dist = p_fill * sl
+    if cfg.type == "fixed":
+        return float(ceil_tick(p_fill * (1.0 + cfg.rr * sl), tick_size))
+    return float(ceil_tick(p_fill + cfg.tp_cap_r * r_dist, tick_size))
+
+
+def exit_mode(cfg: ExitConfig) -> int:
+    """出场模式编码（0 = `fixed`，1 = `trail`），供 S8 逐笔重放选择同一套更新规则。"""
+    return _MODE_FIXED if cfg.type == "fixed" else _MODE_TRAIL
+
+
+def min_stop_move(tick_size: float, min_stop_move_r: float, r_dist: float) -> float:
+    """最小止损上移幅度 `max(1 tick, min_stop_move_r × R)`（06 §3.3）。"""
+    return max(tick_size, min_stop_move_r * r_dist)
+
+
+def update_stop_after_bar(
+    stop: float,
+    phase: int,
+    hh: float,
+    p_fill: float,
+    r_dist: float,
+    atr_abs: float,
+    tick_size: float,
+    min_move: float,
+    held_bars: int,
+    mode: int,
+    be_trigger_r: float,
+    be_offset: float,
+    trail_trigger_r: float,
+    k_trail: float,
+    stall_bars: int,
+    stall_r: float,
+) -> tuple[float, int, int, bool]:
+    """K 线收盘后更新止损价与出场阶段（06 §3.3）。
+
+    保本与追踪在同一根收盘时按顺序判断：先保本、再追踪；止损只上移，新止损与旧止损
+    相差不足 `min_move` 时不更新。K 线级 Python 参考实现与 S8 逐笔重放共用本函数
+    （AGENTS.md §6 红线 4），numba 版 `_update_stop_after_bar_nb` 与它逐字段一致。
+
+    Args:
+        stop: 当前生效止损价（上一根收盘时的值）。
+        phase: 当前出场阶段编码（0 初始止损 / 1 保本 / 2 追踪）。
+        hh: 入场以来已收盘部分的最高价（入场 K 线用入场后高低点）。
+        p_fill: 开仓成交价。
+        r_dist: 1R 的价格距离 `P_fill × sl`。
+        atr_abs: 入场时刻 ATR14 绝对值（持仓期固定）。
+        tick_size: 价格步长。
+        min_move: 最小止损上移幅度，见 `min_stop_move`。
+        held_bars: 已持有根数（含当前根，从 1 开始）。
+        mode: 出场模式编码，见 `exit_mode`。
+        be_trigger_r/be_offset/trail_trigger_r/k_trail/stall_bars/stall_r: 出场参数。
+
+    Returns:
+        `(止损价, 出场阶段, 本次上移次数, 是否已达成“有进展”)`。
+    """
+    updates = 0
+    made_progress = False
+    if mode == _MODE_TRAIL:
+        if hh >= p_fill + be_trigger_r * r_dist:
+            new_stop = float(floor_tick(p_fill * (1.0 + be_offset), tick_size))
+            if new_stop - stop >= min_move:
+                stop = new_stop
+                updates += 1
+            phase = _EXIT_BREAKEVEN
+        if hh >= p_fill + trail_trigger_r * r_dist:
+            new_stop = float(floor_tick(hh - k_trail * atr_abs, tick_size))
+            if new_stop - stop >= min_move:
+                stop = new_stop
+                updates += 1
+            phase = _EXIT_TRAIL
+        if held_bars <= stall_bars and hh >= p_fill + stall_r * r_dist:
+            made_progress = True
+    return stop, phase, updates, made_progress
+
+
+@njit
+def _update_stop_after_bar_nb(
+    stop: float,
+    phase: int,
+    hh: float,
+    p_fill: float,
+    r_dist: float,
+    atr_abs: float,
+    tick_size: float,
+    min_move: float,
+    held_bars: int,
+    mode: int,
+    be_trigger_r: float,
+    be_offset: float,
+    trail_trigger_r: float,
+    k_trail: float,
+    stall_bars: int,
+    stall_r: float,
+) -> tuple[float, int, int, bool]:
+    """numba 版收盘状态机更新，与 `update_stop_after_bar` 逐字段一致（06 §3.3）。"""
+    updates = 0
+    made_progress = False
+    if mode == _MODE_TRAIL:
+        if hh >= p_fill + be_trigger_r * r_dist:
+            new_stop = floor_tick(p_fill * (1.0 + be_offset), tick_size)
+            if new_stop - stop >= min_move:
+                stop = new_stop
+                updates += 1
+            phase = _EXIT_BREAKEVEN
+        if hh >= p_fill + trail_trigger_r * r_dist:
+            new_stop = floor_tick(hh - k_trail * atr_abs, tick_size)
+            if new_stop - stop >= min_move:
+                stop = new_stop
+                updates += 1
+            phase = _EXIT_TRAIL
+        if held_bars <= stall_bars and hh >= p_fill + stall_r * r_dist:
+            made_progress = True
+    return stop, phase, updates, made_progress
 
 
 @njit
@@ -154,11 +281,11 @@ def _simulate_exit_nb(
     """numba 版单笔出场状态机（06 §3.3），与纯 Python 参考逐字段一致。"""
     n = open_.shape[0]
     R = p_fill * sl
-    stop = _floor_tick(p_fill * (1.0 - sl), tick_size)
+    stop = floor_tick(p_fill * (1.0 - sl), tick_size)
     if mode == _MODE_FIXED:
-        cap = _ceil_tick(p_fill * (1.0 + rr * sl), tick_size)
+        cap = ceil_tick(p_fill * (1.0 + rr * sl), tick_size)
     else:
-        cap = _ceil_tick(p_fill + tp_cap_r * R, tick_size)
+        cap = ceil_tick(p_fill + tp_cap_r * R, tick_size)
 
     hh = -np.inf
     min_lo = np.inf
@@ -222,28 +349,32 @@ def _simulate_exit_nb(
             exited = True
             break
         # 收盘更新状态机，下一根生效（06 §3.3）
-        if mode == _MODE_TRAIL:
-            if hh >= p_fill + be_trigger_r * R:
-                new_stop = _floor_tick(p_fill * (1.0 + be_offset), tick_size)
-                if new_stop - stop >= min_move:
-                    stop = new_stop
-                    stop_updates += 1
-                phase = _EXIT_BREAKEVEN
-            if hh >= p_fill + trail_trigger_r * R:
-                new_stop = _floor_tick(hh - k_trail * atr_abs, tick_size)
-                if new_stop - stop >= min_move:
-                    stop = new_stop
-                    stop_updates += 1
-                phase = _EXIT_TRAIL
-            if j - t_entry + 1 <= stall_bars:
-                if hh >= p_fill + stall_r * R:
-                    made_progress = True
-                if j - t_entry + 1 == stall_bars and not made_progress:
-                    exit_idx = j + 1
-                    exit_type = _EXIT_STALL
-                    fee_rate = fee_taker
-                    exited = True
-                    break
+        stop, phase, updates, progress_now = _update_stop_after_bar_nb(
+            stop,
+            phase,
+            hh,
+            p_fill,
+            R,
+            atr_abs,
+            tick_size,
+            min_move,
+            j - t_entry + 1,
+            mode,
+            be_trigger_r,
+            be_offset,
+            trail_trigger_r,
+            k_trail,
+            stall_bars,
+            stall_r,
+        )
+        stop_updates += updates
+        made_progress = made_progress or progress_now
+        if mode == _MODE_TRAIL and j - t_entry + 1 == stall_bars and not made_progress:
+            exit_idx = j + 1
+            exit_type = _EXIT_STALL
+            fee_rate = fee_taker
+            exited = True
+            break
         j += 1
 
     if not exited:
@@ -422,11 +553,11 @@ def _simulate_exit_py(
     """纯 Python 参考实现（与 numba 版逐字段一致，AGENTS.md §6）。"""
     n = open_.shape[0]
     R = p_fill * sl
-    stop = math.floor(p_fill * (1.0 - sl) / tick_size + 1e-9) * tick_size
+    stop = float(floor_tick(p_fill * (1.0 - sl), tick_size))
     if mode == _MODE_FIXED:
-        cap = math.ceil(p_fill * (1.0 + rr * sl) / tick_size - 1e-9) * tick_size
+        cap = float(ceil_tick(p_fill * (1.0 + rr * sl), tick_size))
     else:
-        cap = math.ceil((p_fill + tp_cap_r * R) / tick_size - 1e-9) * tick_size
+        cap = float(ceil_tick(p_fill + tp_cap_r * R, tick_size))
 
     hh = float("-inf")
     min_lo = float("inf")
@@ -434,7 +565,7 @@ def _simulate_exit_py(
     made_progress = False
     stop_updates = 0
     data_gaps = 0
-    min_move = max(tick_size, min_stop_move_r * R)
+    min_move = min_stop_move(tick_size, min_stop_move_r, R)
 
     exit_idx = -1
     exit_price = float("nan")
@@ -483,28 +614,32 @@ def _simulate_exit_py(
             fee_rate = fee_maker
             exited = True
             break
-        if mode == _MODE_TRAIL:
-            if hh >= p_fill + be_trigger_r * R:
-                new_stop = math.floor(p_fill * (1.0 + be_offset) / tick_size + 1e-9) * tick_size
-                if new_stop - stop >= min_move:
-                    stop = new_stop
-                    stop_updates += 1
-                phase = _EXIT_BREAKEVEN
-            if hh >= p_fill + trail_trigger_r * R:
-                new_stop = math.floor((hh - k_trail * atr_abs) / tick_size + 1e-9) * tick_size
-                if new_stop - stop >= min_move:
-                    stop = new_stop
-                    stop_updates += 1
-                phase = _EXIT_TRAIL
-            if j - t_entry + 1 <= stall_bars:
-                if hh >= p_fill + stall_r * R:
-                    made_progress = True
-                if j - t_entry + 1 == stall_bars and not made_progress:
-                    exit_idx = j + 1
-                    exit_type = _EXIT_STALL
-                    fee_rate = fee_taker
-                    exited = True
-                    break
+        stop, phase, updates, progress_now = update_stop_after_bar(
+            stop,
+            phase,
+            hh,
+            p_fill,
+            R,
+            atr_abs,
+            tick_size,
+            min_move,
+            j - t_entry + 1,
+            mode,
+            be_trigger_r,
+            be_offset,
+            trail_trigger_r,
+            k_trail,
+            stall_bars,
+            stall_r,
+        )
+        stop_updates += updates
+        made_progress = made_progress or progress_now
+        if mode == _MODE_TRAIL and j - t_entry + 1 == stall_bars and not made_progress:
+            exit_idx = j + 1
+            exit_type = _EXIT_STALL
+            fee_rate = fee_taker
+            exited = True
+            break
         j += 1
 
     if not exited:

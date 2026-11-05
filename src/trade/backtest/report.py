@@ -133,6 +133,34 @@ def gate_payload(
     }
 
 
+def write_gate_s8(gate_path: Path, payload: dict[str, object]) -> dict[str, object]:
+    """把 S8 逐笔重放结果写入 `gate.json`（06 §7 S8、§8）。
+
+    正式回测先写出 `gate.json`（S8 记为 not_run），随后在服务器运行
+    `scripts/s8_replay.py` 时由本函数回填 S8 状态与明细，形成唯一的闸门入口。
+
+    Args:
+        gate_path: 回测报告目录下的 `gate.json`。
+        payload: `trade.backtest.replay.s8_payload` 的返回值。
+
+    Returns:
+        更新后的 gate 字典。
+
+    Raises:
+        FileNotFoundError: gate.json 不存在（必须先跑正式回测）。
+        json.JSONDecodeError: gate.json 不是合法 JSON。
+    """
+    gate: dict[str, object] = json.loads(gate_path.read_text(encoding="utf-8"))
+    sanity_raw = gate.get("sanity")
+    sanity: dict[str, object] = sanity_raw if isinstance(sanity_raw, dict) else {}
+    status = payload.get("status")
+    sanity["S8"] = status if isinstance(status, str) else "not_run"
+    gate["sanity"] = sanity
+    gate["s8"] = payload
+    gate_path.write_text(json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8")
+    return gate
+
+
 def write_report(
     report_dir: Path,
     run_id: str,

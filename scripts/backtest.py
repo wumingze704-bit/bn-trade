@@ -27,6 +27,7 @@ from trade.backtest.metrics import (
     skew,
 )
 from trade.backtest.r0 import TrainConfig
+from trade.backtest.replay import s8_status_from_payload
 from trade.backtest.report import (
     append_experiments_log,
     compute_experiment_hash,
@@ -74,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
     parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
     parser.add_argument("--final", action="store_true", help="包含封存集 M23~M24（仅 G3，06 §8）")
+    parser.add_argument(
+        "--s8-result",
+        type=Path,
+        default=None,
+        help="S8 逐笔重放结果 JSON（06 §7 S8）；缺省读 reports/{run_id}/s8_replay.json",
+    )
     return parser
 
 
@@ -135,6 +142,31 @@ def _utc_month(ts_ms: int) -> str:
     """UTC 月份（06 §7 S5）。"""
     month = datetime.fromtimestamp(ts_ms // 1000, tz=UTC)
     return f"{month.year:04d}-{month.month:02d}"
+
+
+def s8_status(path: Path, run_id: str) -> str:
+    """读取 S8 逐笔重放结果（06 §7 S8）。
+
+    S8 必须在服务器上用保留的原始 aggTrades 运行，因此正式回测自身只负责把状态写入
+    `gate.json`；结果文件缺失时返回带执行命令的 not_run 说明。`scripts/s8_replay.py`
+    运行后会回填同一份 `gate.json`。
+
+    Args:
+        path: `s8_replay.json` 路径。
+        run_id: 本次正式回测的 run_id（用于提示命令）。
+
+    Returns:
+        形如 `passed（...）` / `not_run（...）` 的状态文本。
+    """
+    if not path.is_file():
+        return (
+            "not_run（服务器执行：python scripts/s8_replay.py "
+            f"--run-id {run_id} --signals <signals.parquet> --rules <rules.json>）"
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return "not_run（s8_replay.json 格式不合法）"
+    return s8_status_from_payload(payload)
 
 
 def main() -> None:
@@ -309,6 +341,7 @@ def main() -> None:
         )
 
     report_dir = base.paths.artifact_root / "reports" / args.run_id
+    s8 = s8_status(args.s8_result or (report_dir / "s8_replay.json"), args.run_id)
     # S10 新进入组（06 §7 S10）：笔数 < 50 只报告，否则 base 情景 PF ≥ 1.0。
     ne_trades = [t for t in reference_result.trades if t.new_entry]
     if len(ne_trades) < 50:
@@ -383,7 +416,7 @@ def main() -> None:
         s5=s5,
         s6=s6,
         s9=s9,
-        s8="not_run_待真实数据",
+        s8=s8,
         s10=s10,
         s11=s11_status,
     )

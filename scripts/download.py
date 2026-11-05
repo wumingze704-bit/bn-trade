@@ -82,10 +82,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", required=True, help="结束月 YYYY-MM")
     parser.add_argument("--out", default="data/raw")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="只下载这些币（逗号分隔 symbol，须在选币快照中）；S8 保留原始逐笔用（06 §7 S8）",
+    )
     args = parser.parse_args(argv)
 
     base = load_config(BaseConfig, _resolve(root, args.base))
     coins = collect_universe_coins(base.paths.data_root, universe_months(base))
+    if args.symbols:
+        wanted = {symbol.strip().upper() for symbol in args.symbols.split(",") if symbol.strip()}
+        known = {coin.symbol for coin in coins}
+        missing = sorted(wanted - known)
+        if missing:
+            raise ValueError(f"--symbols 不在选币快照中：{missing}（03 §4.2）")
+        coins = [coin for coin in coins if coin.symbol in wanted]
     out_root = _resolve(root, args.out)
     tasks = _iter_tasks(coins, list(args.types), args.start, args.end)
     print(f"预计下载 {len(tasks)} 个文件")
