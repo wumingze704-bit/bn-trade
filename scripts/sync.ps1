@@ -1,4 +1,4 @@
-# 本地 <-> 服务器同步：推代码、拉分钟数据与交易范围快照、推模型产物。
+﻿# 本地 <-> 服务器同步：推代码、拉分钟数据与交易范围快照、推模型产物。
 # 服务器地址由 ~/.ssh/config 中的 Host tokyo 提供，脚本不写 IP 与密钥。
 # 规格：docs/02-系统架构与部署.md §5.8
 param(
@@ -16,13 +16,17 @@ $RemoteDir = "trade"
 function Invoke-Rsync {
     param(
         [string]$Source,
-        [string]$Destination
+        [string]$Destination,
+        [string[]]$ExtraArgs = @()
     )
 
     if (Get-Command rsync -ErrorAction SilentlyContinue) {
-        & rsync -avz --partial $Source $Destination
+        & rsync -avz --partial @ExtraArgs $Source $Destination
     }
     else {
+        if ($ExtraArgs.Count -gt 0) {
+            throw "当前无 rsync，且需排除封存集 M23~M24（--exclude），scp 无法安全回退（避免把封存集拉到本地，红线 2）。请任选其一：1) 安装 Git for Windows（自带 rsync）并把其 usr/bin 加入 PATH；2) 在 WSL 配置 Host tokyo 后运行 scripts/sync.sh pull-data。"
+        }
         # 无 rsync 时退回 scp（docs/02 §5.2）
         scp -r $Source $Destination
     }
@@ -33,7 +37,11 @@ switch ($Action) {
         git push $Remote main
     }
     "pull-data" {
-        Invoke-Rsync "${Remote}:${RemoteDir}/data/bars/" "./data/bars/"
+        # 封存集 M23~M24 的分钟数据只在服务器保留、不拉到本地（03 §6、AGENTS.md §6 红线 2）。
+        # 月份 = base.yaml data_window.end_month 向前 holdout_months 个月；上线重训 end_month 前移时需同步更新。
+        $holdoutMonths = @("202608", "202609")
+        $excludes = $holdoutMonths | ForEach-Object { "--exclude=$_.parquet" }
+        Invoke-Rsync "${Remote}:${RemoteDir}/data/bars/" "./data/bars/" $excludes
         Invoke-Rsync "${Remote}:${RemoteDir}/data/universe/" "./data/universe/"
     }
     "push-models" {

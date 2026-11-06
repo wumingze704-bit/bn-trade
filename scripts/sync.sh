@@ -22,7 +22,15 @@ case "${1:-}" in
     git push "$REMOTE" main
     ;;
   pull-data)
-    rsync -avz --partial "$REMOTE:$REMOTE_DIR/data/bars/" ./data/bars/
+    # 封存集 M23~M24 的分钟数据只在服务器保留、不拉到本地（03 §6、AGENTS.md §6 红线 2）。
+    # 月份 = base.yaml data_window.end_month 向前 holdout_months 个月；上线重训 end_month 前移时需同步更新。
+    holdout_months="202608 202609"
+    excludes=""
+    for mm in $holdout_months; do
+      excludes="$excludes --exclude=${mm}.parquet"
+    done
+    # shellcheck disable=SC2086  # excludes 由多个 --exclude= 组成，需按词拆分
+    rsync -avz --partial $excludes "$REMOTE:$REMOTE_DIR/data/bars/" ./data/bars/
     rsync -avz --partial "$REMOTE:$REMOTE_DIR/data/universe/" ./data/universe/
     ;;
   push-models)
