@@ -21,7 +21,7 @@ from trade.models.artifact import ArtifactError, load
 from trade.models.calibration import sha256_file, write_model_meta
 from trade.models.config import ModelConfig
 from trade.models.dataset import WindowDataset
-from trade.models.train import train_ensemble
+from trade.models.train import train_ensemble, train_lgbm_baseline
 
 _ROOT = Path(__file__).resolve().parents[2]
 _WINDOW = 10
@@ -203,3 +203,61 @@ def test_缺少产物文件时报错(tmp_path: Path) -> None:
             universe_config=universe_cfg,
             base_config=base_cfg,
         )
+
+
+def test_m0_lgbm产物可加载并推理(tmp_path: Path) -> None:
+    """M0 产物：lgbm.txt + model_meta.json 可加载，窗口→表格特征与训练一致。"""
+    features_cfg = load_config(FeaturesConfig, _ROOT / "configs" / "features.yaml")
+    exits_cfg = load_config(ExitConfig, _ROOT / "configs" / "exits.yaml")
+    universe_cfg = load_universe_config(_ROOT / "configs" / "universe.yaml")
+    base_cfg = load_config(BaseConfig, _ROOT / "configs" / "base.yaml")
+    feature_names = [feature.name for feature in enabled_features(features_cfg)]
+    _make_coin(tmp_path, "C01", feature_names, seed=7)
+    dataset = WindowDataset(
+        tmp_path / "features" / "run",
+        tmp_path / "labels" / "run",
+        ["C01"],
+        feature_names,
+        window_L=20,
+    )
+    cfg = ModelConfig(
+        arch="lgbm",
+        window_L=20,
+        lgbm_num_boost_round=10,
+        lgbm_early_stopping_rounds=3,
+    )
+    result = train_lgbm_baseline(dataset, dataset, cfg)
+    model_dir = tmp_path / "models" / "20261105_lgbm_abcdef"
+    model_dir.mkdir(parents=True)
+    (model_dir / "lgbm.txt").write_text(result.booster.model_to_string(), encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    write_model_meta(
+        model_dir,
+        model_id=model_dir.name,
+        arch="lgbm",
+        arch_params={},
+        window_L=20,
+        features_cfg=features_cfg,
+        exit_cfg=exits_cfg,
+        market="usdm",
+        universe_rule_hash=rule_hash(universe_cfg),
+        train_symbols=["C01"],
+        train_range=("2025-01-01", "2025-01-31"),
+        val_range=("2025-02-01", "2025-02-28"),
+        ensemble_seeds=[42],
+        temperature=1.0,
+        threshold=0.5,
+        dataset_manifest_sha256=sha256_file(manifest),
+    )
+    predictor = load(
+        model_dir,
+        features_config=features_cfg,
+        exit_config=exits_cfg,
+        universe_config=universe_cfg,
+        base_config=base_cfg,
+    )
+    x = np.random.default_rng(1).normal(size=(20, len(feature_names)))
+    p, m = predictor.predict(x)
+    assert 0.0 <= p <= 1.0
+    assert m == 0.0

@@ -81,9 +81,7 @@ class Predictor:
         if self.arch == "lgbm":
             if self._booster is None:
                 raise ArtifactError(f"模型 {self.model_id} 缺少 lgbm.txt（05 §9）")
-            # LightGBM 只使用最后一根表格化特征；M0 的输入由调用方预先表格化。
-            flat = values[:, -1, :]
-            prob = np.asarray(self._booster.predict(flat), dtype="float64")
+            prob = np.asarray(self._booster.predict(_lgbm_matrix(values)), dtype="float64")
             prob = np.clip(prob, 1e-9, 1.0 - 1e-9)
             logit = np.log(prob / (1.0 - prob))
             p = 1.0 / (1.0 + np.exp(-logit / self.temperature))
@@ -194,10 +192,30 @@ def load(
         return Predictor(
             meta=meta,
             state_dicts=None,
-            booster=lgb.Booster(model_file=str(lgbm_path)),
+            booster=lgb.Booster(model_str=lgbm_path.read_text(encoding="utf-8")),
             device=device,
         )
     raise ArtifactError(f"未知模型类型 arch={meta.get('arch')}：{meta_path}")
+
+
+def _lgbm_matrix(values: np.ndarray) -> np.ndarray:
+    """把窗口 `(B, L, F)` 转成 M0 表格化特征 `(B, 4F)`（05 §2）。
+
+    M0 使用最后一根特征及其与 t-1、t-5、t-15 的差分；加载器必须与训练时
+    `tabular_features_matrix` 完全一致，不能只取最后一根。
+    """
+    if values.shape[1] < 16:
+        raise ArtifactError("M0 需要至少 16 根窗口（t-15 差分，05 §2）")
+    last = values[:, -1, :]
+    return np.concatenate(
+        [
+            last,
+            last - values[:, -2, :],
+            last - values[:, -6, :],
+            last - values[:, -16, :],
+        ],
+        axis=1,
+    )
 
 
 def _validate_label(meta: dict[str, Any], cfg: FeaturesConfig, path: Path) -> None:
