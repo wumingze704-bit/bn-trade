@@ -20,7 +20,12 @@ from trade.live.exchange.models import (
     SymbolRule,
     UserTrade,
 )
-from trade.live.exchange.signing import ed25519_signature, hmac_sha256_signature
+from trade.live.exchange.signing import (
+    ed25519_signature,
+    hmac_sha256_signature,
+    private_key_kind,
+    rsa_signature,
+)
 from trade.live.exchange.ws import (
     AggTradeEvent,
     BookTickerEvent,
@@ -60,4 +65,6 @@ __all__ = [
     "parse_book_ticker",
     "parse_kline",
     "parse_ws_message",
+    "private_key_kind",
+    "rsa_signature",
 ]

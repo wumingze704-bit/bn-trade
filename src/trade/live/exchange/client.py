@@ -27,7 +27,11 @@ from trade.live.exchange.models import (
     Ticker24hr,
     UserTrade,
 )
-from trade.live.exchange.signing import ed25519_signature, hmac_sha256_signature
+from trade.live.exchange.signing import (
+    ed25519_signature,
+    hmac_sha256_signature,
+    rsa_signature,
+)
 
 
 class ExchangeError(Exception):
@@ -62,7 +66,8 @@ class ExchangeClient:
         endpoints: 环境端点配置（testnet / mainnet）。
         api_key: API Key（`X-MBX-APIKEY` 头）。
         api_secret: HMAC Secret；与 `private_key_hex` 二选一。
-        private_key_hex: Ed25519 私钥十六进制；与 `api_secret` 二选一（09 §5.2）。
+        private_key_hex: Ed25519 私钥十六进制；三种签名方式三选一（09 §5.2）。
+        rsa_private_key_pem: RSA 私钥 PEM；三种签名方式三选一（09 §5.2）。
         recv_window_ms: `recvWindow`（默认 5000）。
         time_offset_ms: 本机与服务器时钟偏移（毫秒），由 `sync_time_offset` 维护。
         client: 可选的 httpx 客户端（测试注入）。
@@ -75,18 +80,31 @@ class ExchangeClient:
         api_key: str,
         api_secret: str | None = None,
         private_key_hex: str | None = None,
+        rsa_private_key_pem: str | None = None,
         recv_window_ms: int = 5000,
         time_offset_ms: int = 0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if api_secret is None and private_key_hex is None:
-            raise ValueError("必须提供 api_secret 或 private_key_hex 之一（09 §5.2）")
-        if api_secret is not None and private_key_hex is not None:
-            raise ValueError("api_secret 与 private_key_hex 只能提供其一（09 §5.2）")
+        provided = [
+            name
+            for name, value in (
+                ("api_secret", api_secret),
+                ("private_key_hex", private_key_hex),
+                ("rsa_private_key_pem", rsa_private_key_pem),
+            )
+            if value is not None
+        ]
+        if not provided:
+            raise ValueError(
+                "必须提供 api_secret、private_key_hex 或 rsa_private_key_pem 之一（09 §5.2）"
+            )
+        if len(provided) > 1:
+            raise ValueError(f"{'、'.join(provided)} 只能提供其一（09 §5.2）")
         self._endpoints = endpoints
         self._api_key = api_key
         self._api_secret = api_secret
         self._private_key_hex = private_key_hex
+        self._rsa_pem = rsa_private_key_pem
         self._recv_window_ms = recv_window_ms
         self._time_offset_ms = time_offset_ms
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0))
@@ -98,6 +116,8 @@ class ExchangeClient:
         return int(time.time() * 1000) + self._time_offset_ms
 
     def _sign(self, query: str) -> str:
+        if self._rsa_pem is not None:
+            return rsa_signature(self._rsa_pem, query)
         if self._private_key_hex is not None:
             return ed25519_signature(self._private_key_hex, query)
         assert self._api_secret is not None  # 构造时已校验
@@ -181,12 +201,33 @@ class ExchangeClient:
         data = await self._request("GET", "/fapi/v1/exchangeInfo")
         return ExchangeInfo.model_validate(data)
 
-    async def klines(self, symbol: str, interval: str, *, limit: int = 500) -> list[list[Any]]:
-        data = await self._request(
-            "GET",
-            "/fapi/v1/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-        )
+    async def klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
+        """拉取 K 线（09 §3.1）。
+
+        Args:
+            symbol: 交易对。
+            interval: K 线周期，如 `1m`。
+            limit: 返回条数上限（≤ 1500）。
+            start_time: 起始时间（UTC 毫秒），缺口回补用（07 §3.2）。
+            end_time: 结束时间（UTC 毫秒），缺口回补用（07 §3.2）。
+
+        Returns:
+            币安原始 K 线数组列表。
+        """
+        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        data = await self._request("GET", "/fapi/v1/klines", params=params)
         return data if isinstance(data, list) else []
 
     async def agg_trades(
@@ -314,9 +355,22 @@ class ExchangeClient:
     async def cancel_algo_order(self, **params: Any) -> dict[str, Any]:
         return dict(await self._request("DELETE", "/fapi/v1/algoOrder", params=params, signed=True))
 
-    async def algo_open_orders(self) -> list[dict[str, Any]]:
-        data = await self._request("GET", "/fapi/v1/algoOpenOrders", signed=True)
+    async def algo_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """查询未触发的算法条件单（09 §3.2 实测路径为 `/fapi/v1/openAlgoOrders`）。"""
+        params = {"symbol": symbol} if symbol else None
+        data = await self._request("GET", "/fapi/v1/openAlgoOrders", params=params, signed=True)
         return data if isinstance(data, list) else []
+
+    async def get_algo_order(self, symbol: str, client_algo_id: str) -> dict[str, Any]:
+        """按 `clientAlgoId` 查询单张算法条件单（09 §3.2、07 §5.4）。"""
+        return dict(
+            await self._request(
+                "GET",
+                "/fapi/v1/algoOrder",
+                params={"symbol": symbol, "clientAlgoId": client_algo_id},
+                signed=True,
+            )
+        )
 
     # ---- 成交与资金流（09 §3.2、07 §6）----
 

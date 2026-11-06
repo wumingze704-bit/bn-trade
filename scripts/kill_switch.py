@@ -17,6 +17,7 @@ from pathlib import Path
 from trade.live.config import load_live_config
 from trade.live.exchange.client import ExchangeClient
 from trade.live.exchange.endpoints import endpoints_for
+from trade.live.exchange.signing import private_key_kind
 from trade.live.store import Store
 
 
@@ -29,13 +30,21 @@ async def _kill(config_path: Path) -> None:
     if not api_key:
         print("[FAIL] 缺少 API Key 环境变量")
         sys.exit(1)
+    if api_key.startswith("-----BEGIN"):
+        print("[FAIL] API Key 是 PEM 公钥；这里必须填币安生成的 API Key 字符串（09 §5.1）")
+        sys.exit(1)
+    key_material = _private_key()
+    kind = private_key_kind(key_material) if key_material else None
     client = ExchangeClient(
         endpoints=endpoints_for(env),
         api_key=api_key,
-        api_secret=os.environ.get(
+        api_secret=None
+        if key_material
+        else os.environ.get(
             "BINANCE_TESTNET_API_SECRET" if config.mode == "paper" else "BINANCE_API_SECRET"
         ),
-        private_key_hex=_private_key_hex(),
+        private_key_hex=key_material if kind == "ed25519" else None,
+        rsa_private_key_pem=key_material if kind == "rsa" else None,
     )
     store = Store(config.storage.db_path)
     date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
@@ -86,7 +95,8 @@ async def _kill(config_path: Path) -> None:
     await client.aclose()
 
 
-def _private_key_hex() -> str | None:
+def _private_key() -> str | None:
+    """读取 `BINANCE_PRIVATE_KEY_PATH` 指向的私钥（Ed25519 十六进制或 RSA PEM）。"""
     path = os.environ.get("BINANCE_PRIVATE_KEY_PATH")
     if not path:
         return None

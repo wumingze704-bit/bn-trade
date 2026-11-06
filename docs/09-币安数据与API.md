@@ -58,7 +58,15 @@
 | `POST /fapi/v1/order`                                                                                    | 开仓（LIMIT IOC）、止盈（LIMIT GTC reduceOnly）、超时平仓（MARKET reduceOnly）                                                                                    |
 | `GET /fapi/v1/order`、`DELETE /fapi/v1/order`                                                            | 按 `origClientOrderId` 查询、撤单                                                                                                                                 |
 | `GET /fapi/v1/openOrders`、`DELETE /fapi/v1/allOpenOrders`                                               | 对账、Kill Switch                                                                                                                                                 |
-| 算法条件单接口（`POST /fapi/v1/algoOrder` 及对应的撤单、查询未完成条件单接口）                           | 止损单与追踪改单（07 §5.2）。自 2025-12-09 起，经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单会返回错误 `-4120`，必须走算法订单接口；参数细节以最新文档为准 |
+| 算法条件单接口（`POST /fapi/v1/algoOrder`、`DELETE /fapi/v1/algoOrder`、`GET /fapi/v1/openAlgoOrders`、`GET /fapi/v1/algoOrder`） | 止损单与追踪改单（07 §5.2）。自 2025-12-09 起，经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单返回 `-4120`，必须走算法订单接口；实测参数见下 |
+
+算法条件单实测参数（2026-11-05，东京服务器，测试网 `testnet.binancefuture.com`）：
+
+- `POST /fapi/v1/algoOrder`：`algoType` 是「算法类别」，条件单固定为 **`CONDITIONAL`**，真正的 STOP_MARKET 放在 **`type`** 字段（`algoType=STOP_MARKET` 会返回 `-4500 Invalid algoType`）。其余字段：`side`、`quantity`、`reduceOnly`、`triggerPrice`、`triggerPriceType`（`CONTRACT_PRICE`）、`workingType`（`CONTRACT_PRICE`）、`newClientAlgoId`；响应含 `algoId`、`clientAlgoId`、`algoStatus`、`orderType`。
+- `DELETE /fapi/v1/algoOrder`：按 `symbol` + `algoId`（或 `clientAlgoId`）撤销。
+- `GET /fapi/v1/openAlgoOrders`：查询未触发条件单（`symbol` 可选）；`GET /fapi/v1/algoOrder`：按 `algoId` 或 `clientAlgoId` 查单张。
+- 价格取整：tick 取整必须消掉浮点尾差（`round(x/tick)*tick` 会产生 `77710.90000000001`，被拒 `-1111 Precision is over the maximum`），统一用 `trade.live.orders.floor_to_tick`。
+
 | `GET /fapi/v1/userTrades`                                                                                | 成交明细（对账、补记出场）                                                                                                                                        |
 | `GET /fapi/v1/income`                                                                                    | 资金费、手续费、已实现盈亏流水（日报核算、断线缺口补齐）                                                                                                          |
 | `POST` / `PUT` / `DELETE /fapi/v1/listenKey`                                                             | 创建、续期、关闭用户数据流（07 §3.1）                                                                                                                             |
@@ -76,6 +84,18 @@
 | 用户数据流 `ACCOUNT_UPDATE`     | 余额与持仓变化                                         |
 | 用户数据流 `listenKeyExpired`   | listenKey 失效，需重建                                 |
 | 用户数据流 `ALGO_UPDATE`        | 算法订单（止损单）挂出、触发与状态，字段以最新文档为准 |
+
+两种写法并存，`trade.live.exchange.ws` 两者都兼容：
+
+- 单流：`wss://<host>/ws/<streamName>`，消息即事件本体。
+- 组合流：`wss://<host>/stream?streams=<a>/<b>/...`，消息为 `{"stream": "<名称>", "data": {事件}}`；`MarketDataFeed` 取 `data` 字段后交给同一套解析函数（07 §3.1）。
+- `/ws/`（带尾斜杠）发 `SUBSCRIBE` 会被拒绝（HTTP 400）；需要主动订阅时用 `/ws`（无尾斜杠），返回 `{"result": null, "id": <id>}` 为成功 ACK。
+
+实测（2026-11-05，东京服务器，记录见 §9）：
+
+- 测试网 `wss://stream.binancefuture.com`：`btcusdt@kline_1m`、`btcusdt@aggTrade`、`btcusdt@bookTicker` 及三者组合流均正常推送（60 秒 1278 条；同日 `@kline_1m` 单流 65 秒 120 条）。
+- 正式网 `wss://fstream.binance.com`：`@bookTicker`（8 秒 14948 条）、`@trade`（8 秒 2308 条）、`@depth@100ms` 正常；`@kline_1m`、`@aggTrade`、`@markPrice`、`@ticker`、`@miniTicker` 在 `/ws/`、`/stream?streams=`、`/ws`+`SUBSCRIBE` 三种写法下均 0 条（65 秒长窗口复测同样为 0，排除推送稀疏）。正式网 `trade` 事件带 `st` 字段，是测试网当前没有的字段。
+- 官方文档站被 Cloudflare 挑战页拦截（HTTP 202、正文 0 字节），未能取得正文；正式网 `@kline_1m` / `@aggTrade` 的可用写法**仍未确定**，`paper` 模式不受影响，`shadow` / `live` 的行情来源需在使用者确认前保持停摆。
 
 ### 3.4 历史数据仓库（data.binance.vision）
 
@@ -105,7 +125,10 @@
    - 权限：勾选“允许读取”和“允许合约”；**不要**勾选提现、内部划转、杠杆借贷等其他权限。
    - IP 访问限制：选择“仅限受信任 IP”，填入实盘服务器的固定公网 IP。
 4. 把 Key 与 Secret（或私钥文件路径）写入服务器 `/etc/trade/env`（02 §7）。
-5. 测试网在测试网网站单独申请 Key，写入 `BINANCE_TESTNET_*` 环境变量。
+5. 测试网在**合约测试网**申请 Key，写入 `BINANCE_TESTNET_*` 环境变量。
+   - 网址是 `https://testnet.binancefuture.com`（U 本位合约测试网）；**不要**用 `https://testnet.binance.vision`（现货测试网），两者 key 完全不通用，用错时合约接口返回 `-2015 Invalid API-key, IP, or permissions`（实测：同一把现货测试网 key 打 `/api/v3/account` 返回 200、打 `/fapi/v2/account` 返回 -2015）。
+   - 该站只支持 GitHub 账号登录；登录后默认给测试资金，在页面底部“API Key”处生成 Key 与 Secret（Secret 只显示一次）。
+   - 测试网 key 长期不用会被自动删除，失效后重新生成即可。
 
 ### 5.2 签名规则
 
@@ -113,8 +136,10 @@
 
 - 所有签名请求带 `timestamp`（毫秒，已按 07 §2 校正的服务器时间）与 `recvWindow`（默认 5000 ms），请求头 `X-MBX-APIKEY`。
 - HMAC：对完整查询字符串（含 `timestamp`）用 Secret 做 HMAC-SHA256，十六进制结果作为 `signature` 参数。
+- RSA：对同样的载荷用 RSA 私钥做 SHA256withRSA（PKCS#1 v1.5），Base64 后作为 `signature`（需 URL 编码）；私钥为 PEM（PKCS#8 `BEGIN PRIVATE KEY` 或 PKCS#1 `BEGIN RSA PRIVATE KEY`），实现用已锁定的 `pycryptodome`（`trade.live.exchange.signing.rsa_signature`），不新增依赖。
 - Ed25519：用私钥对同样的载荷签名，Base64 编码后作为 `signature`（需 URL 编码）。
-- 签名实现必须有单测：用官方文档中的示例 Key 与载荷，校验输出与文档示例一致。
+- 三者在同一个 `ExchangeClient` 上通过构造参数互斥选择（`api_secret` / `rsa_private_key_pem` / `private_key_hex`）；私钥文件由 `BINANCE_PRIVATE_KEY_PATH` 指向，签名方式按 PEM 头自动判别（有 PEM 头即 RSA，纯十六进制即 Ed25519），见 `private_key_kind`。
+- 签名实现必须有单测：HMAC 用官方文档示例 Key 与载荷校验输出与文档一致；RSA / Ed25519 用临时密钥对做签名-验签往返。
 
 ## 6. 限频
 
@@ -130,6 +155,7 @@
 - 测试网的流动性、价格与正式网不同，**测试网结果不能用于评价策略收益**，只用于验证流程（08 G4）。
 - 测试网的交易对、过滤器与正式网可能不一致，`paper` 模式启动时以测试网自己的 exchangeInfo 为准。
 - 测试网可能不支持全部新接口（如算法条件单），若不支持，在完成报告中注明并改为在正式网用最小下单额做一次人工演练。
+- 实测（2026-11-05）：**测试网支持算法条件单**（`POST /fapi/v1/algoOrder`，`algoType=CONDITIONAL` + `type=STOP_MARKET` 挂单、撤单、`GET /fapi/v1/openAlgoOrders` 均正常），但 `GET /fapi/v1/algoOpenOrders` 路径不存在（-5000），参数细节见 §3.2。
 
 ## 8. 接口冒烟测试
 
@@ -137,6 +163,8 @@
 
 - `mainnet`：只调用公开接口与只读签名接口（时间、exchangeInfo、commissionRate、leverageBracket、账户与持仓查询），**不下单**。
 - `testnet`：额外执行一次完整订单生命周期：开仓 IOC → 挂止损（算法条件单）→ 挂止盈 → 撤销 → 平仓 → 确认仓位为 0。
+- `--ws-check [--ws-seconds N]`：只做行情订阅冒烟，**不需要密钥**——订阅 `<symbol>@kline_1m` + `@aggTrade` + `@bookTicker` 组合流，统计各类消息数、验证断线自动重连与缺口回补，退出码 0 表示三类流都收到消息。
+- 未设置对应密钥环境变量（`BINANCE_TESTNET_API_KEY` / `BINANCE_API_KEY`，02 §7）时，只跑公开接口，签名与下单部分打印 `[SKIP]` 并以公开检查结果作为退出码；缺密钥导致的 SKIP 不算失败。
 - 每次部署新版本前必须运行；任一步失败则不得以 `live` 模式启动。
 
 ## 9. 接口核对记录
@@ -150,3 +178,6 @@
 | 2026-10-31 | Cline（东京服务器实测）    | leverageBracket         | `GET /fapi/v1/leverageBracket` 无 API Key 返回 **401（需签名）**，响应为数组而非对象（与 §3.2「需签名」一致）。P1 `snapshot_rules.py` 在 401/403 时跳过、`max_leverage` 视为满足（03 §4.3）；正式拉取需在 P5 用带签名客户端并解析数组 |
 | 2026-11-04 | Cline（本地开发，未实测）  | §3 全部接口            | `trade.live.exchange` 已按 §3 实现 REST 封装（`endpoints`/`models`/`signing`/`client`）与 WS 解析（`ws`）。签名：HMAC-SHA256 用官方文档示例 Key+载荷单测核对一致；Ed25519 用 `cryptography` 往返核对（本地无 `cryptography` 时 skip）。**所有接口真实行为、算法条件单 `algoOrder` 参数、测试网是否支持算法条件单、WS `aggTrade`/`kline_1m` 订阅方式均待 `scripts/api_smoke.py --env testnet` 在服务器实测后回填本表** |
 | 2026-11-05 | Cline（东京服务器复测）    | WebSocket 行情流、REST aggTrades | `btcusdt@aggTrade` 三种写法（`/ws/<stream>`、`/stream?streams=`、`/ws/`+`SUBSCRIBE`）各测 15 秒均 0 条消息（`/ws/`+`SUBSCRIBE` 返回 HTTP 400）；同期 `btcusdt@trade` 15 秒 381 条；`GET /fapi/v1/aggTrades?symbol=BTCUSDT&limit=3` 返回 200 且有数据。`@aggTrade` 正确订阅方式仍未确定，**这是 T1-5 实时/历史成交口径比对的唯一阻塞项**，待 P5 `api_smoke.py` 核实 |
+| 2026-11-05 | Cline（东京服务器实测，T5-2/T5-7） | RSA 签名、算法条件单、订单生命周期 | RSA：`demo.binance.com` 申请 RSA key 后，`testnet.binancefuture.com` 全部签名接口（account/positionRisk/commissionRate/leverageBracket/listenKey）返回 200；`trade.live.exchange.signing.rsa_signature` 用 pycryptodome 实现并往返验证通过。算法条件单：`algoType=STOP_MARKET` 返回 `-4500 Invalid algoType`；正确为 `algoType=CONDITIONAL` + `type=STOP_MARKET`（挂单/撤单/查询 `GET /fapi/v1/openAlgoOrders` 均 OK）；`GET /fapi/v1/algoOpenOrders` 路径不存在（-5000）。订单生命周期（`api_smoke.py --env testnet`）全绿：IOC 开仓 FILLED → 挂止损 → 挂止盈 → 撤止盈 → 市价平仓 → 确认仓位 0 → 撤止损；中途 `round(x/tick)*tick` 的浮点尾差触发 `-1111 Precision is over the maximum`，已用 `floor_to_tick` 修复 |
+| 2026-11-05 | Cline（东京服务器实测，T5-2 阻塞排查） | 测试网域名迁移、密钥归属 | `https://testnet.binancefuture.com` 的**网页路径**（`/`、`/en/futures/BTCUSDT`、`/en/login`、`/login`、`/sapi/...`）全部 **301 → `https://demo.binance.com/en/futures/BTCUSDT`**；REST `GET /fapi/v1/ping` 在本域名仍 **200**。新发现：`demo-fapi.binance.com/fapi/v1/{ping,time,exchangeInfo}` **全部 200**（合约 Demo 的 REST），`fstream-demo.binance.com` DNS 存在（合约 Demo 的 WS），`demo-api.binance.com` 只有现货风格 `/api/v1`、`/api/v3`（`/fapi/*` 为 404），`fapi.demo.binance.com` 证书域名不匹配不可用。另：使用者在 `testnet.binance.vision`（**现货**测试网）申请的 key 打 `/api/v3/account` 返回 200、打合约 `/fapi/v2/account` 返回 `401 -2015`。**待决：`paper` 模式的端点是否切换到 demo 域名（`https://demo-fapi.binance.com` / `wss://fstream-demo.binance.com`），需使用者确认后改 `trade.live.exchange.endpoints` 并同步 09 §2** |
+| 2026-11-05 | Cline（东京服务器实测，T5-4） | WebSocket 订阅矩阵 | 12 种写法各测 8~65 秒：**测试网** `wss://stream.binancefuture.com` 的 `/ws/btcusdt@kline_1m`（65 秒 120 条）、`/ws/btcusdt@aggTrade`、`/ws/btcusdt@bookTicker` 与 `/stream?streams=btcusdt@aggTrade/btcusdt@kline_1m` 组合流（三流组合 60 秒 1278 条）均正常。**正式网** `wss://fstream.binance.com` 仅 `@bookTicker`（8 秒 14948 条）、`@trade`（8 秒 2308 条）、`@depth@100ms`（12 秒 117 条）有数据；`@kline_1m`、`@aggTrade`、`@markPrice`、`@ticker`、`@miniTicker` 在 `/ws/`、`/stream?streams=`、`/ws`+`SUBSCRIBE`（ACK `{"result":null}` 成功）三种写法下 65 秒均 0 条。`wss://fstream.binance.com/ws/`（带尾斜杠）发 SUBSCRIBE 返回 HTTP 400。官方文档站为 Cloudflare 挑战页（202、0 字节），无法取得正文。结论：`paper` 模式（测试网）行情可用；正式网 K 线/逐笔流的可用写法未确定，**需使用者决定 shadow/live 的行情来源** |

@@ -64,12 +64,37 @@ def compute_limit_price(
     ask_cap = best_ask * (1.0 + 2.0 * tick_rel)
     chase_cap = c_t * (1.0 + max_chase)
     limit = min(ask_cap, chase_cap)
-    return math.floor(limit / tick_size + 1e-9) * tick_size
+    return floor_to_tick(limit, tick_size)
 
 
 def round_step_qty(qty: float, step_size: float) -> float:
     """按 stepSize 向下取整数量（07 §5.1）。"""
-    return math.floor(qty / step_size + 1e-9) * step_size
+    return _round_to_step(qty, step_size)
+
+
+def floor_to_tick(price: float, tick_size: float) -> float:
+    """按 tickSize 向下取整价格并消掉浮点误差（07 §5.1）。
+
+    `round(x / tick) * tick` 会留下 `77710.90000000001` 这类尾差，币安会以
+    `-1111 Precision is over the maximum defined for this asset` 拒绝，
+    因此取整后按 tick 的小数位数再做一次定点舍入。
+
+    Args:
+        price: 原始价格。
+        tick_size: 交易对的 `tickSize`（如 0.1、0.0001）。
+
+    Returns:
+        不超过 `price` 且为 tick 整数倍的价格。
+    """
+    return _round_to_step(price, tick_size)
+
+
+def _round_to_step(value: float, step_size: float) -> float:
+    """把 value 向下取整到 step_size 的整数倍，并按 step 的小数位数定点舍入。"""
+    steps = math.floor(value / step_size + 1e-9)
+    text = f"{step_size:.10f}".rstrip("0")
+    decimals = len(text.split(".")[1]) if "." in text else 0
+    return round(steps * step_size, decimals)
 
 
 @dataclass(frozen=True)
@@ -377,7 +402,11 @@ class OrderManager:
         """挂算法条件单并处理状态未知（07 §5.2、§5.4）。"""
         params: dict[str, Any] = {
             "symbol": symbol,
-            "algoType": algo_type,
+            # 09 §3.2 实测：/fapi/v1/algoOrder 的 algoType 是「算法类别」，条件单固定为
+            # CONDITIONAL；具体的 STOP_MARKET 放在 `type` 里（用 STOP_MARKET 当 algoType
+            # 会返回 -4500 Invalid algoType）。
+            "algoType": "CONDITIONAL",
+            "type": algo_type,
             "side": side,
             "quantity": quantity,
             "reduceOnly": "true" if reduce_only else "false",
@@ -391,6 +420,10 @@ class OrderManager:
         except BaseException as error:
             if not _is_unknown_state(error):
                 raise
+            # 状态未知：先按 clientAlgoId 查询，确认不存在才重发（07 §5.4）
+            existing = await self._query_algo(symbol, client_id)
+            if existing is not None:
+                return AlgoOrderResult.model_validate(existing)
             if retry >= 2:
                 raise
             return await self._place_algo_idempotent(
@@ -404,6 +437,15 @@ class OrderManager:
                 trigger_price=trigger_price,
                 trigger_price_type=trigger_price_type,
             )
+
+    async def _query_algo(self, symbol: str, client_id: str) -> dict[str, Any] | None:
+        """按 clientAlgoId 查询算法条件单；不存在（-2013）返回 None（07 §5.4）。"""
+        try:
+            return await self._client.get_algo_order(symbol, client_id)
+        except ExchangeError as error:
+            if error.code == -2013:
+                return None
+            raise
 
     async def _query_order(self, symbol: str, client_id: str) -> OrderResult | None:
         """按 clientOrderId 查询订单；不存在（-2013）返回 None。"""

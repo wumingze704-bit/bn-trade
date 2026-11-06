@@ -11,7 +11,13 @@ import pytest
 
 from trade.live.exchange.client import ExchangeError
 from trade.live.exchange.models import AlgoOrderResult, OrderResult
-from trade.live.orders import OrderManager, build_order_id, compute_limit_price, round_step_qty
+from trade.live.orders import (
+    OrderManager,
+    build_order_id,
+    compute_limit_price,
+    floor_to_tick,
+    round_step_qty,
+)
 
 
 def _order_result(client_order_id: str = "x", **overrides: Any) -> OrderResult:
@@ -50,6 +56,8 @@ class FakeClient:
         self.algo_error: Exception | None = None
         self.cancel_algo_error: Exception | None = None
         self.query_result: OrderResult | None = None
+        self.algo_query_result: dict[str, Any] | None = None
+        self.algo_queried: list[str] = []
         self.order_error_remaining: int = 0
         self.algo_error_remaining: int = 0
 
@@ -86,6 +94,13 @@ class FakeClient:
             raise self.cancel_algo_error
         return {"status": "CANCELED"}
 
+    async def get_algo_order(self, symbol: str, client_algo_id: str) -> dict[str, Any]:
+        """按 clientAlgoId 查询算法条件单（07 §5.4 幂等）。"""
+        self.algo_queried.append(client_algo_id)
+        if self.algo_query_result is not None:
+            return self.algo_query_result
+        raise ExchangeError(code=-2013, msg="Algo order does not exist", http_status=400)
+
 
 @pytest.fixture
 def client() -> FakeClient:
@@ -118,6 +133,13 @@ def test_round_step_qty() -> None:
     assert round_step_qty(1.234, 0.1) == pytest.approx(1.2)
 
 
+def test_floor_to_tick_removes_float_artifact() -> None:
+    """tick 取整不能留下 77710.90000000001 这类尾差（币安 -1111 Precision）。"""
+    assert floor_to_tick(77710.944, 0.1) == 77710.9
+    assert floor_to_tick(0.123456789, 0.0001) == 0.1234
+    assert floor_to_tick(76187.2 * 1.02, 0.1) == 77710.9
+
+
 def _run(coro: object) -> object:
     import asyncio
 
@@ -140,7 +162,8 @@ def test_place_protective_stop_before_tp(manager: OrderManager, client: FakeClie
     )
     assert result.stop_placed is True
     assert result.tp_placed is True
-    assert client.placed_algos[0]["algoType"] == "STOP_MARKET"
+    assert client.placed_algos[0]["algoType"] == "CONDITIONAL"
+    assert client.placed_algos[0]["type"] == "STOP_MARKET"
     assert client.placed_orders[-1]["type"] == "LIMIT"
 
 
@@ -171,6 +194,43 @@ def test_move_stop_places_new_before_cancel(manager: OrderManager, client: FakeC
     assert result.status == "moved"
     assert client.placed_algos[-1]["newClientAlgoId"] == result.new_client_id
     assert client.cancelled_algos == ["trd-SOL-x-S1"]
+
+
+def test_algo_unknown_state_queries_before_resend(
+    manager: OrderManager, client: FakeClient
+) -> None:
+    """条件单请求超时（状态未知）时必须先按 clientAlgoId 查询，不存在才重发（07 §5.4）。"""
+    client.algo_error_remaining = 1  # 第一次 504
+    _run(
+        manager.place_stop(
+            symbol="SOLUSDT", t_minute="202611041030", stop_price=95.0, qty=1.0, stop_seq=1
+        )
+    )
+    assert len(client.placed_algos) == 2
+    assert client.algo_queried == ["trd-SOL-202611041030-S1"]
+
+
+def test_algo_unknown_state_reuses_existing_order(
+    manager: OrderManager, client: FakeClient
+) -> None:
+    """查询发现条件单已存在时不得重发（避免同时出现两张止损）。"""
+    client.algo_error_remaining = 1
+    client.algo_query_result = {
+        "clientAlgoId": "trd-SOL-202611041030-S1",
+        "algoId": 7,
+        "symbol": "SOLUSDT",
+        "algoStatus": "NEW",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+    }
+    result = _run(
+        manager.place_stop(
+            symbol="SOLUSDT", t_minute="202611041030", stop_price=95.0, qty=1.0, stop_seq=1
+        )
+    )
+    assert len(client.placed_algos) == 1
+    assert result.algo_id == 7
+    assert result.algo_status == "NEW"
 
 
 def test_move_stop_keep_old_when_new_fails(manager: OrderManager, client: FakeClient) -> None:

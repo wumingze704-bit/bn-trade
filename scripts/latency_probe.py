@@ -1,9 +1,9 @@
 """测量币安公开 REST 与 WebSocket 的网络延迟。
 
 WS 延迟用 `btcusdt@bookTicker` 流（事件时间 `E` 与本机接收时间差）。
-实测（2026-10-31，东京服务器）：`btcusdt@aggTrade`/`@kline_1m`/`@markPrice`
-连接后无数据推送，`@trade`/`@bookTicker` 有数据；aggTrade 用于订单流的正确
-订阅方式留待 P5 `api_smoke.py` 以最新文档核实（docs/09 §3.3）。
+实测（2026-10-31，东京服务器）：`btcusdt@trade`、`@bookTicker` 有数据；
+正式网 `btcusdt@aggTrade`/`@kline_1m`/`@markPrice` 订阅成功但无推送，测试网对应
+流正常（订阅矩阵与结论见 docs/09 §3.3、§9）。因此延迟探测固定用 `@bookTicker`。
 
 规格：docs/02-系统架构与部署.md §5.4；docs/08-开发计划与验收.md §2 P0
 """

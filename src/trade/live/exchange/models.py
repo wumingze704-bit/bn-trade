@@ -142,6 +142,11 @@ class AlgoOrderResult(BaseModel):
     algo_id: int = Field(default=0, alias="algoId")
     symbol: str = ""
     status: str = ""
+    algo_type: str = Field(default="", alias="algoType")
+    order_type: str = Field(default="", alias="orderType")
+    algo_status: str = Field(default="", alias="algoStatus")
+    trigger_price: float = Field(default=0.0, alias="triggerPrice")
+    quantity: float = Field(default=0.0, alias="quantity")
 
 
 class ListenKeyResult(BaseModel):
