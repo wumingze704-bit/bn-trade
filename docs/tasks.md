@@ -236,7 +236,7 @@
     - `whale_thr.parquet` 的读改写加 `fcntl.flock` 排他锁（`data/raw/locks/{alias}.lock`），避免同币相邻月份并发覆盖。
   - **遗留缺陷已修复（方案 A，2026-11-05）**：修复前生成的 bars 中，多数月文件首日缺少大单阈值（服务器 1458 个「币·月」符合条件，含封存集月份）。一次性运维脚本 `scripts/repair_first_day_whale.py`只重下「首日前一日 + 首日」两天逐笔，用同一套 `aggregate_aggtrades_day()` / `assemble_bars()` 重算首日并原子替换月文件，写盘前校验首日以外的行完全不变；脚本按 `base.yaml` 固定只处理 M1~M22。服务器实跑：M1~M22 完成 1347 个「币·月」、失败 0，事后复扫剩余待修复 0。验证：C001 2024-09、C066 2025-07（后者首日以外还有 4 个逐笔缺失分钟）两个样例的修复结果与修复后流水线重新生成的文件 **SHA256 逐字节相同**；首日 `whale_thr` 缺失分钟降为 0、`whale_buy_quote` 恢复非零。
   - **过程问题（如实记录）**：首次全量运行时脚本尚未排除封存集月份，SUIUSDT 2026-08、2026-09 两个月文件在发现问题前被处理（只做聚合与写盘，未查看任何封存集结果、未用于调参）；已立即中止并给脚本加上M1~M{months-holdout_months} 硬限制后重跑。若需严格保证封存集新鲜度，可在 G3 `--final` 前按 08 §3 重新生成。
-  - **待办**：修复后的服务器月文件需同步到本地（本地仍为修复前版本），跨境链路实测约 22 KB/s，约 5 GB 需数十小时，建议夜间执行 `powershell -File scripts/sync.ps1 pull-data`；同步完成后需重建 P2 数据集 `ds_20261102` 并重跑 T4-3 第 1 步（特征 #23~#25、#27 的取值会变化）。
+  - **待办**：修复后的服务器月文件需同步到本地（本地仍为修复前版本），跨境链路实测约 22 KB/s，约 5 GB 需数十小时，建议夜间执行 `powershell -File scripts/sync.ps1 pull-data`；同步完成后需重建 P2 数据集 `ds_20261102`（特征 #23~#25、#27 的取值会变化）。使用者已决定（2026-11-06）跳过重跑 T4-3 第 1 步（「三个月六组」），冻结的出场/止损参数保持不变，重建后直接从 T4-3 第 2 步继续。
   - 依赖：T0.13（快照）、T0.16（组装）、T0.17（质量）、T1-8（等价测试通过）、使用者已审阅快照（均已满足）。
 
 > **G1 闸门状态（2026-11-05）**：T0.13（规则化选币）、M1~M24 快照与 `reviewed: true`、T1-8（真实热门币聚合等价/内存）、T2-8（真实数据一致性与未来函数测试）、T0.17（真实 bars 质量窗口验证 + 全量质量缓存 237 币 × 1158 窗口、合格 95.4%）、T1-6（两端逐文件 SHA256 一致，封存集除外）、T1-7（服务器基准并据此修正 03 §3）、T1-9（2 并发内存、断点续传、SHA256 一致、批末重试）均已满足。**仍不满足、G1 未通过**：(1) T1-5 的实时/历史成交口径比对因 aggTrade 行情流无数据而阻塞，需在 P5 完成或改用简化比对，待使用者选择；(2) 现有 bars 首日大单阈值缺失已按方案 A 在服务器修复（M1~M22 共 1347 个「币·月」、样例与重新生成结果逐字节相同），但修复后的文件尚未同步到本地（跨境链路约 22 KB/s），本地数据与 P2 数据集仍是修复前版本。G1 是否通过由使用者确认；封存集 M23~M24 只在服务器保留，未加载（红线 2）。
@@ -274,6 +274,8 @@
 
 ## P4 模型训练与正式回测（本地，依赖 G1；T4-3 第 1 步可在调参期数据到位后提前开始）
 
+> **P4 就绪性结论（2026-11-06 复审）**：T4-0~T4-7 的代码、脚本、配置与测试均已实现并通过（T4-3 第 2 步、T4-4、T4-6 的**正式运行**因数据/GPU 未到位保留 `[~]`，代码本身已就绪）；**P4 正式回测（T4-8）尚不具备启动条件**，阻塞项与 G1 相同：(1) T1-5 实时/历史成交口径比对阻塞；(2) 服务器修复后的 bars 未同步到本地、P2 数据集 `ds_20261102` 仍是修复前版本。使用者已决定（2026-11-06）跳过「三个月六组」（T4-3 第 1 步 6 组 × 验证段 M10~M12 的重跑），冻结的出场/止损参数（`H_max=120`、`k_trail=1.5`、`k_sl=2.5`、`sl_min=1.0%`、`sl_max=2.5%`）保持不变；数据同步并重建 `ds_20261102` 后，直接从 T4-3 第 2 步（12 组超参搜索）继续，无需重跑第 1 步。
+
 - [x] T4-0 安装 CUDA 版 torch —— 用 T0.10 的 `requirements-research.lock`；已安装 torch 2.14.1+cu126，`cuda_available: true`（RTX 3060 Laptop 6GB，驱动 581.32）
 - [x] T4-1 数据集：fp16 memmap 加载入选月份、GPU 常驻（不足时 pinned_cpu，05 §5.1）、索引切片、币种均衡；窗口不跨数据段；GPU/CPU 一致单测；实测显存写入报告 —— 已完成 `trade.models.dataset.WindowDataset`：索引切片（样本只存 `(sym_id, row_idx, y, r_mult, w, open_time)`、不预先展开）、币种均衡（1/该币样本数 归一化）、窗口不跨数据段、补齐分钟占比 > 20% 丢弃；新增入选月份过滤（`months`，按月份裁剪读取，含 30 天预热）、`.npy` fp16 memmap 缓存（`cache_dir` + `np.load(mmap_mode="r")`）、`data_placement=pinned_cpu` 退路与 `collate` 批量 gather、`peak_memory_mb()` 显存实测；`tests/models/test_dataset.py` 13 项含 GPU/CPU 一致与 memmap 回读。**真实数据显存实测（2026-11-05，RTX 3060 Laptop 6GB，`ds_20261102`，4 个训练组币 × 2025-01~12）**：225,213 个样本，`torch.cuda.max_memory_allocated()` 峰值 **92.5 MB**（reserved 104 MB），按 48 币 × 21 个月外推约 2.0 GB，低于 05 §5.1 的 5 GB 目标。
 - [x] T4-2 TCN 因果性单测 —— `trade.models.tcn.TCNModel` 已实现（因果 TCN 残差块 × 4 + 注意力池化 + 双头），`tests/models/test_tcn.py` 3 项通过（前向形状、因果性：改 t+1 之后不变、感受野 ≥ L）
@@ -310,7 +312,7 @@
 
 - [~] T5-3 启动流程：费率核对、杠杆分层、5x、30 天预热
   - 完成：`trade.live.engine` 启动校验纯函数（时钟 >500ms 退出、`fee_reject_live` 实际吃单费率 > 配置 × 1.2 拒绝 live）、`LiveEngine` 组装入口、`trade.live.config`（LiveConfig/load_sizing_config/load_exits_config）。
-  - 缺：完整 10 步启动串联、模型加载（依赖 `trade.models.artifact`，尚未实现）、`paper` 模式真实启动到订阅行情需服务器。
+  - 缺：完整 10 步启动串联、模型加载接入（`trade.models.artifact.load` 已由 T4-7 实现，尚未接入 `LiveEngine` 启动流程）、`paper` 模式真实启动到订阅行情需服务器。
 - [~] T5-4 行情：多连接、23 小时轮换、缺口回补、延迟监控、原子量录制
   - 完成：`trade.live.exchange.ws`（WsConnection + kline/aggTrade/bookTicker 解析单测）；`trade.live.bar_builder`（缺口判定、分钟完整判定、原子量聚合单测）；`trade.live.health`（LatencyMonitor R10 持续 10 秒、OrderErrorMonitor R11、WeightUsage 09 §6）；`trade.live.market_data`（订阅币种计算、23h 轮换、listenKey 30min 续期）。
   - 完成（2026-11-05，东京服务器实测）：`MarketDataFeed`（组合流消费、断线指数退避重连 1s→30s、23 小时先建新连再关旧连）、流名称构造（`kline_streams`/`agg_trade_streams`/`book_ticker_streams`）、`KlineGapFiller`（REST `klines?startTime&endTime` 回补已收盘缺口）、`missing_minutes`/`reconnect_delay_ms`；`scripts/api_smoke.py --ws-check` 免密钥订阅冒烟。实测：测试网三流组合流 60 秒 1278 条、`@kline_1m` 单流 65 秒 120 条；`iptables` DROP 断网 30 秒**未断链**（TCP 重传 + ping/pong 未超时，重连 0 次）、断网 100 秒**断链后自动重连 1 次并回补 1 根已收盘 K 线**；同一演练还暴露并修复了「重连握手失败会逃出 `run()`」的缺陷（新增单测 `test_feed_reconnects_after_handshake_failure_and_reports`）。
@@ -321,7 +323,7 @@
   - 缺：全市场日线拉取权重实测、60 币满负荷容量实测需服务器；**已解决（2026-11-04 使用者决定）**：交易范围 = 月度选币 `U(R)` ∪ 动态候选池（涨幅榜前 20，`candidate_pool`），取并集、范围最大；`market_data.trading_scope`/`top_gainers` 已实现并单测。
 - [~] T5-6 交易引擎时序、推理线程池、状态库记录
   - 完成：`trade.live.engine.LiveEngine` 主循环骨架、`trade.live.store` 的 `latency`/`equity_snapshots` 表写入。
-  - 缺：特征/推理/预过滤/排序下单的分钟事件流串联依赖 `trade.features` 增量接口与模型产物（`trade.models.artifact` 未实现）；`scan_cycles`/`scan_state` 每轮决策事务写入已由 `Store.write_scan` 提供（T5-12）。
+  - 缺：特征/推理/预过滤/排序下单的分钟事件流串联依赖 `trade.features` 增量接口与模型产物接入（`trade.models.artifact` 已由 T4-7 实现，尚未接入）；`scan_cycles`/`scan_state` 每轮决策事务写入已由 `Store.write_scan` 提供（T5-12）。
 - [~] T5-7 订单：IOC 开仓、先止损后止盈、追踪改单先挂新后撤旧、幂等 clientOrderId
   - 完成：`trade.live.orders.OrderManager`——`build_order_id`（≤36 字符）、`compute_limit_price`（tickSize 向下取整）、`round_step_qty`；开仓 LIMIT IOC；`place_protective_orders` 止损先于止盈（红线 9）；`move_stop` 先挂新单确认成功再撤旧单、撤旧失败保留两张（红线 13）；超时/5xx 先按 clientOrderId 查询再重发（幂等）。单测覆盖全部状态机路径。
   - 缺：算法条件单真实参数（`algoType`/`triggerPriceType` 等）需服务器实测确认；仓位基准取 `walletBalance` 已在 sizing（回测实盘共用）。
@@ -418,7 +420,7 @@
 1. **T1-5 实时/历史成交口径比对**（03 §1.1 第 8 条，aggTrade 行情流当前无数据，详见 T1-5 条目）：
    - 方案 A：推迟到 P5 行情模块完成后做。由 `scripts/api_smoke.py --env mainnet` 用最新文档确定 `@aggTrade` 的正确订阅方式，再连续录制 1 天并与次日历史归档逐条比对，差异写入质量报告。
    - 方案 B：现在先用 `bookTicker` 做简化比对。只能验证行情连通性、事件时间与价格一致性，**不能**验证逐笔成交口径（是否包含特殊订单类型），03 §1.1 第 8 条的原始目标仍未满足，需在 P5 补齐。
-2. **现有 bars 首日大单阈值缺失（已按方案 A 执行，2026-11-05）**：服务器端 M1~M22 已修复并通过样例对拍；仍需你安排本地同步（约 5 GB，跨境链路慢）并决定 P2 数据集 `ds_20261102` 与 T4-3 第 1 步结果何时重建/重跑。
+2. **现有 bars 首日大单阈值缺失（已按方案 A 执行，2026-11-05）**：服务器端 M1~M22 已修复并通过样例对拍；仍需你安排本地同步（约 5 GB，跨境链路慢）并重建 P2 数据集 `ds_20261102`。T4-3 第 1 步（「三个月六组」）重跑已由使用者决定跳过（2026-11-06），冻结参数保持不变。
 3. **G1 是否通过**：由使用者依据本文件与完成报告中的逐项判定表确认，Agent 不自行宣布通过。
 
 ## 已确定的事项（2026-10-30）
