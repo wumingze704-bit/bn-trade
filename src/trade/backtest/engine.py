@@ -660,7 +660,7 @@ def precompute_trades_all(
 
     阈值 θ 只影响「p ≥ θ 的候选过滤」，不影响逐笔出场模拟（`simulate_exit` 与 θ
     无关）。把预计算独立出来，便于阈值网格/敏感性扫描只预计算一次，再按 θ 过滤后
-    反复跑组合层（06 §7.2、§7 S4），避免对同一批信号重复模拟出场。
+    反复跑组合层（06 §7 S4），避免对同一批信号重复模拟出场。
     """
     all_trades: list[PrecomputedTrade] = []
     all_skipped: list[SkippedSignal] = []

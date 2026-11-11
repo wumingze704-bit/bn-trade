@@ -31,6 +31,7 @@ NUMBER_RE = re.compile(r"\d+(?:\.\d+)?(?:%|bp)?")
 CONFIG_KEY_RE = re.compile(r"^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:|^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
 DOC_REF_RE = re.compile(r"^(\d{2})$")
 SECTION_REF_RE = re.compile(r"^§(\d+(?:\.\d+)*)")
+_SEP_RE = re.compile(r"[\s、,，/]*(?:[与和][\s、,，/]*)?")
 
 
 def read_text(path: Path) -> str:
@@ -264,20 +265,28 @@ def iter_scan_files(root: Path) -> list[Path]:
 def refs_in_line(line: str) -> list[tuple[str | None, str]]:
     """提取一行内的“文档 §章节”引用。
 
+    缺少文档号的引用只在紧邻上一个引用（中间仅有“、”“，”“与”“和”等分隔符）时沿用
+    上一个文档号；其余情况不猜，返回 None。这样“AGENTS.md §3.2”“按 §2.1”这类指向
+    本文件或非设计书的引用不会被误判成同行前一份文档的章节。
+
     Args:
         line: 单行文本。
 
     Returns:
-        (文档号或 None, 章节号) 列表；文档号缺省时沿用本行最近一次出现的文档号。
+        (文档号或 None, 章节号) 列表。
     """
     pattern = re.compile(r"(?:(?<![\d.])(\d{2}))?\s*§\s*(\d+(?:\.\d+)*)")
     refs: list[tuple[str | None, str]] = []
     last_doc: str | None = None
+    last_end = 0
     for match in pattern.finditer(line):
         doc, section = match.group(1), match.group(2)
         if doc is not None:
             last_doc = doc
+        elif not _SEP_RE.fullmatch(line[last_end : match.start()]):
+            last_doc = None
         refs.append((doc or last_doc, section))
+        last_end = match.end()
     return refs
 
 

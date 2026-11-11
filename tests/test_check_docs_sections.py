@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.check_docs_sections import load_baseline
+from scripts.check_docs_sections import load_baseline, refs_in_line
 
 
 def test_基线路径为仓库相对路径(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -41,3 +41,19 @@ def test_文档不在仓库根目录时抛SystemExit(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit):
         load_baseline(outsider, None, tmp_path / "repo")
+
+
+def test_相邻的省略文档号引用沿用上一个文档号() -> None:
+    """“06 §5.2、§5.3” 里的后一个 § 仍属 06。"""
+    assert refs_in_line("（06 §5.2、§5.3）") == [("06", "5.2"), ("06", "5.3")]
+
+
+def test_跨文字的省略文档号引用不猜文档号() -> None:
+    """“AGENTS §3.2”“按 §2.1”不能被算成同行前一份文档的章节。"""
+    assert refs_in_line("README、02 §4/§5.2/§6、AGENTS §3.2 已同步") == [
+        ("02", "4"),
+        ("02", "5.2"),
+        ("02", "6"),
+        (None, "3.2"),
+    ]
+    assert refs_in_line("（02 §5.8）。按 §2.1 的阶段分批") == [("02", "5.8"), (None, "2.1")]

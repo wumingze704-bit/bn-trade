@@ -105,13 +105,13 @@ def calc_notional(base_amount: float, sl: float, cfg: SizingConfig, ...) -> Sizi
 | 预过滤、标签                                                     | 04 §6~§7、05 §1                                                                                      |
 | 模型结构、训练、校准、阈值、产物字段                             | 05                                                                                                   |
 | 成交规则、成本、指标、健全性检验                                 | 06；**同时检查 07 的对应实盘规则是否需要同步**                                                       |
-| 仓位计算 `trade.common.sizing`、仓位配置                         | 06 §5、07 §7.1/§7.1.1、01 §5、`configs/sizing.yaml`、10 §3.5（控制页预览）                           |
+| 仓位计算 `trade.common.sizing`、仓位配置                         | 06 §5、07 §7.1/§7.1.1、01 §5、`configs/sizing.yaml`、10 §5.6（控制页预览）                           |
 | 实盘下单、风控、对账、状态库表                                   | 07；**同时检查 06 的回测是否需要同步模拟**；状态库表变化同时检查 10（看板查询）                      |
 | 币安客户端、新增/变更币安接口、费率                              | 09 §3~§6（并更新 09 §9 核对记录）                                                                    |
 | 通知 `trade.live.notifier`（企业微信 / 飞书 / WxPusher）         | 07 §8                                                                                                |
 | 出场策略 `trade.common.exits`、`configs/exits.yaml`              | 06 §3.3、07 §5.2~§5.3、05 §6.1；**同时检查回测与实盘两侧**                                           |
 | 部署、Caddy、同步脚本、网络链路                                  | 02 §5                                                                                                |
-| 控制操作 `trade.live.control`、`set_sizing.py`、`kill_switch.py` | 07 §7.1.1/§7.3、10 §3.5/§4                                                                           |
+| 控制操作 `trade.live.control`、`set_sizing.py`、`kill_switch.py` | 07 §7.1.1/§7.3、10 §5.6/§8                                                                           |
 | 看板 `trade.dashboard`                                           | 10；回测报告文件结构变化同时检查 06 §8                                                               |
 | 目录结构、技术栈、部署、配置加载                                 | 02                                                                                                   |
 | 阶段任务、闸门标准                                               | 08（闸门只能在看封存集结果之前修改）                                                              |
