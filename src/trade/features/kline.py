@@ -8,6 +8,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from trade.common._numba import njit
+
 # 防除零（04 §1）
 EPS = 1e-12
 
@@ -109,8 +111,22 @@ def true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarr
     return tr
 
 
-def wilder_atr(tr: np.ndarray, n: int) -> np.ndarray:
-    """Wilder 平滑 ATR（α = 1/n），种子为首 n 根 TR 的均值。"""
+@njit
+def _wilder_atr_nb(tr: np.ndarray, n: int, seed: float) -> np.ndarray:
+    """Wilder 平滑 ATR 的 numba 实现（04 §4.1；种子由调用方用同一口径算出）。"""
+    out = np.full(tr.shape, np.nan, dtype=np.float64)
+    if tr.shape[0] < n:
+        return out
+    prev = seed
+    out[n - 1] = prev
+    for i in range(n, tr.shape[0]):
+        prev = (prev * (n - 1) + tr[i]) / n
+        out[i] = prev
+    return out
+
+
+def wilder_atr_py(tr: np.ndarray, n: int) -> np.ndarray:
+    """Wilder 平滑 ATR 的纯 Python 参考实现（与 `_wilder_atr_nb` 逐元素相等）。"""
     tr_arr = _as_float(tr)
     out = np.full(tr_arr.shape, np.nan, dtype="float64")
     if tr_arr.shape[0] < n:
@@ -121,6 +137,18 @@ def wilder_atr(tr: np.ndarray, n: int) -> np.ndarray:
         prev = (prev * (n - 1) + tr_arr[i]) / n
         out[i] = prev
     return out
+
+
+def wilder_atr(tr: np.ndarray, n: int) -> np.ndarray:
+    """Wilder 平滑 ATR（α = 1/n），种子为首 n 根 TR 的均值（04 §4.1）。
+
+    走 numba 内核；种子用 `np.nanmean` 在 Python 侧算好传入，保证与
+    `wilder_atr_py` 的浮点结果逐元素完全相同（特征与回测共用这一个入口）。
+    """
+    tr_arr = _as_float(tr)
+    if tr_arr.shape[0] < n:
+        return np.full(tr_arr.shape, np.nan, dtype="float64")
+    return _wilder_atr_nb(tr_arr, n, float(np.nanmean(tr_arr[:n])))
 
 
 def r_1(close: np.ndarray) -> np.ndarray:

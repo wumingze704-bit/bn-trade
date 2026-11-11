@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,14 @@ import numpy as np
 import pandas as pd
 
 from trade.backtest.costs import FeeSchedule, scenario
-from trade.backtest.engine import BacktestConfig, TradeRule, run_backtest
+from trade.backtest.engine import (
+    PRECOMPUTE_BAR_COLUMNS,
+    BacktestConfig,
+    PreparedSymbol,
+    TradeRule,
+    prepare_symbols,
+    run_backtest,
+)
 from trade.backtest.event_sim import event_sim
 from trade.backtest.metrics import (
     compute_metrics,
@@ -114,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_scenario(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     signals: pd.DataFrame,
     rules: dict[str, TradeRule],
     groups: dict[str, str],
@@ -129,6 +137,7 @@ def _run_scenario(
     trade_masks: dict[str, np.ndarray] | None = None,
     new_entry_symbols: set[str] | None = None,
     scenario_override: object | None = None,
+    p_floor: float | None = None,
 ):
     """运行单个成本情景的回测（06 §3.4）。"""
     result, _ = run_backtest(
@@ -149,6 +158,7 @@ def _run_scenario(
         trade_masks=trade_masks,
         new_entry_symbols=new_entry_symbols,
         scenario_override=scenario_override,  # type: ignore[arg-type]
+        p_floor=p_floor,
     )
     return result
 
@@ -242,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             run_end_ms,
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=args.final,
+            columns=PRECOMPUTE_BAR_COLUMNS,
         )
         trade_masks[coin.alias] = universe_trade_mask(
             bars_by_symbol[coin.alias]["open_time"].to_numpy(dtype="int64"),
@@ -249,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
             membership,
             universe_cfg.rule.new_entry_delay_days,
         )
+
+    # 每币 numpy 数组只准备一次（06 §3.4），预计算与盯市复用同一份数组。
+    prepared = prepare_symbols(bars_by_symbol)
 
     ne_symbols = new_entry_symbols(membership, base.data_window.tuning_months)
     new_entry_aliases = {coin.alias for coin in coins if coin.symbol in ne_symbols}
@@ -272,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     for run_name, (sizing, equity) in runs.items():
         run_results[run_name] = {
             scen: _run_scenario(
-                bars_by_symbol,
+                prepared,
                 signals,
                 rules,
                 groups,
@@ -292,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
 
             def _net(slip: float, sizing: object = sizing, equity: float = equity) -> float:
                 result = _run_scenario(
-                    bars_by_symbol,
+                    prepared,
                     signals,
                     rules,
                     groups,
@@ -311,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
 
             breakeven = breakeven_slip(net_return=_net, hi=0.01, max_iter=10)
             run_results[run_name]["breakeven"] = _run_scenario(
-                bars_by_symbol,
+                prepared,
                 signals,
                 rules,
                 groups,
@@ -332,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 仓位比例敏感性扫描（06 §5.5）：每个比例都重跑完整组合模拟。
     sweep_frame = sizing_sweep(
-        bars_by_symbol,
+        prepared,
         signals,
         rules,
         groups,
@@ -348,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # S1 随机入场基准（06 §7 S1，固定种子可复现）。
     candidates = compute_random_entry_candidates(
-        bars_by_symbol,
+        prepared,
         signals,
         rules,
         fees,
@@ -367,15 +381,16 @@ def main(argv: list[str] | None = None) -> int:
         seed=backtest_cfg.sanity.random_seed,
     )
 
-    # S4 阈值扰动（06 §7 S4）。
+    # S4 阈值扰动（06 §7 S4）。两次扰动共用一次 p ≥ θ−Δ 的预计算（06 §3.4）。
     pfs: dict[str, float] = {}
+    s4_floor = backtest_cfg.threshold - backtest_cfg.sanity.threshold_perturb
     for direction, delta in (
         ("below", -backtest_cfg.sanity.threshold_perturb),
         ("above", backtest_cfg.sanity.threshold_perturb),
     ):
         perturbed = backtest_cfg.model_copy(update={"threshold": backtest_cfg.threshold + delta})
         presult = _run_scenario(
-            bars_by_symbol,
+            prepared,
             signals,
             rules,
             groups,
@@ -388,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_equity=backtest_cfg.reference.initial_equity,
             trade_masks=trade_masks,
             new_entry_symbols=new_entry_aliases,
+            p_floor=s4_floor,
         )
         pfs[direction] = compute_metrics(presult, backtest_cfg.reference.initial_equity)[
             "profit_factor"
@@ -422,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # S9 事件驱动对拍（P5 之前仅覆盖组合层，06 §3.4）。
     event = event_sim(
-        bars_by_symbol,
+        prepared,
         signals,
         rules,
         groups,

@@ -37,11 +37,14 @@ import pandas as pd  # type: ignore[import-untyped]
 from trade.backtest import engine as engine_module
 from trade.backtest.costs import FeeSchedule, Scenario, scenario
 from trade.backtest.engine import (
+    PRECOMPUTE_BAR_COLUMNS,
     BacktestConfig,
     ExecutedTrade,
     PortfolioResult,
+    PreparedSymbol,
     SkippedSignal,
     TradeRule,
+    prepare_symbols,
     run_backtest,
 )
 from trade.backtest.metrics import compute_metrics
@@ -75,6 +78,11 @@ _BREAKEVEN_ITERS = 10
 
 # 计时挂钩的引擎函数名（06 §3.4：预计算与组合模拟两步，组合模拟内再拆两项）
 _HOOKS = ("precompute_trades_all", "_close_arrays", "_mark_to_market_curve")
+
+
+def _bench_columns() -> tuple[str, ...]:
+    """bars 只需读这些列：预计算用列 + R0 信号要的 taker_buy_quote_volume（03 §5）。"""
+    return (*PRECOMPUTE_BAR_COLUMNS, "taker_buy_quote_volume")
 
 
 class Timing:
@@ -159,6 +167,7 @@ class BenchContext:
     start_ms: int
     end_ms: int
     bars_by_symbol: dict[str, pd.DataFrame]
+    prepared: dict[str, PreparedSymbol]
     trade_masks: dict[str, np.ndarray]
     signals: pd.DataFrame
     rules: dict[str, TradeRule]
@@ -327,6 +336,7 @@ def _load_data(args: argparse.Namespace, timing: Timing) -> BenchContext:
                 end_ms,
                 holdout_start_ms=wb.holdout_start_ms,
                 allow_holdout=False,
+                columns=_bench_columns(),
             )
             bars_by_symbol[coin.alias] = bars
             trade_masks[coin.alias] = universe_trade_mask(
@@ -337,6 +347,9 @@ def _load_data(args: argparse.Namespace, timing: Timing) -> BenchContext:
             )
         timing.count("n_coins", float(len(coins)))
         timing.count("n_bars_rows", float(sum(len(bars) for bars in bars_by_symbol.values())))
+
+    with timing.phase("prepare_symbols"):
+        prepared = prepare_symbols(bars_by_symbol)
 
     with timing.phase("r0_signals"):
         frames = [
@@ -377,6 +390,7 @@ def _load_data(args: argparse.Namespace, timing: Timing) -> BenchContext:
         start_ms=wb.start_ms,
         end_ms=end_ms,
         bars_by_symbol=bars_by_symbol,
+        prepared=prepared,
         trade_masks=trade_masks,
         signals=signals,
         rules=_rules_by_alias(coins, args.rules),
@@ -396,7 +410,7 @@ def _run_scenario(
 ) -> PortfolioResult:
     """跑单个成本情景（参数映射与 `scripts/backtest.py::_run_scenario` 一致，06 §3.4）。"""
     result, _ = run_backtest(
-        ctx.bars_by_symbol,
+        ctx.prepared,
         ctx.signals,
         ctx.rules,
         ctx.groups,
@@ -471,7 +485,7 @@ def _run_sweep(ctx: BenchContext, timing: Timing) -> pd.DataFrame:
     """仓位比例敏感性扫描（06 §5.5）：每个比例重跑完整组合模拟。"""
     with timing.phase("sizing_sweep"):
         frame = sizing_sweep(
-            ctx.bars_by_symbol,
+            ctx.prepared,
             ctx.signals,
             ctx.rules,
             ctx.groups,
@@ -493,7 +507,7 @@ def _run_s1(
     """S1 随机入场基准（06 §7 S1）：候选逐笔净盈亏 + 固定种子抽样。"""
     with timing.phase("s1_candidates"):
         candidates = compute_random_entry_candidates(
-            ctx.bars_by_symbol,
+            ctx.prepared,
             ctx.signals,
             ctx.rules,
             ctx.fees,

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -17,6 +18,7 @@ from trade.backtest.engine import (
     ExecutedTrade,
     PortfolioResult,
     PrecomputedTrade,
+    PreparedSymbol,
     SkippedSignal,
     TradeRule,
     _close_arrays,
@@ -28,7 +30,7 @@ from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 
 
 def event_sim(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     signals: pd.DataFrame,
     rules: dict[str, TradeRule],
     groups: dict[str, str],
@@ -93,7 +95,7 @@ def _event_combine(
     backtest_cfg: BacktestConfig,
     fees: FeeSchedule,
     initial_equity: float | None,
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
 ) -> PortfolioResult:
     """按分钟时钟推进的组合模拟（独立于 engine.simulate_portfolio 的实现）。"""
     start_equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity

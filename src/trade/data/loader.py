@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from trade.common.config import BaseConfig
 from trade.data.universe import SnapshotCoin, UniverseSnapshot, read_universe_snapshot
@@ -100,8 +101,10 @@ def window_bounds(base_cfg: BaseConfig) -> WindowBounds:
     return WindowBounds(start_ms=start_ms, end_ms=end_ms, holdout_start_ms=holdout_start_ms)
 
 
-def _validate_columns(bars: pd.DataFrame, alias: str) -> None:
-    missing = [col for col in REQUIRED_BAR_COLUMNS if col not in bars.columns]
+def _validate_columns(
+    bars: pd.DataFrame, alias: str, required: Sequence[str] = REQUIRED_BAR_COLUMNS
+) -> None:
+    missing = [col for col in required if col not in bars.columns]
     if missing:
         raise ValueError(f"bars 缺少必需列（{alias}）：{missing}")
 
@@ -114,6 +117,7 @@ def load_bars(
     *,
     holdout_start_ms: int,
     allow_holdout: bool = False,
+    columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """读取 [start_ms, end_ms) 的分钟数据（03 §5）。
 
@@ -128,9 +132,11 @@ def load_bars(
             allow_holdout=False 时抛错。必填是为了防止调用方漏传守卫（03 §6、
             AGENTS.md §6 红线 2）。
         allow_holdout: 是否允许读取封存集（仅 `--final` 可开，03 §6）。
+        columns: 只读取这些列（None 表示全部列）；必须包含 `open_time`，返回的
+            DataFrame 只含这些列，并校验它们存在。
 
     Raises:
-        ValueError: 请求与封存集重叠、无数据或缺少必需列。
+        ValueError: 请求与封存集重叠、无数据、缺少必需列或 `columns` 未含 `open_time`。
     """
     if not allow_holdout and end_ms > holdout_start_ms:
         raise ValueError("请求范围与封存集重叠，且 allow_holdout=False（03 §6）")
@@ -140,13 +146,35 @@ def load_bars(
     if not files:
         raise ValueError(f"未找到 bars 文件：{bars_dir}")
 
-    frames = [pd.read_parquet(path) for path in files]
+    selected = None if columns is None else list(columns)
+    if selected is not None:
+        if "open_time" not in selected:
+            raise ValueError(f"columns 必须包含 open_time：{alias} {selected}")
+        schemas = [set(pq.read_schema(path).names) for path in files]
+        available: set[str] = set().union(*schemas)
+        missing = [
+            name for name in selected if name not in available and name not in OPTIONAL_BAR_COLUMNS
+        ]
+        if missing:
+            raise ValueError(f"bars 缺少列 {missing}（{alias}）：{bars_dir}")
+        # 可选列（oi/funding_*）不存在时不读取，由调用方按 03 §2.3 记为无数据
+        selected = [name for name in selected if name in available]
+        frames = []
+        for path, names in zip(files, schemas, strict=True):
+            path_columns = [name for name in selected if name in names]
+            if "open_time" not in path_columns:
+                continue  # 非分钟文件（如 whale_thr.parquet），无时间轴可拼接
+            frames.append(pd.read_parquet(path, columns=path_columns))
+    else:
+        frames = [pd.read_parquet(path) for path in files]
+    if not frames:
+        raise ValueError(f"未找到可用的分钟数据文件：{bars_dir}")
     bars = pd.concat(frames, ignore_index=True)
     bars = bars[(bars["open_time"] >= start_ms) & (bars["open_time"] < end_ms)]
     bars = bars.sort_values("open_time").drop_duplicates("open_time").reset_index(drop=True)
     if bars.empty:
         raise ValueError(f"区间内无分钟数据：{alias} [{start_ms}, {end_ms})")
-    _validate_columns(bars, alias)
+    _validate_columns(bars, alias, REQUIRED_BAR_COLUMNS if selected is None else selected)
     return bars
 
 

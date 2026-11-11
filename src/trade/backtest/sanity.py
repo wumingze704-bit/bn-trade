@@ -8,6 +8,7 @@ S7 依赖实盘增量特征与推理路径（P5）、S8 依赖服务器真实数
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from statistics import NormalDist
 
 import numpy as np
@@ -17,6 +18,7 @@ from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import (
     BacktestConfig,
     PortfolioResult,
+    PreparedSymbol,
     TradeRule,
     precompute_trades,
     reference_trade_net_pnl,
@@ -298,7 +300,7 @@ def run_sanity_checks(
 
 
 def compute_random_entry_candidates(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     prefiltered_samples: pd.DataFrame,
     rules: dict[str, TradeRule],
     fees: FeeSchedule,

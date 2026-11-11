@@ -13,6 +13,25 @@ import pytest
 from trade.features import kline
 
 
+def test_wilder_atr_numba与参考实现逐元素相等() -> None:
+    """numba 内核与纯 Python 参考实现逐元素完全相等（含 NaN 头部与段中缺失）。"""
+    rng = np.random.default_rng(20261111)
+    tr = rng.uniform(0.1, 2.0, 5000)
+    tr[:5] = np.nan  # 头部 lookback 不足
+    tr[100:103] = np.nan  # 段中缺失：递推必须同样传播
+    fast = kline.wilder_atr(tr, 14)
+    ref = kline.wilder_atr_py(tr, 14)
+    assert np.array_equal(fast, ref, equal_nan=True)
+    assert np.array_equal(np.isnan(fast), np.isnan(ref))
+
+
+def test_wilder_atr不足n根时全为nan() -> None:
+    """不足 n 根 TR：numba 入口与参考实现都返回全 NaN。"""
+    tr = np.arange(5, dtype="float64")
+    assert np.isnan(kline.wilder_atr(tr, 14)).all()
+    assert np.isnan(kline.wilder_atr_py(tr, 14)).all()
+
+
 def test_r_1() -> None:
     close = np.array([100.0, 101.0, 103.0])
     out = kline.r_1(close)

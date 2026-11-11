@@ -29,9 +29,11 @@ from trade.backtest.engine import (
     BacktestConfig,
     PortfolioResult,
     PrecomputedTrade,
+    PreparedSymbol,
     SkippedSignal,
     TradeRule,
-    precompute_trades,
+    precompute_trades_all,
+    prepare_symbols,
     simulate_portfolio,
 )
 from trade.backtest.metrics import compute_metrics
@@ -184,6 +186,7 @@ class TuningData:
     coins: list[SnapshotCoin]
     per_coin: dict[str, CoinData]
     bars_mtm: dict[str, pd.DataFrame]
+    prepared: dict[str, PreparedSymbol]
     rules: dict[str, TradeRule]
     groups: dict[str, str]
     fees: FeeSchedule
@@ -290,6 +293,8 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     rules = _load_rules_by_alias(rules_path, data_root / "universe" / "aliases.json")
     groups = {coin.alias: coin.role for coin in coins}
     fees = FeeSchedule(base_cfg.fees.maker, base_cfg.fees.taker)
+    # 每币 numpy 数组只准备一次（06 §3.4），各轮出场参数与 θ 复用同一份数组。
+    prepared = prepare_symbols({alias: info.bars for alias, info in per_coin.items()})
     return TuningData(
         base_cfg=base_cfg,
         features_cfg=features_cfg,
@@ -300,6 +305,7 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
         coins=coins,
         per_coin=per_coin,
         bars_mtm=bars_mtm,
+        prepared=prepared,
         rules=rules,
         groups=groups,
         fees=fees,
@@ -441,6 +447,11 @@ def _train_and_predict(
     return booster, val_signals, int(train_mask.sum()), n_val
 
 
+_TUNING_PRECOMPUTE_CACHE: dict[
+    tuple[object, ...], tuple[list[PrecomputedTrade], list[SkippedSignal]]
+] = {}
+
+
 def _precompute_all(
     data: TuningData,
     signals: pd.DataFrame,
@@ -451,20 +462,34 @@ def _precompute_all(
     scen: Scenario,
     threshold: float,
 ) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
-    """按情景与阈值对每个币做逐笔预计算（06 §3.4 第 1 步）。"""
-    cfg = data.backtest_cfg.model_copy(update={"threshold": threshold})
-    trades: list[PrecomputedTrade] = []
-    skipped: list[SkippedSignal] = []
-    for alias, info in data.per_coin.items():
-        sym_sig = signals[signals["symbol"] == alias]
-        if sym_sig.empty:
-            continue
-        trade_list, skip_list = precompute_trades(
-            info.bars,
-            sym_sig,
-            symbol=alias,
-            group=data.groups[alias],
-            rule=data.rules[alias],
+    """按情景与出场参数预计算一次（p ≥ 最低阈值），再按 θ 过滤（06 §3.4）。
+
+    同一组出场参数下的 26 个 θ 只在第一次调用时做逐笔出场模拟，其余复用缓存。
+    """
+    floor = min(_THETA_GRID)
+    key = (
+        exit_cfg.model_dump_json(),
+        k_sl,
+        sl_min,
+        sl_max,
+        scen.name,
+        scen.latency_ms,
+        scen.slip_mult,
+        scen.half_spread_mult,
+        scen.fixed_slip,
+        scen.tp_taker,
+        scen.all_taker,
+        id(signals),
+        signals.shape[0],
+    )
+    cached = _TUNING_PRECOMPUTE_CACHE.get(key)
+    if cached is None:
+        cfg = data.backtest_cfg.model_copy(update={"threshold": floor})
+        cached = precompute_trades_all(
+            data.prepared,
+            signals,
+            data.rules,
+            data.groups,
             scen=scen,
             fees=data.fees,
             backtest_cfg=cfg,
@@ -474,9 +499,11 @@ def _precompute_all(
             sl_min=sl_min,
             sl_max=sl_max,
             H_label=data.features_cfg.label.H_label,
+            p_min=floor,
         )
-        trades.extend(trade_list)
-        skipped.extend(skip_list)
+        _TUNING_PRECOMPUTE_CACHE[key] = cached
+    trades = [trade for trade in cached[0] if trade.p >= threshold]
+    skipped = [item for item in cached[1] if item.p >= threshold]
     return trades, skipped
 
 

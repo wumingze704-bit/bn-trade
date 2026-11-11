@@ -6,12 +6,19 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd  # type: ignore[import-untyped]
 
 from trade.backtest.costs import FeeSchedule
-from trade.backtest.engine import BacktestConfig, ExecutedTrade, TradeRule, run_backtest
+from trade.backtest.engine import (
+    BacktestConfig,
+    ExecutedTrade,
+    PreparedSymbol,
+    TradeRule,
+    run_backtest,
+)
 from trade.backtest.metrics import compute_metrics
 from trade.common.exits import ExitConfig
 from trade.common.sizing import SizingConfig, equity_floor_hit
@@ -19,7 +26,7 @@ from trade.features.registry import FeaturesConfig
 
 
 def sizing_sweep(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     signals: pd.DataFrame,
     rules: dict[str, TradeRule],
     groups: dict[str, str],

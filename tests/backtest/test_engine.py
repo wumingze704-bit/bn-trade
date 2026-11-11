@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import numpy as np
@@ -9,6 +10,7 @@ import pandas as pd
 import pytest
 
 from tests.backtest import _reference_mtm
+from trade.backtest import engine as engine_module
 from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import (
     BacktestConfig,
@@ -17,8 +19,10 @@ from trade.backtest.engine import (
     TradeRule,
     _close_arrays,
     _mark_to_market_curve,
+    clear_precompute_cache,
     precompute_trades,
     precompute_trades_all,
+    prepare_symbols,
     run_backtest,
     simulate_portfolio,
 )
@@ -533,3 +537,145 @@ def test_预计算一次与逐阈值回测结果一致():
         old_result = run_old(theta)
         assert new_result.final_equity == pytest.approx(old_result.final_equity, abs=1e-6)
         assert len(new_result.trades) == len(old_result.trades)
+
+
+def _random_bars(
+    n: int = 300, symbols: tuple[str, ...] = ("A", "B"), seed: int = 11
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    """构造可成交的随机 bars 与信号（PreparedSymbol/缓存测试用）。"""
+    rng = np.random.default_rng(seed)
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    frames: list[pd.DataFrame] = []
+    for symbol in symbols:
+        open_time = np.arange(n) * _MIN + _T0
+        close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.0008, n)))
+        open_ = np.concatenate([[100.0], close[:-1]])
+        high = np.maximum(open_, close) * (1 + rng.uniform(0.0, 0.0006, n))
+        low = np.minimum(open_, close) * (1 - rng.uniform(0.0, 0.0006, n))
+        bars_by_symbol[symbol] = pd.DataFrame(
+            {
+                "open_time": open_time,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "quote_volume": np.full(n, 1e6),
+                "is_filled": np.zeros(n, dtype="int64"),
+                "p_1s": close,
+                "hi_post_1s": high,
+                "lo_post_1s": low,
+            }
+        )
+        frames.append(
+            pd.DataFrame(
+                {
+                    "symbol": [symbol] * n,
+                    "open_time": open_time,
+                    "p": np.ones(n),
+                    "m": np.zeros(n),
+                    "is_sample": np.ones(n, dtype="int64"),
+                }
+            )
+        )
+    return bars_by_symbol, pd.concat(frames, ignore_index=True)
+
+
+def test_PreparedSymbol入口与DataFrame入口结果一致():
+    """每币数组准备一次的入口与逐次转换的 DataFrame 入口给出完全相同的结果（06 §3.4）。"""
+    bars_by_symbol, signals = _random_bars()
+    rules = {"A": _rule(), "B": _rule()}
+    groups = {"A": "train", "B": "train"}
+    kwargs = dict(
+        scen_name="base",
+        fees=_fees(),
+        backtest_cfg=_backtest(),
+        exit_cfg=ExitConfig(type="trail"),
+        sizing_cfg=_sizing(),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+        initial_equity=10000.0,
+    )
+    clear_precompute_cache()
+    from_frame, trades_frame = run_backtest(bars_by_symbol, signals, rules, groups, **kwargs)
+    clear_precompute_cache()
+    from_prepared, trades_prepared = run_backtest(
+        prepare_symbols(bars_by_symbol), signals, rules, groups, **kwargs
+    )
+    assert len(trades_frame) > 0
+    assert [asdict(trade) for trade in trades_frame] == [asdict(trade) for trade in trades_prepared]
+    assert [asdict(item) for item in from_frame.skipped] == [
+        asdict(item) for item in from_prepared.skipped
+    ]
+    assert from_frame.final_equity == from_prepared.final_equity
+    assert from_frame.equity_curve.equals(from_prepared.equity_curve)
+
+
+def test_高阈值预计算等于低阈值结果按p过滤():
+    """p ≥ θ 的预计算结果等于 p ≥ 0 结果按 p 过滤后的子集（06 §3.4 缓存前提）。"""
+    bars_by_symbol, signals = _random_bars()
+    signals = signals.copy()
+    signals["p"] = np.resize(np.array([0.3, 0.6, 0.9]), len(signals))
+    prepared = prepare_symbols(bars_by_symbol)
+    rules = {"A": _rule(), "B": _rule()}
+    groups = {"A": "train", "B": "train"}
+    common = dict(
+        scen=scenario("base"),
+        fees=_fees(),
+        exit_cfg=ExitConfig(type="trail"),
+        sizing_cfg=_sizing(),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+    )
+    low = precompute_trades_all(
+        prepared, signals, rules, groups, backtest_cfg=_backtest(threshold=0.0), p_min=0.0, **common
+    )
+    assert len(low[0]) > 0
+    for theta in (0.35, 0.65, 0.95):
+        high = precompute_trades_all(
+            prepared, signals, rules, groups, backtest_cfg=_backtest(threshold=theta), **common
+        )
+        assert [asdict(trade) for trade in high[0]] == [
+            asdict(trade) for trade in low[0] if trade.p >= theta
+        ]
+        assert [asdict(item) for item in high[1]] == [
+            asdict(item) for item in low[1] if item.p >= theta
+        ]
+
+
+def test_notional_ref不同时不共享缓存(monkeypatch):
+    """notional_ref 不同（滑点不同）时不得复用逐笔预计算结果（06 §3.4）。"""
+    bars_by_symbol, signals = _random_bars()
+    prepared = prepare_symbols(bars_by_symbol)
+    rules = {"A": _rule(), "B": _rule()}
+    groups = {"A": "train", "B": "train"}
+    calls: list[int] = []
+    original = engine_module.precompute_trades_all
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "precompute_trades_all", counting)
+    clear_precompute_cache()
+    common = dict(
+        scen_name="base",
+        fees=_fees(),
+        backtest_cfg=_backtest(),
+        exit_cfg=ExitConfig(type="trail"),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+        initial_equity=10000.0,
+    )
+    sizing_a = _sizing()
+    sizing_b = _sizing(initial_equity=20)  # notional_ref = 20 × 0.2 × 5 ≠ 10 × 0.2 × 5
+    run_backtest(prepared, signals, rules, groups, sizing_cfg=sizing_a, **common)
+    run_backtest(prepared, signals, rules, groups, sizing_cfg=sizing_a, **common)
+    assert len(calls) == 1  # 第二次命中缓存
+    run_backtest(prepared, signals, rules, groups, sizing_cfg=sizing_b, **common)
+    assert len(calls) == 2  # notional_ref 不同 → 重新预计算

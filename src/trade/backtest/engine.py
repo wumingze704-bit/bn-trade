@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -18,6 +19,25 @@ from trade.common.exits import ExitConfig, simulate_exit
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 from trade.features.kline import rolling_mean, rv_15, true_range, wilder_atr
+
+# precompute_trades 与盯市只读取这些列（06 §3.4）；供 `load_bars(columns=...)` 使用
+PRECOMPUTE_BAR_COLUMNS: tuple[str, ...] = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "quote_volume",
+    "is_filled",
+    "p_1s",
+    "hi_post_1s",
+    "lo_post_1s",
+    "p_3s",
+    "hi_post_3s",
+    "lo_post_3s",
+    "funding_time",
+    "funding_rate",
+)
 
 
 class CostConfig(BaseModel):
@@ -187,13 +207,15 @@ class PortfolioResult:
     max_drawdown_halt: bool = False
 
 
-def _entry_columns(latency_ms: int) -> tuple[str, str, str]:
-    """按执行延迟选择入场参考列（06 §3.2、§4.3）。"""
-    if latency_ms == 1000:
-        return "p_1s", "hi_post_1s", "lo_post_1s"
-    if latency_ms == 3000:
-        return "p_3s", "hi_post_3s", "lo_post_3s"
-    raise ValueError(f"不支持的执行延迟：{latency_ms}（仅 1000/3000）")
+def _row_index(open_time: np.ndarray, ts_ms: int) -> int:
+    """返回 open_time == ts_ms 的行下标；不存在时返回 -1（06 §3.4）。
+
+    用 `np.searchsorted` 取代逐币分钟建 dict，命中后再校验一次时间戳相等。
+    """
+    pos = int(np.searchsorted(open_time, ts_ms, side="left"))
+    if pos >= open_time.shape[0] or int(open_time[pos]) != ts_ms:
+        return -1
+    return pos
 
 
 def _utc_day(ts_ms: int) -> str:
@@ -218,6 +240,109 @@ def _symbol_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 @dataclass(frozen=True)
+class PreparedSymbol:
+    """单个币的 numpy 数组与派生量（06 §3.4）：DataFrame → 数组只做一次，进程内复用。
+
+    执行类原子量（`p_1s` 等）按执行延迟各存一组；bars 未提供的为 None，由
+    `entry_arrays` 在实际用到时抛错（不在准备阶段静默补值）。
+    """
+
+    symbol: str
+    open_time: np.ndarray
+    open: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+    quote_volume: np.ndarray
+    is_filled: np.ndarray
+    p_1s: np.ndarray | None
+    hi_post_1s: np.ndarray | None
+    lo_post_1s: np.ndarray | None
+    p_3s: np.ndarray | None
+    hi_post_3s: np.ndarray | None
+    lo_post_3s: np.ndarray | None
+    atr_abs: np.ndarray
+    atr_pct: np.ndarray
+    rv15: np.ndarray
+    mean_qv_60: np.ndarray
+    funding_time: np.ndarray
+    funding_rate: np.ndarray
+
+    def entry_arrays(self, latency_ms: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """按执行延迟返回 (入场价, 持仓内最高, 持仓内最低) 数组（06 §3.2、§4.3）。
+
+        Raises:
+            ValueError: 不支持的延迟，或 bars 缺少该延迟所需的执行类原子量。
+        """
+        if latency_ms == 1000:
+            price, high_post, low_post = self.p_1s, self.hi_post_1s, self.lo_post_1s
+        elif latency_ms == 3000:
+            price, high_post, low_post = self.p_3s, self.hi_post_3s, self.lo_post_3s
+        else:
+            raise ValueError(f"不支持的执行延迟：{latency_ms}（仅 1000/3000）")
+        if price is None or high_post is None or low_post is None:
+            raise ValueError(f"bars 缺少 {latency_ms}ms 延迟所需的执行类原子量（{self.symbol}）")
+        return price, high_post, low_post
+
+
+def _bar_column(bars: pd.DataFrame, name: str, dtype: str) -> np.ndarray:
+    """取 bars 的一列并转成指定 dtype。
+
+    Raises:
+        ValueError: 列缺失（红线 13：不用默认值顶替）。
+    """
+    if name not in bars.columns:
+        raise ValueError(f"bars 缺少列 {name!r}（06 §3.4）")
+    return np.asarray(bars[name].to_numpy(dtype=dtype), dtype=dtype)
+
+
+def prepare_symbols(bars_by_symbol: Mapping[str, pd.DataFrame]) -> dict[str, PreparedSymbol]:
+    """把每币 bars 一次性转成 numpy 数组与派生指标（06 §3.4）。
+
+    Args:
+        bars_by_symbol: 币种 → 分钟 bars（含 03 §2.3 的执行类原子量）。
+
+    Returns:
+        币种 → PreparedSymbol；同一份输入多次调用结果相同。
+
+    Raises:
+        ValueError: 缺少必需列。
+    """
+    prepared: dict[str, PreparedSymbol] = {}
+    for symbol, bars in bars_by_symbol.items():
+        arrays = _symbol_arrays(bars)
+        funding_time, funding_rate = funding_settlements(bars)
+        prepared[symbol] = PreparedSymbol(
+            symbol=symbol,
+            open_time=_bar_column(bars, "open_time", "int64"),
+            open=_bar_column(bars, "open", "float64"),
+            high=_bar_column(bars, "high", "float64"),
+            low=_bar_column(bars, "low", "float64"),
+            close=_bar_column(bars, "close", "float64"),
+            quote_volume=_bar_column(bars, "quote_volume", "float64"),
+            is_filled=_bar_column(bars, "is_filled", "int64"),
+            p_1s=_optional_bar_column(bars, "p_1s"),
+            hi_post_1s=_optional_bar_column(bars, "hi_post_1s"),
+            lo_post_1s=_optional_bar_column(bars, "lo_post_1s"),
+            p_3s=_optional_bar_column(bars, "p_3s"),
+            hi_post_3s=_optional_bar_column(bars, "hi_post_3s"),
+            lo_post_3s=_optional_bar_column(bars, "lo_post_3s"),
+            atr_abs=arrays["atr_abs"],
+            atr_pct=arrays["atr_pct"],
+            rv15=arrays["rv15"],
+            mean_qv_60=arrays["mean_qv_60"],
+            funding_time=funding_time,
+            funding_rate=funding_rate,
+        )
+    return prepared
+
+
+def _optional_bar_column(bars: pd.DataFrame, name: str) -> np.ndarray | None:
+    """取执行类原子量列；列不存在时返回 None（用到时才报错，见 `entry_arrays`）。"""
+    return bars[name].to_numpy(dtype="float64") if name in bars.columns else None
+
+
+@dataclass(frozen=True)
 class CloseSeries:
     """单币 close 序列（open_time 升序 int64 + close float64），供逐分钟盯市（06 §3.4）。"""
 
@@ -225,13 +350,16 @@ class CloseSeries:
     close: np.ndarray
 
 
-def _close_arrays(bars_by_symbol: dict[str, pd.DataFrame] | None) -> dict[str, CloseSeries]:
+def _close_arrays(
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame] | None,
+) -> dict[str, CloseSeries]:
     """取每币的 open_time 与 close 两列（不复制整张 bars），供逐分钟盯市。
 
     规格：docs/06-回测引擎.md §3.4、§5.1
 
     Args:
-        bars_by_symbol: 币种 → 分钟 bars（缺 `open_time` 或 `close` 列的币跳过）。
+        bars_by_symbol: 币种 → `PreparedSymbol` 或分钟 bars（缺 `open_time` 或
+            `close` 列的币跳过）。
 
     Returns:
         币种 → CloseSeries；`open_time` 升序（bars 未按时间排序时按时间重排两列）。
@@ -240,6 +368,9 @@ def _close_arrays(bars_by_symbol: dict[str, pd.DataFrame] | None) -> dict[str, C
         return {}
     arrays: dict[str, CloseSeries] = {}
     for symbol, bars in bars_by_symbol.items():
+        if isinstance(bars, PreparedSymbol):
+            arrays[symbol] = CloseSeries(open_time=bars.open_time, close=bars.close)
+            continue
         if "open_time" not in bars.columns or "close" not in bars.columns:
             continue
         open_time = bars["open_time"].to_numpy(dtype="int64")
@@ -351,7 +482,7 @@ def reference_trade_net_pnl(
 
 
 def precompute_trades(
-    bars: pd.DataFrame,
+    bars: PreparedSymbol | pd.DataFrame,
     signals: pd.DataFrame,
     *,
     symbol: str,
@@ -368,36 +499,43 @@ def precompute_trades(
     H_label: int,
     trade_mask: np.ndarray | None = None,
     new_entry: bool = False,
+    p_min: float | None = None,
 ) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
     """逐笔预计算（06 §3.4 第 1 步）：为每个候选信号算 P_fill 与出场结果。
 
-    只处理 is_sample=1 且 p ≥ θ 的候选；开仓过滤、追价保护在此判断，
-    仓位与组合约束在 simulate_portfolio 中判断（06 §3.4 第 2 步）。
+    只处理 p ≥ θ 的候选；开仓过滤、追价保护在此判断，仓位与组合约束在
+    `simulate_portfolio` 中判断（06 §3.4 第 2 步）。
 
     Args:
+        bars: 该币的 `PreparedSymbol`，或原始分钟 bars（内部转换一次）。
+        p_min: 候选过滤的 p 下限；None 表示用 `backtest_cfg.threshold`。同进程复用
+            预计算结果时先用 0.0 算一次、再按各阈值过滤（06 §3.4）。
         trade_mask: 可选，与 bars 等长的 bool 数组，标记该分钟是否在当月交易范围
             `U(R)` 内（06 §3.1 条件 8）。为 None 时视为全部可交易（无宇宙约束）。
+
+    Returns:
+        (逐笔预计算结果, 被放弃的候选)。
+
+    Raises:
+        ValueError: bars 缺列或不支持的执行延迟（红线 13）。
     """
-    n = len(bars)
+    prepared = bars if isinstance(bars, PreparedSymbol) else prepare_symbols({symbol: bars})[symbol]
+    n = int(prepared.open_time.shape[0])
     if n == 0:
         return [], []
-    p_col, hi_col, lo_col = _entry_columns(scen.latency_ms)
-    arr = _symbol_arrays(bars)
-    open_time = bars["open_time"].to_numpy(dtype="int64")
-    idx_of = {int(ts): i for i, ts in enumerate(open_time)}
-    close = bars["close"].to_numpy(dtype="float64")
-    qv = bars["quote_volume"].to_numpy(dtype="float64")
-    is_filled = (
-        bars["is_filled"].to_numpy(dtype="int64")
-        if "is_filled" in bars.columns
-        else np.zeros(n, dtype="int64")
-    )
-    p_entry_arr = bars[p_col].to_numpy(dtype="float64")
-    hi_post = bars[hi_col].to_numpy(dtype="float64")
-    lo_post = bars[lo_col].to_numpy(dtype="float64")
-    high = bars["high"].to_numpy(dtype="float64")
-    low = bars["low"].to_numpy(dtype="float64")
-    open_ = bars["open"].to_numpy(dtype="float64")
+    p_entry_arr, hi_post, lo_post = prepared.entry_arrays(scen.latency_ms)
+    open_time = prepared.open_time
+    close = prepared.close
+    qv = prepared.quote_volume
+    is_filled = prepared.is_filled
+    high = prepared.high
+    low = prepared.low
+    open_ = prepared.open
+    atr_abs_arr = prepared.atr_abs
+    atr_pct_arr = prepared.atr_pct
+    rv15_arr = prepared.rv15
+    mean_qv_60_arr = prepared.mean_qv_60
+    threshold = backtest_cfg.threshold if p_min is None else p_min
 
     notional_ref = sizing_cfg.initial_equity * sizing_cfg.position_frac * float(sizing_cfg.leverage)
     half_spread_min = backtest_cfg.costs.half_spread_min * scen.half_spread_mult
@@ -405,13 +543,13 @@ def precompute_trades(
 
     trades: list[PrecomputedTrade] = []
     skipped: list[SkippedSignal] = []
-    fund_times, fund_rates = funding_settlements(bars)
+    fund_times, fund_rates = prepared.funding_time, prepared.funding_rate
 
     for row in signals.itertuples(index=False):
-        if float(row.p) < backtest_cfg.threshold:
+        if float(row.p) < threshold:
             continue
-        t = idx_of.get(int(row.open_time))
-        if t is None or t + 1 >= n:
+        t = _row_index(open_time, int(row.open_time))
+        if t < 0 or t + 1 >= n:
             continue
         if trade_mask is not None and not bool(trade_mask[t]):
             skipped.append(
@@ -433,19 +571,19 @@ def precompute_trades(
         if p_raw > c_t * (1.0 + backtest_cfg.risk.max_chase):
             skipped.append(SkippedSignal(symbol, int(row.open_time), float(row.p), "chase"))
             continue
-        sigma = float(arr["atr_pct"][t])
+        sigma = float(atr_pct_arr[t])
         if not np.isfinite(sigma):
             skipped.append(SkippedSignal(symbol, int(row.open_time), float(row.p), "no_atr"))
             continue
-        if not np.isfinite(arr["rv15"][t]) or not np.isfinite(arr["mean_qv_60"][t]):
+        if not np.isfinite(rv15_arr[t]) or not np.isfinite(mean_qv_60_arr[t]):
             skipped.append(SkippedSignal(symbol, int(row.open_time), float(row.p), "no_lookback"))
             continue
         entry = compute_entry(
             c_t=c_t,
             p_raw=p_raw,
             sigma=sigma,
-            atr_abs=float(arr["atr_abs"][t]),
-            rv15=float(arr["rv15"][t]),
+            atr_abs=float(atr_abs_arr[t]),
+            rv15=float(rv15_arr[t]),
             qv=float(qv[t]),
             tick_size=rule.tick_size,
             k_sl=k_sl,
@@ -510,7 +648,7 @@ def precompute_trades(
                 p_fill=p_fill,
                 sl=sl_,
                 loss_rate=lr,
-                mean_qv_60=float(arr["mean_qv_60"][t]),
+                mean_qv_60=float(mean_qv_60_arr[t]),
                 exit_open_time=int(open_time[result.exit_idx]),
                 exit_price=exit_price,
                 exit_type=result.exit_type,
@@ -550,7 +688,7 @@ def simulate_portfolio(
     backtest_cfg: BacktestConfig,
     fees: FeeSchedule,
     initial_equity: float | None = None,
-    bars_by_symbol: dict[str, pd.DataFrame] | None = None,
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame] | None = None,
 ) -> PortfolioResult:
     """组合模拟（06 §3.4 第 2 步）：按时间推进，应用仓位与组合约束。
 
@@ -673,8 +811,27 @@ def simulate_portfolio(
     return result
 
 
+def _as_prepared(
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
+) -> dict[str, PreparedSymbol]:
+    """把 bars 入口统一成 PreparedSymbol 映射（DataFrame 入口是薄包装，06 §3.4）。"""
+    prepared: dict[str, PreparedSymbol] = {}
+    for symbol, bars in bars_by_symbol.items():
+        prepared[symbol] = (
+            bars if isinstance(bars, PreparedSymbol) else prepare_symbols({symbol: bars})[symbol]
+        )
+    return prepared
+
+
+def _signals_by_symbol(signals: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """按 symbol 一次拆分信号（06 §3.4），避免在币循环里反复布尔筛选。"""
+    if signals.empty:
+        return {}
+    return {str(symbol): frame for symbol, frame in signals.groupby("symbol", sort=False)}
+
+
 def precompute_trades_all(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     signals: pd.DataFrame,
     rules: dict[str, TradeRule],
     groups: dict[str, str],
@@ -690,21 +847,24 @@ def precompute_trades_all(
     H_label: int,
     trade_masks: dict[str, np.ndarray] | None = None,
     new_entry_symbols: set[str] | None = None,
+    p_min: float | None = None,
 ) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
     """为全部信号做逐笔预计算（06 §3.4 第 1 步）。
 
     阈值 θ 只影响「p ≥ θ 的候选过滤」，不影响逐笔出场模拟（`simulate_exit` 与 θ
-    无关）。把预计算独立出来，便于阈值网格/敏感性扫描只预计算一次，再按 θ 过滤后
-    反复跑组合层（06 §7 S4），避免对同一批信号重复模拟出场。
+    无关）。把预计算独立出来，先用 `p_min=0.0` 算一次、再按各 θ 过滤，即可在阈值
+    网格/敏感性扫描/情景重复中复用同一批逐笔结果（06 §3.4、§7 S4）。
     """
+    prepared = _as_prepared(bars_by_symbol)
+    by_symbol = _signals_by_symbol(signals)
     all_trades: list[PrecomputedTrade] = []
     all_skipped: list[SkippedSignal] = []
-    for symbol, bars in bars_by_symbol.items():
-        sym_signals = signals[signals["symbol"] == symbol]
-        if sym_signals.empty:
+    for symbol, item in prepared.items():
+        sym_signals = by_symbol.get(symbol)
+        if sym_signals is None or sym_signals.empty:
             continue
         trades, skipped = precompute_trades(
-            bars,
+            item,
             sym_signals,
             symbol=symbol,
             group=groups[symbol],
@@ -720,14 +880,173 @@ def precompute_trades_all(
             sl_min=sl_min,
             sl_max=sl_max,
             H_label=H_label,
+            p_min=p_min,
         )
         all_trades.extend(trades)
         all_skipped.extend(skipped)
     return all_trades, all_skipped
 
 
+# 进程内逐笔预计算缓存（06 §3.4）：键覆盖影响逐笔结果的全部输入，值为 p ≥ 0 的结果。
+_PRECOMPUTE_CACHE: dict[tuple[object, ...], tuple[list[PrecomputedTrade], list[SkippedSignal]]] = {}
+_PRECOMPUTE_CACHE_LIMIT = 8
+
+
+def clear_precompute_cache() -> None:
+    """清空进程内逐笔预计算缓存（测试与长跑脚本的显式内存回收）。"""
+    _PRECOMPUTE_CACHE.clear()
+
+
+def _data_token(prepared: Mapping[str, PreparedSymbol]) -> tuple[object, ...]:
+    """bars 内容指纹：币种、行数、首尾时间戳、close 与 quote_volume 之和。"""
+    token: list[object] = []
+    for symbol, item in sorted(prepared.items()):
+        count = int(item.open_time.shape[0])
+        token.append(
+            (
+                symbol,
+                count,
+                int(item.open_time[0]) if count else 0,
+                int(item.open_time[-1]) if count else 0,
+                float(np.sum(item.close)),
+                float(np.sum(item.quote_volume)),
+            )
+        )
+    return tuple(token)
+
+
+def _precompute_key(
+    prepared: Mapping[str, PreparedSymbol],
+    rules: Mapping[str, TradeRule],
+    groups: Mapping[str, str],
+    *,
+    scen: Scenario,
+    fees: FeeSchedule,
+    sizing_cfg: SizingConfig,
+    exit_cfg: ExitConfig,
+    k_sl: float,
+    sl_min: float,
+    sl_max: float,
+    H_label: int,
+    trade_masks: dict[str, np.ndarray] | None,
+    new_entry_symbols: set[str] | None,
+) -> tuple[object, ...]:
+    """逐笔预计算缓存键（06 §3.4）：逐笔结果只由这些输入决定。"""
+    mask_token: tuple[object, ...] = (
+        ()
+        if not trade_masks
+        else tuple(
+            sorted(
+                (name, id(mask), int(mask.shape[0]), int(np.count_nonzero(mask)))
+                for name, mask in trade_masks.items()
+            )
+        )
+    )
+    rule_token = tuple(
+        sorted(
+            (name, item.tick_size, item.step_size, item.min_notional)
+            for name, item in rules.items()
+        )
+    )
+    return (
+        _data_token(prepared),
+        scen.name,
+        scen.latency_ms,
+        scen.slip_mult,
+        scen.half_spread_mult,
+        scen.fixed_slip,
+        scen.tp_taker,
+        scen.all_taker,
+        exit_cfg.model_dump_json(),
+        k_sl,
+        sl_min,
+        sl_max,
+        H_label,
+        sizing_cfg.initial_equity * sizing_cfg.position_frac * float(sizing_cfg.leverage),
+        fees.maker,
+        fees.taker,
+        mask_token,
+        tuple(sorted(new_entry_symbols)) if new_entry_symbols else (),
+        rule_token,
+        tuple(sorted(groups.items())),
+    )
+
+
+def _cached_precompute(
+    prepared: Mapping[str, PreparedSymbol],
+    signals: pd.DataFrame,
+    rules: dict[str, TradeRule],
+    groups: dict[str, str],
+    *,
+    scen: Scenario,
+    fees: FeeSchedule,
+    backtest_cfg: BacktestConfig,
+    exit_cfg: ExitConfig,
+    sizing_cfg: SizingConfig,
+    k_sl: float,
+    sl_min: float,
+    sl_max: float,
+    H_label: int,
+    trade_masks: dict[str, np.ndarray] | None,
+    new_entry_symbols: set[str] | None,
+    p_floor: float,
+) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
+    """取（必要时计算）p ≥ p_floor 的逐笔预计算结果（06 §3.4）。"""
+    key = (
+        p_floor,
+        *_precompute_key(
+            prepared,
+            rules,
+            groups,
+            scen=scen,
+            fees=fees,
+            sizing_cfg=sizing_cfg,
+            exit_cfg=exit_cfg,
+            k_sl=k_sl,
+            sl_min=sl_min,
+            sl_max=sl_max,
+            H_label=H_label,
+            trade_masks=trade_masks,
+            new_entry_symbols=new_entry_symbols,
+        ),
+    )
+    cached = _PRECOMPUTE_CACHE.get(key)
+    if cached is None:
+        cached = precompute_trades_all(
+            prepared,
+            signals,
+            rules,
+            groups,
+            scen=scen,
+            fees=fees,
+            backtest_cfg=backtest_cfg,
+            exit_cfg=exit_cfg,
+            sizing_cfg=sizing_cfg,
+            k_sl=k_sl,
+            sl_min=sl_min,
+            sl_max=sl_max,
+            H_label=H_label,
+            trade_masks=trade_masks,
+            new_entry_symbols=new_entry_symbols,
+            p_min=p_floor,
+        )
+        _PRECOMPUTE_CACHE[key] = cached
+        while len(_PRECOMPUTE_CACHE) > _PRECOMPUTE_CACHE_LIMIT:
+            _PRECOMPUTE_CACHE.pop(next(iter(_PRECOMPUTE_CACHE)))
+    return cached
+
+
+def _filter_by_threshold(
+    cached: tuple[list[PrecomputedTrade], list[SkippedSignal]], threshold: float
+) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
+    """从 p ≥ 0 的逐笔结果里取出 p ≥ θ 的子集（06 §3.4）。"""
+    trades = [trade for trade in cached[0] if trade.p >= threshold]
+    skipped = [item for item in cached[1] if item.p >= threshold]
+    return trades, skipped
+
+
 def run_backtest(
-    bars_by_symbol: dict[str, pd.DataFrame],
+    bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
     signals: pd.DataFrame,
     rules: dict[str, TradeRule],
     groups: dict[str, str],
@@ -745,17 +1064,27 @@ def run_backtest(
     trade_masks: dict[str, np.ndarray] | None = None,
     new_entry_symbols: set[str] | None = None,
     scenario_override: Scenario | None = None,
+    p_floor: float | None = None,
 ) -> tuple[PortfolioResult, list[PrecomputedTrade]]:
     """运行单个成本情景的回测（06 §3.4）：预计算 + 组合模拟。
 
+    同一进程内，逐笔预计算按输入指纹缓存：先用 `p_floor` 算一次，再按 θ 过滤，
+    因此不同阈值/情景/仓位的重复运行不再重算逐笔出场（06 §3.4）。
+
     Args:
+        bars_by_symbol: 币种 → `PreparedSymbol`（推荐）或分钟 bars。
         trade_masks: 可选，alias -> 该币每分钟是否在当月交易范围的 bool 数组（06 §3.1
             条件 8）。缺省 None 表示无宇宙约束（测试/旧调用兼容）。
         new_entry_symbols: 可选，新进入组 alias 集合（03 §4.5、06 §7 S10）。
+        p_floor: 预计算的 p 下限；None 表示等于 θ（结果与逐次预计算完全相同）。
+            需要一次预计算覆盖多个 θ 时，传入这些 θ 的最小值。
     """
     scen = scenario_override if scenario_override is not None else scenario(scen_name)
-    all_trades, all_skipped = precompute_trades_all(
-        bars_by_symbol,
+    prepared = _as_prepared(bars_by_symbol)
+    threshold = backtest_cfg.threshold
+    floor = threshold if p_floor is None else min(p_floor, threshold)
+    cached = _cached_precompute(
+        prepared,
         signals,
         rules,
         groups,
@@ -770,7 +1099,9 @@ def run_backtest(
         H_label=H_label,
         trade_masks=trade_masks,
         new_entry_symbols=new_entry_symbols,
+        p_floor=floor,
     )
+    all_trades, all_skipped = _filter_by_threshold(cached, threshold)
     result = simulate_portfolio(
         all_trades,
         all_skipped,
@@ -778,6 +1109,6 @@ def run_backtest(
         backtest_cfg=backtest_cfg,
         fees=fees,
         initial_equity=initial_equity,
-        bars_by_symbol=bars_by_symbol,
+        bars_by_symbol=prepared,
     )
     return result, all_trades
