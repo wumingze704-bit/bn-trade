@@ -234,10 +234,9 @@ def run_fold(
     model_id = f"{make_model_id(cfg.arch, short_hash)}_{fold.fold_id}"
     model_dir = models_root / model_id
     result = train_ensemble(train_ds, val_ds, cfg, out_dir=model_dir)
-    calibration = calibration_metrics(
-        np.concatenate([np.asarray(logit) for logit in result.val_logits]),
-        np.asarray(result.val_y),
-    )
+    # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1），与推理口径一致。
+    ensemble_logit = np.mean(np.stack([np.asarray(item) for item in result.val_logits]), axis=0)
+    calibration = calibration_metrics(ensemble_logit, np.asarray(result.val_y))
     temperature = float(calibration["temperature"])
 
     val_signals = predict_signals(
@@ -396,10 +395,9 @@ def run_final(
     model_id = f"{make_model_id(cfg.arch, short_hash)}_final"
     model_dir = models_root / model_id
     result = train_ensemble(train_ds, val_ds, cfg, out_dir=model_dir)
-    calibration = calibration_metrics(
-        np.concatenate([np.asarray(logit) for logit in result.val_logits]),
-        np.asarray(result.val_y),
-    )
+    # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1），与推理口径一致。
+    ensemble_logit = np.mean(np.stack([np.asarray(item) for item in result.val_logits]), axis=0)
+    calibration = calibration_metrics(ensemble_logit, np.asarray(result.val_y))
     temperature = float(calibration["temperature"])
     val_signals = predict_signals(
         val_ds,

@@ -193,7 +193,7 @@ def test_run_fold_smoke(wf_fixture: dict[str, object]) -> None:
         max_epochs=1,
         warmup_epochs=0,
         bf16=False,
-        seeds=[42],
+        seeds=[42, 43],
     )
     fold = build_folds(
         ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05"],

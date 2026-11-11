@@ -286,6 +286,11 @@ def _train_one_seed(
             ):
                 logit, m = model(x)
                 loss = multitask_loss(logit, m, y, r_mult, w, cfg, pos_weight)
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"训练损失非有限值（seed={seed}，epoch={epoch + 1}，batch_start={start}）；"
+                    "检查特征与标签是否含 NaN/Inf（05 §6）"
+                )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
             optimizer.step()
@@ -356,6 +361,15 @@ def train_ensemble(
     arch_name = arch or cfg.arch
     if len(train_ds) == 0 or len(val_ds) == 0:
         raise ValueError("训练集或验证集为空，无法训练（05 §6）")
+    # 标签 r_mult 含 NaN/Inf 时（历史/缺失逐笔数据导致出场价无法确定）训练会发散成
+    # NaN 权重，白白消耗数小时 GPU；在开始训练前就报错（04 §7.3、06 §3.3）。
+    for name, dataset in (("训练集", train_ds), ("验证集", val_ds)):
+        r_mult = np.asarray([sample.r_mult for sample in dataset.samples], dtype="float64")
+        if not np.isfinite(r_mult).all():
+            raise ValueError(
+                f"{name} r_mult 含 {int((~np.isfinite(r_mult)).sum())} 个 NaN/Inf，"
+                "标签构建异常（04 §7.3）；请重建数据集"
+            )
     device = "cuda" if cfg.data_placement == "gpu" and torch.cuda.is_available() else "cpu"
     in_features = len(train_ds.feature_names)
     result = TrainingResult(
