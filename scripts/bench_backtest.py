@@ -598,14 +598,56 @@ def _write_snapshots(
 
 
 def _peak_memory() -> str:
-    """进程峰值内存；psutil 未安装时返回“未测”（不新增依赖）。"""
+    """进程峰值内存：优先 psutil，Windows 下用 ctypes 读 PeakWorkingSetSize，都没有记“未测”。"""
     try:
         import psutil  # type: ignore[import-untyped]
     except ImportError:
-        return "未测（psutil 未安装）"
-    info = psutil.Process().memory_info()
-    peak = getattr(info, "peak_wset", info.rss)
-    return f"{peak / 1024**2:.1f} MB"
+        psutil = None
+    if psutil is not None:
+        info = psutil.Process().memory_info()
+        peak = getattr(info, "peak_wset", info.rss)
+        return f"{peak / 1024**2:.1f} MB"
+    if sys.platform == "win32":
+        peak = _windows_peak_working_set()
+        if peak is not None:
+            return f"{peak / 1024**2:.1f} MB"
+    return "未测（无 psutil，且当前平台不支持 ctypes 读取峰值工作集）"
+
+
+def _windows_peak_working_set() -> int | None:
+    """用 ctypes 读本进程峰值工作集（字节）；失败返回 None。"""
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(ProcessMemoryCounters)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    ok = psapi.GetProcessMemoryInfo(
+        kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+    )
+    return int(counters.PeakWorkingSetSize) if ok else None
 
 
 def _print_timing(timing: Timing) -> None:
@@ -656,43 +698,43 @@ def main(argv: list[str] | None = None) -> int:
             stream = io.StringIO()
             pstats.Stats(profiler, stream=stream).sort_stats("cumulative").print_stats(30)
             (out_dir / "profile.txt").write_text(stream.getvalue(), encoding="utf-8")
-        _write_json(
-            out_dir / "timing.json",
-            {
-                "suite": args.suite,
-                "coins": [coin.alias for coin in ctx.coins],
-                "months": ctx.months,
-                "start_ms": ctx.start_ms,
-                "end_ms": ctx.end_ms,
-                "phases": timing.phases,
-                "total_s": timing.total_s(),
-                "peak_memory": _peak_memory(),
-                "environment": {
-                    "python": platform.python_version(),
-                    "platform": platform.platform(),
-                },
-                "command": " ".join(sys.argv),
+    _write_json(
+        out_dir / "timing.json",
+        {
+            "suite": args.suite,
+            "coins": [coin.alias for coin in ctx.coins],
+            "months": ctx.months,
+            "start_ms": ctx.start_ms,
+            "end_ms": ctx.end_ms,
+            "phases": timing.phases,
+            "total_s": timing.total_s(),
+            "peak_memory": _peak_memory(),
+            "environment": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
             },
-        )
-        _write_json(
-            out_dir / "meta.json",
-            {
-                "suite": args.suite,
-                "coins": [
-                    {"alias": coin.alias, "symbol": coin.symbol, "role": coin.role}
-                    for coin in ctx.coins
-                ],
-                "months": ctx.months,
-                "start_ms": ctx.start_ms,
-                "end_ms": ctx.end_ms,
-                "scenarios": ctx.normal_scenarios + (["breakeven"] if args.suite == "full" else []),
-                "threshold": ctx.backtest_cfg.threshold,
-                "initial_equity": {
-                    "reference": ctx.backtest_cfg.reference.initial_equity,
-                    "user": ctx.sizing_cfg.initial_equity,
-                },
+            "command": " ".join(sys.argv),
+        },
+    )
+    _write_json(
+        out_dir / "meta.json",
+        {
+            "suite": args.suite,
+            "coins": [
+                {"alias": coin.alias, "symbol": coin.symbol, "role": coin.role}
+                for coin in ctx.coins
+            ],
+            "months": ctx.months,
+            "start_ms": ctx.start_ms,
+            "end_ms": ctx.end_ms,
+            "scenarios": ctx.normal_scenarios + (["breakeven"] if args.suite == "full" else []),
+            "threshold": ctx.backtest_cfg.threshold,
+            "initial_equity": {
+                "reference": ctx.backtest_cfg.reference.initial_equity,
+                "user": ctx.sizing_cfg.initial_equity,
             },
-        )
+        },
+    )
 
     _print_timing(timing)
     print(f"输出目录：{out_dir}")
