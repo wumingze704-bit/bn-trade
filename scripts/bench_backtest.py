@@ -74,7 +74,7 @@ _BREAKEVEN_HI = 0.01
 _BREAKEVEN_ITERS = 10
 
 # 计时挂钩的引擎函数名（06 §3.4：预计算与组合模拟两步，组合模拟内再拆两项）
-_HOOKS = ("precompute_trades_all", "_close_lookup", "_mark_to_market_curve")
+_HOOKS = ("precompute_trades_all", "_close_arrays", "_mark_to_market_curve")
 
 
 class Timing:
@@ -610,13 +610,13 @@ def _peak_memory() -> str:
 
 def _print_timing(timing: Timing) -> None:
     """把分阶段耗时打印成表格（报告数字取自这里与 timing.json）。"""
-    header = f"{'阶段':<22}{'wall_s':>10}{'precompute':>12}{'close_lookup':>14}{'mark_to_mkt':>13}"
+    header = f"{'阶段':<22}{'wall_s':>10}{'precompute':>12}{'close_arrays':>14}{'mark_to_mkt':>13}"
     print(header)
     for name, bucket in timing.phases.items():
         print(
             f"{name:<22}{bucket.get('wall_s', 0.0):>10.2f}"
             f"{bucket.get('precompute_trades_all_s', 0.0):>12.2f}"
-            f"{bucket.get('close_lookup_s', 0.0):>14.2f}"
+            f"{bucket.get('close_arrays_s', 0.0):>14.2f}"
             f"{bucket.get('mark_to_market_curve_s', 0.0):>13.2f}"
         )
     print(f"{'合计':<22}{timing.total_s():>10.2f}")

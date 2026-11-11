@@ -8,11 +8,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.backtest import _reference_mtm
 from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import (
     BacktestConfig,
+    ExecutedTrade,
     PrecomputedTrade,
     TradeRule,
+    _close_arrays,
+    _mark_to_market_curve,
     precompute_trades,
     precompute_trades_all,
     run_backtest,
@@ -212,6 +216,125 @@ def test_盯市权益曲线捕获持仓浮亏():
     )
     assert len(result.equity_curve) > 5  # 逐分钟盯市，而非只在平仓时记录
     assert result.equity_curve["drawdown"].max() > 0.1  # 浮亏回撤远大于实现回撤
+
+
+def _executed(
+    symbol: str, entry: int, exit_: int, *, notional: float, p_fill: float, net_pnl: float
+) -> ExecutedTrade:
+    """构造一笔已执行交易（盯市曲线测试用，只关心盯市相关字段）。"""
+    return ExecutedTrade(
+        symbol=symbol,
+        group="train",
+        signal_open_time=entry - _MIN,
+        entry_open_time=entry,
+        exit_open_time=exit_,
+        p=1.0,
+        m=0.0,
+        p_fill=p_fill,
+        sl=0.008,
+        exit_price=p_fill,
+        exit_type="tp",
+        exit_type_code=3,
+        notional=notional,
+        qty=notional / p_fill,
+        margin=notional / 5.0,
+        bars_held=(exit_ - entry) // _MIN + 1,
+        stop_updates=0,
+        mfe_r=1.0,
+        mae_r=0.0,
+        entry_fee=0.0,
+        exit_fee=0.0,
+        gross_pnl=net_pnl,
+        net_pnl=net_pnl,
+        capped_by=None,
+    )
+
+
+def test_盯市曲线与参考实现一致():
+    """缺失分钟、重叠持仓、同一时刻多笔离场、entry == exit 时与逐元素参考实现等价（红线 15）。"""
+    rng = np.random.default_rng(20261111)
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    minutes_by_symbol: dict[str, np.ndarray] = {}
+    for symbol in ("A", "B", "C"):
+        open_time = np.arange(2000) * _MIN + _T0
+        open_time = open_time[rng.random(open_time.shape[0]) > 0.15]  # 15% 分钟缺失
+        close = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.001, open_time.shape[0])))
+        close[rng.random(open_time.shape[0]) < 0.01] = 0.0  # 缺失价按 p_fill 计
+        bars_by_symbol[symbol] = pd.DataFrame(
+            {"open_time": open_time, "close": close, "open": close, "high": close, "low": close}
+        )
+        minutes_by_symbol[symbol] = open_time
+
+    trades: list[ExecutedTrade] = []
+    for index in range(300):
+        symbol = ("A", "B", "C")[index % 3]
+        minutes = minutes_by_symbol[symbol]
+        start = int(rng.integers(0, minutes.shape[0] - 40))
+        span = int(rng.integers(0, 40))  # span == 0 → entry == exit
+        entry = int(minutes[start])
+        exit_ = int(minutes[start + span]) if span else entry
+        if index % 25 == 0:  # 人为制造同一时刻多笔离场
+            exit_ = int(minutes[min(span + 1, minutes.shape[0] - 1)])
+        trades.append(
+            _executed(
+                symbol,
+                entry,
+                exit_,
+                notional=float(rng.uniform(50.0, 500.0)),
+                p_fill=float(rng.uniform(50.0, 200.0)),
+                net_pnl=float(rng.normal(0.0, 5.0)),
+            )
+        )
+
+    curve = _mark_to_market_curve(trades, _close_arrays(bars_by_symbol), 10000.0)
+    expected = _reference_mtm._mark_to_market_curve(
+        trades, _reference_mtm._close_lookup(bars_by_symbol), 10000.0
+    )
+    assert curve["ts_ms"].tolist() == expected["ts_ms"].tolist()
+    np.testing.assert_allclose(
+        curve["equity"].to_numpy(), expected["equity"].to_numpy(), rtol=1e-12, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        curve["drawdown"].to_numpy(), expected["drawdown"].to_numpy(), rtol=1e-12, atol=1e-9
+    )
+
+
+def test_无交易时盯市曲线不变():
+    bars = pd.DataFrame({"open_time": [_T0], "close": [1.0]})
+    curve = _mark_to_market_curve([], _close_arrays({"A": bars}), 1234.5)
+    expected = _reference_mtm._mark_to_market_curve([], {}, 1234.5)
+    pd.testing.assert_frame_equal(curve, expected)
+
+
+def test_单笔交易盯市曲线手算样例():
+    """一笔持仓跨越 3 根 K 线：逐分钟未实现盈亏 + 平仓时刻已实现盈亏（手算核对）。"""
+    open_time = np.arange(5) * _MIN + _T0
+    close = np.array([100.0, 101.0, 102.0, 99.0, 103.0])
+    bars = pd.DataFrame({"open_time": open_time, "close": close})
+    trade = _executed(
+        "A", int(open_time[1]), int(open_time[4]), notional=1000.0, p_fill=100.5, net_pnl=12.5
+    )
+    curve = _mark_to_market_curve([trade], _close_arrays({"A": bars}), 10000.0)
+
+    expected_ts = [0, int(open_time[1]), int(open_time[2]), int(open_time[3]), int(open_time[4])]
+    at_101 = 10000.0 + 1000.0 * (101.0 / 100.5 - 1.0)
+    at_102 = 10000.0 + 1000.0 * (102.0 / 100.5 - 1.0)
+    at_99 = 10000.0 + 1000.0 * (99.0 / 100.5 - 1.0)
+    at_exit = 10000.0 + 12.5
+    expected_equity = [10000.0, at_101, at_102, at_99, at_exit]
+    peak = at_102  # 前 3 个采样点的权益高点
+    expected_drawdown = [
+        0.0,
+        0.0,
+        0.0,
+        (peak - at_99) / peak,
+        (peak - at_exit) / peak,
+    ]
+    assert curve["ts_ms"].tolist() == expected_ts
+    np.testing.assert_allclose(curve["equity"].to_numpy(), expected_equity, rtol=1e-12, atol=1e-9)
+    np.testing.assert_allclose(
+        curve["drawdown"].to_numpy(), expected_drawdown, rtol=1e-12, atol=1e-9
+    )
 
 
 def test_run_backtest端到端():

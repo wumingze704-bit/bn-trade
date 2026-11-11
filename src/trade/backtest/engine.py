@@ -217,78 +217,113 @@ def _symbol_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
     }
 
 
-def _close_lookup(bars_by_symbol: dict[str, pd.DataFrame] | None) -> dict[str, dict[int, float]]:
-    """预建 open_time → close 映射，供逐分钟盯市（06 §3.4、§5.1）。"""
+@dataclass(frozen=True)
+class CloseSeries:
+    """单币 close 序列（open_time 升序 int64 + close float64），供逐分钟盯市（06 §3.4）。"""
+
+    open_time: np.ndarray
+    close: np.ndarray
+
+
+def _close_arrays(bars_by_symbol: dict[str, pd.DataFrame] | None) -> dict[str, CloseSeries]:
+    """取每币的 open_time 与 close 两列（不复制整张 bars），供逐分钟盯市。
+
+    规格：docs/06-回测引擎.md §3.4、§5.1
+
+    Args:
+        bars_by_symbol: 币种 → 分钟 bars（缺 `open_time` 或 `close` 列的币跳过）。
+
+    Returns:
+        币种 → CloseSeries；`open_time` 升序（bars 未按时间排序时按时间重排两列）。
+    """
     if not bars_by_symbol:
         return {}
-    lookup: dict[str, dict[int, float]] = {}
+    arrays: dict[str, CloseSeries] = {}
     for symbol, bars in bars_by_symbol.items():
         if "open_time" not in bars.columns or "close" not in bars.columns:
             continue
         open_time = bars["open_time"].to_numpy(dtype="int64")
         close = bars["close"].to_numpy(dtype="float64")
-        lookup[symbol] = {int(open_time[i]): float(close[i]) for i in range(open_time.shape[0])}
-    return lookup
-
-
-def _mark_equity(
-    wallet: float,
-    positions: dict[str, ExecutedTrade],
-    close_lookup: dict[str, dict[int, float]],
-    ts: int,
-) -> float:
-    """盯市权益 = 钱包余额 + 未实现盈亏（notional × (c_t / p_fill − 1)，06 §5.1）。"""
-    unrealized = 0.0
-    for trade in positions.values():
-        close_at_ts = close_lookup.get(trade.symbol, {}).get(ts)
-        if close_at_ts is None or close_at_ts <= 0.0 or trade.p_fill <= 0.0:
-            close_at_ts = trade.p_fill  # 缺失分钟按入场价近似（保守）
-        unrealized += trade.notional * (close_at_ts / trade.p_fill - 1.0)
-    return wallet + unrealized
+        if open_time.shape[0] > 1 and not bool(np.all(np.diff(open_time) > 0)):
+            order = np.argsort(open_time, kind="stable")
+            open_time = open_time[order]
+            close = close[order]
+        arrays[symbol] = CloseSeries(open_time=open_time, close=close)
+    return arrays
 
 
 def _mark_to_market_curve(
     trades: list[ExecutedTrade],
-    close_lookup: dict[str, dict[int, float]],
+    close_arrays: dict[str, CloseSeries],
     initial_equity: float,
 ) -> pd.DataFrame:
     """按分钟盯市的权益曲线（06 §3.4、§5.1）。
 
     权益 = 钱包余额（初始 + 已实现净盈亏） + 未实现盈亏；在每根持仓 K 线收盘处采样。
+    采样时刻 = 各笔交易持仓区间 `[entry_open_time, exit_open_time)` 内该币的 K 线时间戳
+    ∪ 各笔离场时间。未实现盈亏只在该交易所在币有该分钟 K 线时计入，缺失分钟贡献 0
+    （等价于按 `p_fill` 估值）。
+
+    Args:
+        trades: 组合模拟接受的交易。
+        close_arrays: `_close_arrays` 的返回值（每币 close 数组）。
+        initial_equity: 初始权益，USDT。
+
+    Returns:
+        DataFrame，列 = [ts_ms（int64）, equity（float64）, drawdown（float64）]；首行为
+        (0, initial_equity, 0.0)，无交易时只返回该行。
     """
     if not trades:
         return pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
 
-    sample_ts: set[int] = set()
-    for t in trades:
-        sample_ts.add(t.exit_open_time)
-        for ts in close_lookup.get(t.symbol, {}):
-            if t.entry_open_time <= ts < t.exit_open_time:
-                sample_ts.add(ts)
+    exit_times = np.fromiter(
+        (trade.exit_open_time for trade in trades), dtype="int64", count=len(trades)
+    )
+    net_pnl = np.fromiter((trade.net_pnl for trade in trades), dtype="float64", count=len(trades))
 
-    by_exit: dict[int, float] = {}
-    for t in trades:
-        by_exit[t.exit_open_time] = by_exit.get(t.exit_open_time, 0.0) + t.net_pnl
+    # 每笔交易在其所在币 K 线上的取样区间（左闭右开），一次算好供采样与盯市复用
+    slices: list[tuple[int, int, int]] = []
+    pieces: list[np.ndarray] = [exit_times]
+    for index, trade in enumerate(trades):
+        series = close_arrays.get(trade.symbol)
+        if series is None:
+            slices.append((index, 0, 0))
+            continue
+        lo = int(np.searchsorted(series.open_time, trade.entry_open_time, side="left"))
+        hi = int(np.searchsorted(series.open_time, trade.exit_open_time, side="left"))
+        slices.append((index, lo, hi))
+        if hi > lo:
+            pieces.append(series.open_time[lo:hi])
+    sample_ts = np.unique(np.concatenate(pieces))
 
-    rows: list[tuple[int, float, float]] = []
-    realized = 0.0
-    peak = initial_equity
-    for ts in sorted(sample_ts):
-        realized += by_exit.get(ts, 0.0)
-        equity = initial_equity + realized
-        for t in trades:
-            if t.entry_open_time <= ts < t.exit_open_time:
-                close_at_ts = close_lookup.get(t.symbol, {}).get(ts)
-                if close_at_ts is None or close_at_ts <= 0.0:
-                    close_at_ts = t.p_fill
-                equity += t.notional * (close_at_ts / t.p_fill - 1.0)
-        peak = max(peak, equity)
-        drawdown = (peak - equity) / peak if peak > 0.0 else 0.0
-        rows.append((ts, equity, drawdown))
+    # 已实现：exit_open_time ≤ ts 的全部 net_pnl 之和（按离场时间稳定排序后 cumsum）
+    exit_order = np.argsort(exit_times, kind="stable")
+    sorted_exit = exit_times[exit_order]
+    cumulative = np.cumsum(net_pnl[exit_order])
+    realized_pos = np.searchsorted(sorted_exit, sample_ts, side="right")
+    realized = np.where(realized_pos > 0, cumulative[np.maximum(realized_pos - 1, 0)], 0.0)
 
-    if not rows or rows[0][0] != 0:
-        rows.insert(0, (0, initial_equity, 0.0))
-    return pd.DataFrame(rows, columns=["ts_ms", "equity", "drawdown"])
+    # 未实现：每笔交易只在自己币有 K 线的采样时刻贡献 notional × (close / p_fill − 1)
+    unrealized = np.zeros(sample_ts.shape[0], dtype="float64")
+    for index, lo, hi in slices:
+        if hi <= lo:
+            continue
+        trade = trades[index]
+        series = close_arrays[trade.symbol]
+        close_slice = series.close[lo:hi]
+        # close ≤ 0 的缺失分钟按 p_fill 估值（贡献 0），与逐元素实现一致
+        price = np.where(close_slice > 0.0, close_slice, trade.p_fill)
+        positions = np.searchsorted(sample_ts, series.open_time[lo:hi])
+        np.add.at(unrealized, positions, trade.notional * (price / trade.p_fill - 1.0))
+
+    equity = initial_equity + realized + unrealized
+    peak = np.maximum.accumulate(np.concatenate(([initial_equity], equity)))[1:]
+    drawdown = np.where(peak > 0.0, (peak - equity) / peak, 0.0)
+    frame = pd.DataFrame({"ts_ms": sample_ts, "equity": equity, "drawdown": drawdown})
+    if int(frame["ts_ms"].iloc[0]) != 0:
+        head = pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
+        frame = pd.concat([head, frame], ignore_index=True)
+    return frame
 
 
 def reference_trade_net_pnl(
@@ -530,7 +565,7 @@ def simulate_portfolio(
     daily_realized: dict[str, float] = {}
     result = PortfolioResult(skipped=list(precompute_skipped))
     min_min_notional = min((t.min_notional for t in trades), default=1e18)
-    close_lookup = _close_lookup(bars_by_symbol)
+    close_arrays = _close_arrays(bars_by_symbol)
 
     ordered = sorted(trades, key=lambda tr: (tr.entry_open_time, -tr.p, -tr.m))
 
@@ -630,7 +665,7 @@ def simulate_portfolio(
     positions.clear()
 
     result.final_equity = equity
-    result.equity_curve = _mark_to_market_curve(result.trades, close_lookup, start_equity)
+    result.equity_curve = _mark_to_market_curve(result.trades, close_arrays, start_equity)
     if not result.equity_curve.empty:
         max_dd = float(result.equity_curve["drawdown"].max())
         if max_dd >= sizing_cfg.max_drawdown_halt:

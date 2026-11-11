@@ -19,7 +19,7 @@ from trade.backtest.engine import (
     PrecomputedTrade,
     SkippedSignal,
     TradeRule,
-    _close_lookup,
+    _close_arrays,
     _mark_to_market_curve,
     precompute_trades,
 )
@@ -103,7 +103,7 @@ def _event_combine(
     daily_realized: dict[str, float] = {}
     result = PortfolioResult(skipped=list(all_skipped))
     min_min_notional = min((t.min_notional for t in all_trades), default=1e18)
-    close_lookup = _close_lookup(bars_by_symbol)
+    close_arrays = _close_arrays(bars_by_symbol)
 
     by_entry: dict[int, list[PrecomputedTrade]] = defaultdict(list)
     for tr in all_trades:
@@ -213,7 +213,7 @@ def _event_combine(
     positions.clear()
 
     result.final_equity = equity
-    result.equity_curve = _mark_to_market_curve(result.trades, close_lookup, start_equity)
+    result.equity_curve = _mark_to_market_curve(result.trades, close_arrays, start_equity)
     if (
         not result.equity_curve.empty
         and float(result.equity_curve["drawdown"].max()) >= sizing_cfg.max_drawdown_halt
