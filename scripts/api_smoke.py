@@ -113,7 +113,7 @@ async def _smoke(env: EnvName, symbol: str) -> int:
 
     if env == "testnet":
         if signed_failures:
-            # 签名不可用时不做下单演练，避免出现只有开仓没有后续处理的状态（红线 9）
+            # 签名不可用时不做下单演练，避免出现只有开仓没有后续处理的状态（红线 7）
             print("[SKIP] 订单生命周期：签名接口不可用（见上方 FAIL），不下单")
         else:
             failures += await _testnet_lifecycle(client, symbol)
@@ -124,7 +124,7 @@ async def _smoke(env: EnvName, symbol: str) -> int:
 async def _testnet_lifecycle(client: ExchangeClient, symbol: str) -> int:
     """测试网订单生命周期：IOC 开仓 → 止损 → 止盈 → 撤止盈 → 平仓 → 确认仓位为 0（09 §8）。
 
-    红线 9：成交后立即挂止损；任何一步异常都在 finally 里市价平仓并核对仓位为 0。
+    红线 7：成交后立即挂止损；任何一步异常都在 finally 里市价平仓并核对仓位为 0。
 
     Returns:
         失败步骤数（0 表示全部成功）。
@@ -158,7 +158,7 @@ async def _testnet_lifecycle(client: ExchangeClient, symbol: str) -> int:
             print("[SKIP] IOC 未成交，无仓位，无需挂止损")
             return failures
         entry = order.avg_price or ask
-        # 止损先于止盈，且盘中不改单：撤止损放在平仓之后（红线 9）
+        # 止损先于止盈，且盘中不改单：撤止损放在平仓之后（红线 7）
         algo = await client.place_algo_order(
             symbol=symbol,
             algoType="CONDITIONAL",
@@ -221,7 +221,7 @@ async def _filters(client: ExchangeClient, symbol: str) -> tuple[float, float]:
 
 
 async def _flatten(client: ExchangeClient, symbol: str) -> int:
-    """市价 reduceOnly 平掉该币仓位并核对仓位为 0（红线 9）。
+    """市价 reduceOnly 平掉该币仓位并核对仓位为 0（红线 7）。
 
     Returns:
         失败步骤数（0 表示仓位已清零）。

@@ -331,7 +331,7 @@
   - 完成：`trade.live.engine.LiveEngine` 主循环骨架、`trade.live.store` 的 `latency`/`equity_snapshots` 表写入。
   - 缺：特征/推理/预过滤/排序下单的分钟事件流串联依赖 `trade.features` 增量接口与模型产物接入（`trade.models.artifact` 已由 T4-7 实现，尚未接入）；`scan_cycles`/`scan_state` 每轮决策事务写入已由 `Store.write_scan` 提供（T5-12）。
 - [~] T5-7 订单：IOC 开仓、先止损后止盈、追踪改单先挂新后撤旧、幂等 clientOrderId
-  - 完成：`trade.live.orders.OrderManager`——`build_order_id`（≤36 字符）、`compute_limit_price`（tickSize 向下取整）、`round_step_qty`；开仓 LIMIT IOC；`place_protective_orders` 止损先于止盈（红线 9）；`move_stop` 先挂新单确认成功再撤旧单、撤旧失败保留两张（红线 13）；超时/5xx 先按 clientOrderId 查询再重发（幂等）。单测覆盖全部状态机路径。
+  - 完成：`trade.live.orders.OrderManager`——`build_order_id`（≤36 字符）、`compute_limit_price`（tickSize 向下取整）、`round_step_qty`；开仓 LIMIT IOC；`place_protective_orders` 止损先于止盈（红线 7）；`move_stop` 先挂新单确认成功再撤旧单、撤旧失败保留两张（红线 7）；超时/5xx 先按 clientOrderId 查询再重发（幂等）。单测覆盖全部状态机路径。
   - 缺：算法条件单真实参数（`algoType`/`triggerPriceType` 等）需服务器实测确认；仓位基准取 `walletBalance` 已在 sizing（回测实盘共用）。
 - [~] T5-8 对账 6 种情况
   - 完成：`trade.live.reconcile`——`reconcile_positions` 覆盖 07 §6.2 六种情况（接管/改单未完成/已平仓/补挂止损/孤儿挂单/数量不一致）+ `reconcile_fills` 补齐成交/资金费/手续费/撤单差异；单测覆盖。
@@ -445,3 +445,8 @@
   4. 标签默认 `exit_sim`、`y_min_r = 0.25`，调参先出场后模型（T0.19、T4-3）。
 - 旧 `requirements.lock` 删除（T0.10）；服务器旧冒烟产物删除（T1-9 前置）；已下架合约数据若缺失则接受残余偏差并在报告中注明（T0.14）。
 - 看板方案：不买域名、去掉 Caddy/HTTPS，服务器只开放 22，电脑经 SSH 隧道访问；手机只收微信推送，无手机页；FastAPI + 静态前端，只有深色 iOS 风格；保留 SQLite 状态库，看板不调用币安 API；新增全市场扫描网格。代码见 T5-12、T6-1~T6-7，依赖调整并入 T0.10。
+
+## 规范维护（AGENTS.md）
+
+- [x] 2026-11-11 AGENTS.md 红线重构：13 条合并为 15 条（旧 4+5 → 新 4、旧 6+7 → 新 5、旧 13 → 新 7），新增“设计书与代码一致、只写规格”“不得篡改测试”“禁止静默回退”“危险操作先确认”“提速必须等价”五条；`src/`、`scripts/`、`tests/`、`docs/` 中对旧编号的引用同步替换为新编号；消除 §1、§1.1、§3.1、§5、§10 与红线之间的重复和矛盾表述。来源：使用者下达的规范优化指令。
+

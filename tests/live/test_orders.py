@@ -1,6 +1,6 @@
 """订单状态机单测：开仓 / 止损先挂 / 追踪改单先新后旧 / 幂等。
 
-规格：docs/07-实盘与风控.md §5；AGENTS.md §6 红线 9、13
+规格：docs/07-实盘与风控.md §5；AGENTS.md §6 红线 7
 """
 
 from __future__ import annotations

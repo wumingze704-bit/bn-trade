@@ -117,7 +117,7 @@ def top_gainers(
 def trading_scope(universe_symbols: set[str], candidate_pool_symbols: set[str]) -> set[str]:
     """交易范围 = 月度选币 ∪ 动态候选池（取并集，范围最大）。
 
-    规格：docs/07-实盘与风控.md §3.5；AGENTS.md §6 红线 6（实盘候选池为动态涨幅榜前 20，
+    规格：docs/07-实盘与风控.md §3.5；AGENTS.md §6 红线 5（实盘候选池为动态涨幅榜前 20，
     与训练/回测名单无关）。使用者决定两者并存、取并集。
     """
     return universe_symbols | candidate_pool_symbols

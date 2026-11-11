@@ -92,7 +92,7 @@ def _month_bounds(month: str) -> tuple[int, int]:
 
 
 def _tick_loader(raw_root: Path, alias: str, symbol: str):
-    """返回 `YYYY-MM-DD` → 当日逐笔的装载函数（缺少归档即报错，红线 10）。"""
+    """返回 `YYYY-MM-DD` → 当日逐笔的装载函数（缺少归档即报错，红线 8）。"""
 
     def load(day: str) -> TickArrays:
         path = raw_root / "aggtrades" / alias / f"{symbol}-aggTrades-{day}.zip"
