@@ -135,22 +135,27 @@ def config_keys(root: Path) -> set[str]:
     return keys
 
 
-def load_baseline(path: Path, baseline_dir: Path | None) -> str:
+def load_baseline(path: Path, baseline_dir: Path | None, root: Path) -> str:
     """读取基线内容。
 
     Args:
-        path: 仓库内的文档路径。
+        path: 文档路径，可为绝对路径。
         baseline_dir: 若给出，则从该目录的同名文件读取；否则用 `git show HEAD:<路径>`。
+        root: 仓库根目录。`git show` 只接受相对仓库根的路径，传绝对路径会报
+            “exists on disk, but not in 'HEAD'”。
 
     Returns:
         基线全文。
 
     Raises:
-        SystemExit: 基线无法获取。
+        SystemExit: 文档不在仓库根目录内，或基线无法获取。
     """
     if baseline_dir is not None:
         return read_text(baseline_dir / path.name)
-    rel = path.as_posix()
+    try:
+        rel = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise SystemExit(f"[错误] 文档不在仓库根目录内：{path}（根 {root}）") from exc
     result = subprocess.run(
         ["git", "show", f"HEAD:{rel}"],
         capture_output=True,
@@ -327,7 +332,7 @@ def doc_section_map(
         match = DOC_ID_RE.match(path.name)
         if not match:
             continue
-        text = load_baseline(path, baseline_dir) if baseline else read_text(path)
+        text = load_baseline(path, baseline_dir, root) if baseline else read_text(path)
         mapping[match.group(1)] = extract_sections(text)
     return mapping
 
@@ -369,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
 
     problems: list[str] = []
     for path in files:
-        before = load_baseline(path, args.baseline_dir)
+        before = load_baseline(path, args.baseline_dir, root)
         after = read_text(path)
         problems.extend(check_headings(path, before, after))
         problems.extend(check_numbers(path, before, after, records_numbers))
