@@ -111,6 +111,20 @@ def test_exit_sim与回测逐笔一致() -> None:
     assert row["ret_net"] == pytest.approx(expected_ret_net)
 
 
+def test_出场分钟缺逐笔价时标签仍有限() -> None:
+    """出场分钟缺 aggTrades（p_1s 为空）时按收盘价扣成本出场，标签不得为 NaN（06 §3.3）。"""
+    n = 300
+    t = 100
+    bars = make_bars(n, seed=5)
+    bars.loc[t + 2 :, "p_1s"] = np.nan  # 入场后所有分钟都缺逐笔成交
+
+    frame, kept = exit_sim(bars, np.array([t]), **_kwargs())
+    assert kept.tolist() == [t]
+    row = frame.iloc[0]
+    assert np.isfinite(row["r_mult"])
+    assert np.isfinite(row["ret_net"])
+
+
 def test_y_min_r标签边界() -> None:
     """y = 1 当且仅当 r_net ≥ y_min_r（默认 0.25，04 §7.5）。"""
     n = 300

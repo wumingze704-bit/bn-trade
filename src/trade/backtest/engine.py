@@ -453,6 +453,12 @@ def precompute_trades(
             fee_taker=fees.taker,
             fee_maker=fees.maker,
         )
+        exit_price = float(result.exit_price)
+        if not np.isfinite(exit_price) or exit_price <= 0.0:
+            # 出场分钟缺 aggTrades 时 p_1s 为空、出场价无法确定（06 §3.3 缺数据
+            # 分钟不判定）：按该根 K 线收盘价出场（同样扣点差与离场滑点），
+            # 避免净盈亏变成 NaN。
+            exit_price = float(close[result.exit_idx]) * (1.0 - hs - slip_)
         if scen.all_taker or (result.exit_type_code == 3 and scen.tp_taker):
             exit_fee_rate = fees.taker
         else:
@@ -471,14 +477,14 @@ def precompute_trades(
                 loss_rate=lr,
                 mean_qv_60=float(arr["mean_qv_60"][t]),
                 exit_open_time=int(open_time[result.exit_idx]),
-                exit_price=result.exit_price,
+                exit_price=exit_price,
                 exit_type=result.exit_type,
                 exit_type_code=result.exit_type_code,
                 bars_held=result.bars_held,
                 stop_updates=result.stop_updates,
                 mfe_r=result.mfe_r,
                 mae_r=result.mae_r,
-                gross_return=result.exit_price / p_fill - 1.0,
+                gross_return=exit_price / p_fill - 1.0,
                 exit_fee_rate=exit_fee_rate,
                 funding_rate_sum=funding_rate_between(
                     fund_times,
@@ -632,6 +638,59 @@ def simulate_portfolio(
     return result
 
 
+def precompute_trades_all(
+    bars_by_symbol: dict[str, pd.DataFrame],
+    signals: pd.DataFrame,
+    rules: dict[str, TradeRule],
+    groups: dict[str, str],
+    *,
+    scen: Scenario,
+    fees: FeeSchedule,
+    backtest_cfg: BacktestConfig,
+    exit_cfg: ExitConfig,
+    sizing_cfg: SizingConfig,
+    k_sl: float,
+    sl_min: float,
+    sl_max: float,
+    H_label: int,
+    trade_masks: dict[str, np.ndarray] | None = None,
+    new_entry_symbols: set[str] | None = None,
+) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
+    """为全部信号做逐笔预计算（06 §3.4 第 1 步）。
+
+    阈值 θ 只影响「p ≥ θ 的候选过滤」，不影响逐笔出场模拟（`simulate_exit` 与 θ
+    无关）。把预计算独立出来，便于阈值网格/敏感性扫描只预计算一次，再按 θ 过滤后
+    反复跑组合层（06 §7.2、§7 S4），避免对同一批信号重复模拟出场。
+    """
+    all_trades: list[PrecomputedTrade] = []
+    all_skipped: list[SkippedSignal] = []
+    for symbol, bars in bars_by_symbol.items():
+        sym_signals = signals[signals["symbol"] == symbol]
+        if sym_signals.empty:
+            continue
+        trades, skipped = precompute_trades(
+            bars,
+            sym_signals,
+            symbol=symbol,
+            group=groups[symbol],
+            rule=rules[symbol],
+            trade_mask=trade_masks.get(symbol) if trade_masks else None,
+            new_entry=bool(new_entry_symbols and symbol in new_entry_symbols),
+            scen=scen,
+            fees=fees,
+            backtest_cfg=backtest_cfg,
+            exit_cfg=exit_cfg,
+            sizing_cfg=sizing_cfg,
+            k_sl=k_sl,
+            sl_min=sl_min,
+            sl_max=sl_max,
+            H_label=H_label,
+        )
+        all_trades.extend(trades)
+        all_skipped.extend(skipped)
+    return all_trades, all_skipped
+
+
 def run_backtest(
     bars_by_symbol: dict[str, pd.DataFrame],
     signals: pd.DataFrame,
@@ -660,32 +719,23 @@ def run_backtest(
         new_entry_symbols: 可选，新进入组 alias 集合（03 §4.5、06 §7 S10）。
     """
     scen = scenario_override if scenario_override is not None else scenario(scen_name)
-    all_trades: list[PrecomputedTrade] = []
-    all_skipped: list[SkippedSignal] = []
-    for symbol, bars in bars_by_symbol.items():
-        sym_signals = signals[signals["symbol"] == symbol]
-        if sym_signals.empty:
-            continue
-        trades, skipped = precompute_trades(
-            bars,
-            sym_signals,
-            symbol=symbol,
-            group=groups[symbol],
-            rule=rules[symbol],
-            trade_mask=trade_masks.get(symbol) if trade_masks else None,
-            new_entry=bool(new_entry_symbols and symbol in new_entry_symbols),
-            scen=scen,
-            fees=fees,
-            backtest_cfg=backtest_cfg,
-            exit_cfg=exit_cfg,
-            sizing_cfg=sizing_cfg,
-            k_sl=k_sl,
-            sl_min=sl_min,
-            sl_max=sl_max,
-            H_label=H_label,
-        )
-        all_trades.extend(trades)
-        all_skipped.extend(skipped)
+    all_trades, all_skipped = precompute_trades_all(
+        bars_by_symbol,
+        signals,
+        rules,
+        groups,
+        scen=scen,
+        fees=fees,
+        backtest_cfg=backtest_cfg,
+        exit_cfg=exit_cfg,
+        sizing_cfg=sizing_cfg,
+        k_sl=k_sl,
+        sl_min=sl_min,
+        sl_max=sl_max,
+        H_label=H_label,
+        trade_masks=trade_masks,
+        new_entry_symbols=new_entry_symbols,
+    )
     result = simulate_portfolio(
         all_trades,
         all_skipped,

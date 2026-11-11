@@ -143,10 +143,15 @@ def exit_sim(
             use_numba=use_numba,
         )
         exit_fee_rate = result.fee_rate
+        exit_price = float(result.exit_price)
+        if not np.isfinite(exit_price) or exit_price <= 0.0:
+            # 出场分钟缺 aggTrades（p_1s 为空）时按该根 K 线收盘价扣成本出场（06 §3.3）；
+            # 与回测 precompute_trades 的同一回退保持一致，否则标签 r_mult 会是 NaN。
+            exit_price = float(close[result.exit_idx]) * (1.0 - entry.half_spread - entry.slip)
         fr_sum = funding_rate_between(
             fund_times, fund_rates, int(open_time[t + 1]), int(open_time[result.exit_idx])
         )
-        ret_net = result.exit_price / entry.p_fill - 1.0 - fees_taker - exit_fee_rate - fr_sum
+        ret_net = exit_price / entry.p_fill - 1.0 - fees_taker - exit_fee_rate - fr_sum
         r_net = ret_net / entry.sl
         rows.append(
             {

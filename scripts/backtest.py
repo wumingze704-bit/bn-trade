@@ -217,7 +217,10 @@ def main(argv: list[str] | None = None) -> int:
     features = load_config(FeaturesConfig, args.features)
     train_cfg = load_config(TrainConfig, args.train)
     universe_cfg = load_universe_config(args.universe)
-    coins = collect_universe_coins(base.paths.data_root, universe_months(base))
+    months = universe_months(base)
+    # 非 --final 时排除封存集才首次入选的币：本地没有它们的 bars，红线 2 禁止加载（03 §6）。
+    dev_months = months if args.final else months[: len(months) - base.data_window.holdout_months]
+    coins = collect_universe_coins(base.paths.data_root, dev_months)
 
     wb = window_bounds(base)
     run_end_ms = wb.end_ms if args.final else wb.holdout_start_ms
@@ -228,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     groups = {coin.alias: coin.role for coin in coins}
 
     months = universe_months(base)
-    membership = load_universe_membership(base.paths.data_root, months)
+    membership = load_universe_membership(base.paths.data_root, dev_months)
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     trade_masks: dict[str, np.ndarray] = {}
     for coin in coins:

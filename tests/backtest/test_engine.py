@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import (
@@ -13,6 +14,7 @@ from trade.backtest.engine import (
     PrecomputedTrade,
     TradeRule,
     precompute_trades,
+    precompute_trades_all,
     run_backtest,
     simulate_portfolio,
 )
@@ -269,3 +271,142 @@ def test_run_backtest端到端():
     assert len(all_trades) > 0
     assert result.final_equity > 0
     assert not result.equity_curve.empty
+
+
+def test_出场分钟缺逐笔价时按收盘价出场且净盈亏有限():
+    """06 §3.3：出场分钟缺 aggTrades（p_1s 为空）时按该根 K 线收盘价（扣成本）出场。"""
+    n = 140
+    open_time = np.arange(n) * _MIN + _T0
+    close = 100.0 + 0.01 * np.arange(n)
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    high = np.maximum(open_, close) + 0.01
+    low = np.minimum(open_, close) - 0.01
+    p_1s = close.copy()
+    p_1s[121] = np.nan  # 超时出场那根 K 线没有逐笔成交
+    bars = pd.DataFrame(
+        {
+            "open_time": open_time,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "quote_volume": np.full(n, 1e6),
+            "is_filled": np.zeros(n, dtype="int64"),
+            "p_1s": p_1s,
+            "hi_post_1s": high,
+            "lo_post_1s": low,
+        }
+    )
+    signals = pd.DataFrame(
+        {"symbol": ["A"], "open_time": [open_time[60]], "p": [1.0], "m": [0.0], "is_sample": [1]}
+    )
+    trades, _ = precompute_trades(
+        bars,
+        signals,
+        symbol="A",
+        group="train",
+        rule=_rule(),
+        scen=scenario("base"),
+        fees=_fees(),
+        backtest_cfg=_backtest(),
+        exit_cfg=ExitConfig(type="fixed", rr=2.0),
+        sizing_cfg=_sizing(),
+        k_sl=2.5,
+        sl_min=0.01,
+        sl_max=0.025,
+        H_label=60,
+    )
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.exit_type == "timeout"
+    assert trade.exit_open_time == int(open_time[121])
+    assert np.isfinite(trade.exit_price) and trade.exit_price > 0
+    assert np.isfinite(trade.gross_return)
+
+
+def test_预计算一次与逐阈值回测结果一致():
+    """阈值网格优化：最低 θ 预计算一次 + 按 θ 过滤重跑组合层，与逐 θ run_backtest 逐位一致。"""
+    n = 200
+    open_time = np.arange(n) * _MIN + _T0
+    rng = np.random.default_rng(7)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.0005, n)))
+    open_ = np.concatenate([[100.0], close[:-1]])
+    high = np.maximum(open_, close) * (1 + rng.uniform(0, 0.0005, n))
+    low = np.minimum(open_, close) * (1 - rng.uniform(0, 0.0005, n))
+    bars = pd.DataFrame(
+        {
+            "open_time": open_time,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "quote_volume": np.full(n, 1e6),
+            "is_filled": np.zeros(n, dtype="int64"),
+            "p_1s": close,
+            "hi_post_1s": high,
+            "lo_post_1s": low,
+        }
+    )
+    signals = pd.DataFrame(
+        {
+            "symbol": ["A"] * n,
+            "open_time": open_time,
+            "p": rng.uniform(0.3, 0.8, n),
+            "m": np.zeros(n),
+            "is_sample": np.ones(n, dtype="int64"),
+        }
+    )
+    rules = {"A": _rule()}
+    groups = {"A": "train"}
+
+    def run_old(theta: float):
+        cfg = _backtest(threshold=theta)
+        result, _ = run_backtest(
+            {"A": bars},
+            signals,
+            rules,
+            groups,
+            scen_name="base",
+            fees=_fees(),
+            backtest_cfg=cfg,
+            exit_cfg=ExitConfig(type="trail"),
+            sizing_cfg=_sizing(),
+            k_sl=1.0,
+            sl_min=0.005,
+            sl_max=0.015,
+            H_label=60,
+            initial_equity=10000.0,
+        )
+        return result
+
+    pre_cfg = _backtest(threshold=0.30)
+    all_trades, all_skipped = precompute_trades_all(
+        {"A": bars},
+        signals,
+        rules,
+        groups,
+        scen=scenario("base"),
+        fees=_fees(),
+        backtest_cfg=pre_cfg,
+        exit_cfg=ExitConfig(type="trail"),
+        sizing_cfg=_sizing(),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+    )
+
+    for theta in (0.40, 0.55, 0.70):
+        trades = [t for t in all_trades if float(t.p) >= theta]
+        new_result = simulate_portfolio(
+            trades,
+            list(all_skipped),
+            sizing_cfg=_sizing(),
+            backtest_cfg=_backtest(threshold=theta),
+            fees=_fees(),
+            initial_equity=10000.0,
+            bars_by_symbol={"A": bars},
+        )
+        old_result = run_old(theta)
+        assert new_result.final_equity == pytest.approx(old_result.final_equity, abs=1e-6)
+        assert len(new_result.trades) == len(old_result.trades)
