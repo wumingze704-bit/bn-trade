@@ -1,0 +1,18 @@
+# Cline 读取文件时的排除清单：防止读到封存集数据、大文件与密钥（AGENTS.md §6 红线 2、6）
+data/
+artifacts/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+configs/private/
+configs/secrets/
+configs/*local*.yaml
+configs/*local*.yml
+configs/*secret*.yaml
+configs/*secret*.yml
+configs/*credential*.yaml
+configs/*credential*.yml

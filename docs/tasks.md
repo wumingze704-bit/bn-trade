@@ -452,3 +452,6 @@
 - [x] 2026-11-11 设计书交叉引用修复：`scripts/check_docs_sections.py` 的“省略文档号”引用不再跨文字猜文档号（`AGENTS §3.2`、`按 §2.1` 这类本文件或非设计书引用不再被误判），并修正 3 处真实失效引用（AGENTS.md §5.1 表中两处指向看板旧章节号的引用改为 `10 §5.6`；`src/trade/backtest/engine.py` 的预计算注释改为 `06 §7 S4`）。全仓库该检查的失效引用由 13 条降为 0 条；`tests/test_check_docs_sections.py` 覆盖基线路径与引用解析两种情形。
 
 
+- [x] 2026-11-11 Cline 规则文件：新增 `.clinerules/00-core.md`（无 frontmatter，每个任务生效）、`10-docs.md`（`paths: docs/**`）与 `20-quant.md`（`paths: src/trade/**`、`scripts/**`、`configs/**`、`tests/**`）以及 `.clineignore`；AGENTS.md §1 注明 Cline 使用 `.clinerules/` 且摘要冲突时以 AGENTS.md 为准；02 §6 目录结构与 README.md 同步；新增 `tests/test_agent_rules.py` 校验摘要逐条等于 AGENTS.md §6 红线、§8 命令与 §5.1 对照表。来源：使用者下达的第 3 步指令。
+- [x] 2026-11-11 回测性能基准：新增 `scripts/bench_backtest.py`（分阶段计时：加载 bars、R0 信号、每次预计算、每次组合模拟并拆出 `_close_lookup` 与 `_mark_to_market_curve`、盈亏平衡滑点、比例扫描、S1、S4；`--profile` 写 cProfile 前 30）与 `scripts/bench_compare.py`（红线 15 容差逐字段对拍，`timing.json`/`profile.txt` 为测量产物不参与）；`artifacts/bench/` 保存 4 组规模测试与 `baseline_5x1` 标准答案，命令见该目录 `README.md`；02 §6 目录结构同步。来源：使用者下达的第 4 步指令。
+

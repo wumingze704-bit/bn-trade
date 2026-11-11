@@ -2,6 +2,7 @@
 
 > 本文件面向所有编码 Agent（Claude Code、Cursor、Codex、Cline、Copilot、Kiro 等）和人类开发者，是本仓库的**最高优先级工程规范**。与设计文档冲突时：工程规范以本文为准，业务规则以 `docs/` 为准。
 > 工具若只识别自己的文件名（如 `CLAUDE.md`、`.cursorrules`、`.github/copilot-instructions.md`），只需在其中写一行“请遵循仓库根目录 AGENTS.md”。
+> Cline 使用 `.clinerules/` 目录（见 `.clinerules/00-core.md`），其内容是本文件的摘要，冲突时以本文件为准。
 
 **最重要的是 §6 红线，每个任务开始前先读 §6。**
 

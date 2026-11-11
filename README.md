@@ -32,6 +32,14 @@ python -m pip install -r requirements-live.lock
 python -m pip install -e .
 ```
 
+## 使用 Cline 时的规则文件说明
+
+- 工作区根目录必须是本仓库根目录（`AGENTS.md` 与 `.clinerules/` 所在目录），否则 Cline 找不到规则文件。
+- `.clinerules/00-core.md` 无 frontmatter，每个任务都注入：AGENTS.md 的红线 1~15、工作流程、质量命令、完成报告要点。它是 AGENTS.md 的摘要，冲突时以 AGENTS.md 为准。
+- `.clinerules/10-docs.md` 的 `paths` 为 `docs/**`，只在上下文涉及设计文档时生效；`.clinerules/20-quant.md` 的 `paths` 为 `src/trade/**`、`scripts/**`、`configs/**`、`tests/**`，只在涉及量化核心代码时生效。
+- `.clineignore` 让 Cline 不读取 `data/`、`artifacts/`、`.env` 与密钥类文件（AGENTS.md §6 红线 2、6）。
+- 摘要与 AGENTS.md 的一致性由 `tests/test_agent_rules.py` 校验：改 AGENTS.md 后同步 `.clinerules/` 并运行该测试。
+
 ## P0 检查
 
 ```powershell
