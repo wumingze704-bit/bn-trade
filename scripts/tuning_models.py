@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import pandas as pd
 import yaml
 
 from trade.backtest.costs import FeeSchedule
-from trade.backtest.engine import BacktestConfig, TradeRule, run_backtest
+from trade.backtest.engine import BacktestConfig, TradeRule
 from trade.backtest.metrics import compute_metrics
 from trade.backtest.r0 import TrainConfig
 from trade.backtest.report import (
@@ -42,7 +43,7 @@ from trade.data.loader import (
     universe_trade_mask,
     window_bounds,
 )
-from trade.data.universe import load_universe_config, role_for_symbol
+from trade.data.universe import SnapshotCoin, load_universe_config, role_for_symbol
 from trade.features import FeaturesConfig
 from trade.models.calibration import calibration_metrics, select_threshold, threshold_grid
 from trade.models.config import ModelConfig
@@ -102,6 +103,45 @@ def count_logged_trials(log_path: Path) -> int:
 def remaining_budget(log_path: Path, *, cap: int = TRIAL_BUDGET) -> int:
     """返回剩余预算；已登记组数不得因本轮放宽。"""
     return max(0, cap - count_logged_trials(log_path))
+
+
+def logged_outcomes(log_path: Path, trials: Sequence[Trial]) -> list[TrialOutcome]:
+    """按网格顺序返回已登记组的搜索结果，用于中断后续跑（05 §6.1）。
+
+    只接受网格的**前缀**：遇到未登记的组即停止，且不会因为日志被人工改动而跳过
+    中间组（宁可停止也不打乱试验顺序）。已登记但指标为空的组按失败组处理。
+
+    Args:
+        log_path: `EXPERIMENTS.log` 路径。
+        trials: 本轮网格（顺序固定）。
+
+    Returns:
+        已登记组的 `TrialOutcome` 列表，长度 = 已完成的连续前缀长度。
+    """
+    first_row: dict[str, dict[str, object]] = {}
+    for row in read_experiments_log(log_path):
+        first_row.setdefault(str(row.get("run_id")), row)
+    outcomes: list[TrialOutcome] = []
+    for trial in trials:
+        row = first_row.get(trial.run_id)
+        if row is None:
+            break
+        pf = row.get("profit_factor")
+        net = row.get("net_return_usdt")
+        n_trades = row.get("n_trades")
+        failed = pf is None or net is None
+        outcomes.append(
+            TrialOutcome(
+                trial=trial,
+                pf=None if pf is None else float(pf),  # type: ignore[arg-type]
+                net_return=None if net is None else float(net),  # type: ignore[arg-type]
+                n_trades=None if n_trades is None else int(n_trades),  # type: ignore[call-overload]
+                theta=None,
+                failed=failed,
+                error="已登记（续跑跳过）" if failed else None,
+            )
+        )
+    return outcomes
 
 
 def select_best(outcomes: list[TrialOutcome]) -> tuple[TrialOutcome, bool]:
@@ -173,6 +213,55 @@ def manifest_features(features_dir: Path) -> list[str]:
     return list(manifest["features"])
 
 
+def require_dataset_files(features_dir: Path, labels_dir: Path, aliases: Sequence[str]) -> None:
+    """确认数据集包含全部所需币的特征与标签文件（05 §5）。
+
+    搜索与训练前先检查，避免训练到一半才因缺文件失败、白白消耗
+    `EXPERIMENTS.log` 的试验预算（05 §6.1）。
+
+    Args:
+        features_dir: 数据集特征目录。
+        labels_dir: 数据集标签目录。
+        aliases: 需要检查的币别名。
+
+    Raises:
+        FileNotFoundError: 任一币缺少特征或标签 parquet。
+    """
+    missing = [
+        alias
+        for alias in aliases
+        if not (features_dir / f"{alias}.parquet").is_file()
+        or not (labels_dir / f"{alias}.parquet").is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            f"数据集缺少 {len(missing)} 个币的文件（前 5 个：{missing[:5]}）："
+            f"{features_dir} / {labels_dir}"
+        )
+
+
+def filter_window_entries(
+    entries: Sequence[SnapshotCoin],
+    membership: Mapping[str, frozenset[str]],
+    months: Sequence[str],
+) -> list[SnapshotCoin]:
+    """返回在给定月份中至少一个月入选的币（03 §4.2、§6）。
+
+    验证段与测试段只加载这些币的 bars：没有入选月份的币不会被 T1-9 下载对应月份
+    数据，`load_bars` 会因区间内无分钟数据报错。币的入选月份来自月度快照。
+
+    Args:
+        entries: 全部候选币（`collect_universe_coins`）。
+        membership: month -> 当月入选 symbol 集合（`load_universe_membership`）。
+        months: 窗口内月份（如验证段 M10~M12，或某一测试月）。
+
+    Returns:
+        在 `months` 中至少一个月入选的币，保持输入顺序。
+    """
+    window_symbols = {symbol for month in months for symbol in membership.get(month, frozenset())}
+    return [entry for entry in entries if entry.symbol in window_symbols]
+
+
 def _val_signals(
     dataset: WindowDataset, result: object, temperature: float, months: list[str]
 ) -> pd.DataFrame:
@@ -202,26 +291,45 @@ def _threshold_metrics(
     features_cfg: FeaturesConfig,
     trade_masks: dict[str, np.ndarray] | None,
 ) -> dict[float, dict[str, float]]:
-    """在验证段逐 θ 跑 base 情景，返回 PF / 净收益 / 笔数（05 §7.2）。"""
+    """在验证段逐 θ 跑 base 情景，返回 PF / 净收益 / 笔数（05 §7.2）。
+
+    优化：逐笔预计算与 θ 无关，只在最低 θ 上预计算一次，再按 θ 过滤候选后重跑组合
+    层；`simulate_exit` 不重复计算，阈值网格从 ~26 次出场模拟降为 1 次。
+    """
+    from trade.backtest.costs import scenario
+    from trade.backtest.engine import precompute_trades_all, simulate_portfolio
+
+    grid = list(threshold_grid())
+    min_theta = min(grid)
+    scen = scenario("base")
+    pre_cfg = backtest_cfg.model_copy(update={"threshold": min_theta})
+    all_trades, all_skipped = precompute_trades_all(
+        bars_by_symbol,
+        signals,
+        rules,
+        groups,
+        scen=scen,
+        fees=fees,
+        backtest_cfg=pre_cfg,
+        exit_cfg=exit_cfg,
+        sizing_cfg=sizing_cfg,
+        k_sl=features_cfg.label.k_sl,
+        sl_min=features_cfg.label.sl_min,
+        sl_max=features_cfg.label.sl_max,
+        H_label=features_cfg.label.H_label,
+        trade_masks=trade_masks,
+    )
     metrics: dict[float, dict[str, float]] = {}
-    for theta in threshold_grid():
-        cfg = backtest_cfg.model_copy(update={"threshold": theta})
-        result, _ = run_backtest(
-            bars_by_symbol,
-            signals,
-            rules,
-            groups,
-            scen_name="base",
-            fees=fees,
-            backtest_cfg=cfg,
-            exit_cfg=exit_cfg,
+    for theta in grid:
+        trades = [t for t in all_trades if float(t.p) >= theta]
+        result = simulate_portfolio(
+            trades,
+            list(all_skipped),
             sizing_cfg=sizing_cfg,
-            k_sl=features_cfg.label.k_sl,
-            sl_min=features_cfg.label.sl_min,
-            sl_max=features_cfg.label.sl_max,
-            H_label=features_cfg.label.H_label,
+            backtest_cfg=backtest_cfg,
+            fees=fees,
             initial_equity=backtest_cfg.reference.initial_equity,
-            trade_masks=trade_masks,
+            bars_by_symbol=bars_by_symbol,
         )
         row = compute_metrics(result, backtest_cfg.reference.initial_equity)
         metrics[theta] = {
@@ -244,20 +352,29 @@ def run_grid(args: argparse.Namespace) -> int:
     log_path = experiments_log_path(base_cfg.paths.artifact_root)
     budget = remaining_budget(log_path)
     trials = build_trials(train_cfg.model)
-    if budget != len(trials):
-        print(f"剩余预算 {budget} 组，与设定网格 {len(trials)} 组不一致；停止。", flush=True)
+    # 续跑：已登记的本轮组按顺序跳过，并把它们的指标纳入最终选择（05 §6.1）。
+    done = logged_outcomes(log_path, trials)
+    pending = trials[len(done) :]
+    if budget != len(pending):
+        print(
+            f"剩余预算 {budget} 组，与待运行 {len(pending)} 组不一致"
+            f"（已登记 {len(done)} 组）；停止。",
+            flush=True,
+        )
         return 2
     if args.max_groups is not None:
-        trials = trials[: args.max_groups]
+        pending = pending[: args.max_groups]
 
     months = universe_months(base_cfg)
     tuning = months[: base_cfg.data_window.tuning_months]
     train_months, val_months = tuning[:-3], tuning[-3:]
     wb = window_bounds(base_cfg)
-    membership = load_universe_membership(base_cfg.paths.data_root, months)
-    entries = collect_universe_coins(base_cfg.paths.data_root, months)
+    # 只读取调参期：封存集才首次入选的币本地没有数据，且红线 2 禁止使用（03 §6）。
+    membership = load_universe_membership(base_cfg.paths.data_root, tuning)
+    entries = collect_universe_coins(base_cfg.paths.data_root, tuning)
     groups = {entry.alias: role_for_symbol(entry.symbol, universe_cfg.roles) for entry in entries}
     train_symbols = [alias for alias, role in groups.items() if role == "train"]
+    require_dataset_files(args.features_dir, args.labels_dir, [entry.alias for entry in entries])
     rules = _load_rules(args.rules, base_cfg.paths.data_root / "universe" / "aliases.json")
     feature_names = manifest_features(args.features_dir)
 
@@ -265,7 +382,17 @@ def run_grid(args: argparse.Namespace) -> int:
     val_end = int(pd.Timestamp(f"{val_months[-1]}-01", tz="UTC").timestamp() * 1000)
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     trade_masks: dict[str, np.ndarray] = {}
-    for entry in entries:
+    # 只加载验证段有入选月份的币：其余币在该窗口没有 bars（T1-9 不下载），
+    # load_bars 会因区间内无数据报错（03 §6）。
+    window_entries = filter_window_entries(entries, membership, val_months)
+    skipped = len(entries) - len(window_entries)
+    if skipped:
+        print(
+            f"验证段 {val_months[0]}~{val_months[-1]}：{len(window_entries)}/{len(entries)} 币"
+            f"有入选月份，跳过 {skipped} 个窗口内无数据的币",
+            flush=True,
+        )
+    for entry in window_entries:
         bars = load_bars(
             base_cfg.paths.data_root,
             entry.alias,
@@ -282,9 +409,9 @@ def run_grid(args: argparse.Namespace) -> int:
             universe_cfg.rule.new_entry_delay_days,
         )
     n_days = float((val_end - val_start) / 86_400_000)
-    outcomes: list[TrialOutcome] = []
+    outcomes: list[TrialOutcome] = list(done)
 
-    for trial in trials:
+    for trial in pending:
         cfg = train_cfg.model.model_copy(
             update={
                 "window_L": trial.window_L,
@@ -314,10 +441,11 @@ def run_grid(args: argparse.Namespace) -> int:
                 data_placement=cfg.data_placement,
             )
             result = train_ensemble(train_ds, val_ds, cfg)
-            calibration = calibration_metrics(
-                np.concatenate([np.asarray(logit) for logit in result.val_logits]),
-                np.asarray(result.val_y),
+            # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1）。
+            ensemble_logit = np.mean(
+                np.stack([np.asarray(item) for item in result.val_logits]), axis=0
             )
+            calibration = calibration_metrics(ensemble_logit, np.asarray(result.val_y))
             val_signals = _val_signals(
                 val_ds, result, float(calibration["temperature"]), val_months
             )

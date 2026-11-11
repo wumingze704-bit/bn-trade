@@ -22,9 +22,21 @@ import numpy as np
 import pandas as pd
 
 try:  # 直接运行 scripts/*.py 时脚本目录在 sys.path[0]
-    from tuning_models import _load_rules, _threshold_metrics, manifest_features
+    from tuning_models import (
+        _load_rules,
+        _threshold_metrics,
+        filter_window_entries,
+        manifest_features,
+        require_dataset_files,
+    )
 except ModuleNotFoundError:  # 作为 scripts 包导入时（测试/工具）
-    from scripts.tuning_models import _load_rules, _threshold_metrics, manifest_features
+    from scripts.tuning_models import (
+        _load_rules,
+        _threshold_metrics,
+        filter_window_entries,
+        manifest_features,
+        require_dataset_files,
+    )
 
 from trade.backtest.costs import FeeSchedule
 from trade.backtest.engine import BacktestConfig, TradeRule
@@ -70,7 +82,8 @@ def make_evaluator(
         rules: dict[str, TradeRule] = _load_rules(
             rules_path, base_cfg.paths.data_root / "universe" / "aliases.json"
         )
-        for entry in entries:
+        # 只加载该月有入选的币：无入选月份的币没有当月 bars（03 §6）。
+        for entry in filter_window_entries(entries, membership, [month]):
             bars = load_bars(
                 base_cfg.paths.data_root,
                 entry.alias,
@@ -160,10 +173,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"折数不足：得到 {len(folds)}，期望 {train_cfg.walk_forward.max_folds}")
         return 2
 
-    entries = collect_universe_coins(base_cfg.paths.data_root, months)
-    membership = load_universe_membership(base_cfg.paths.data_root, months)
+    # 排除封存集才首次入选的币：本地没有它们的 bars，红线 2 禁止加载（03 §6）。
+    dev_months = months[: len(months) - base_cfg.data_window.holdout_months]
+    entries = collect_universe_coins(base_cfg.paths.data_root, dev_months)
+    membership = load_universe_membership(base_cfg.paths.data_root, dev_months)
     groups = {entry.alias: role_for_symbol(entry.symbol, universe_cfg.roles) for entry in entries}
     train_symbols = [alias for alias, role in groups.items() if role == "train"]
+    require_dataset_files(args.features_dir, args.labels_dir, list(groups))
     feature_names = manifest_features(args.features_dir)
     factory = make_evaluator(
         base_cfg=base_cfg,

@@ -16,13 +16,22 @@ from scripts.tuning_models import (
     TrialOutcome,
     build_trials,
     count_logged_trials,
+    filter_window_entries,
+    logged_outcomes,
     remaining_budget,
     select_best,
     update_train_yaml,
 )
+from trade.data.universe import SnapshotCoin
 from trade.models.config import ModelConfig
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+def _coin(symbol: str, alias: str) -> SnapshotCoin:
+    return SnapshotCoin(
+        symbol=symbol, alias=alias, role="train", rank=1, daily_quote_median=1.0, first_listing_ms=0
+    )
 
 
 def _outcome(
@@ -52,6 +61,63 @@ def test_build_trials_rejects_changed_frozen_values() -> None:
         build_trials(ModelConfig(dropout=0.3))
     with pytest.raises(ValueError, match="time_decay"):
         build_trials(ModelConfig(time_decay_halflife_months=12))
+
+
+def test_filter_window_entries_只保留窗口内有入选月份的币() -> None:
+    entries = [_coin("AAAUSDT", "C001"), _coin("BBBUSDT", "C002"), _coin("CCCUSDT", "C003")]
+    membership = {
+        "2025-07": frozenset({"AAAUSDT"}),
+        "2025-08": frozenset({"BBBUSDT"}),
+    }
+    kept = filter_window_entries(entries, membership, ["2025-07", "2025-08"])
+    # CCCUSDT 在验证段没有入选月份 → 没有对应 bars，必须跳过（否则 load_bars 报错）
+    assert [entry.symbol for entry in kept] == ["AAAUSDT", "BBBUSDT"]
+
+
+def test_filter_window_entries_缺月份时返回空() -> None:
+    assert filter_window_entries([_coin("AAAUSDT", "C001")], {}, ["2025-07"]) == []
+
+
+def test_logged_outcomes_只接受连续前缀(tmp_path: Path) -> None:
+    trials = build_trials(ModelConfig())
+    log_path = tmp_path / "EXPERIMENTS.log"
+    rows = [
+        {
+            "run_id": trials[0].run_id,
+            "profit_factor": 1.25,
+            "net_return_usdt": 100.0,
+            "n_trades": 500,
+        },
+        # 第 2 组缺失（模拟中断）：第 3 组已登记也不能当作前缀
+        {
+            "run_id": trials[2].run_id,
+            "profit_factor": 1.1,
+            "net_return_usdt": 10.0,
+            "n_trades": 100,
+        },
+    ]
+    log_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    done = logged_outcomes(log_path, trials)
+    assert [item.trial.run_id for item in done] == [trials[0].run_id]
+    assert done[0].pf == pytest.approx(1.25)
+    assert done[0].net_return == pytest.approx(100.0)
+    assert done[0].n_trades == 500
+    assert done[0].failed is False
+
+
+def test_logged_outcomes_空指标视为失败组(tmp_path: Path) -> None:
+    trials = build_trials(ModelConfig())
+    log_path = tmp_path / "EXPERIMENTS.log"
+    log_path.write_text(
+        json.dumps({"run_id": trials[0].run_id, "profit_factor": None, "net_return_usdt": None})
+        + "\n",
+        encoding="utf-8",
+    )
+    done = logged_outcomes(log_path, trials)
+    assert len(done) == 1
+    assert done[0].failed is True
+    assert done[0].pf is None
 
 
 def test_budget_counts_registered_trials(tmp_path: Path) -> None:
