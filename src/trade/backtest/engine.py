@@ -15,12 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trade.backtest.costs import FeeSchedule, Scenario, scenario
 from trade.common.anchors import anchor_series
-from trade.common.exits import (
-    EXIT_TYPE_NAMES,
-    ExitConfig,
-    exit_anchor_spec,
-    simulate_exit_batch,
-)
+from trade.common.batch import batch_exit
+from trade.common.exits import EXIT_TYPE_NAMES, ExitConfig, exit_anchor_spec
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 from trade.features.kline import rolling_mean, rv_15, true_range, wilder_atr
@@ -613,26 +609,19 @@ def precompute_trades(
         return [], skipped
 
     t_all = np.asarray(kept_t, dtype="int64")
-    batch = simulate_exit_batch(
-        open_,
-        high,
-        low,
-        close,
-        p_entry_arr,
-        hi_post,
-        lo_post,
-        is_filled,
-        t_entries=t_all + 1,
-        down=anchors.down[t_all],
-        up=anchors.up[t_all],
-        r_dist=anchors.r_dist[t_all],
-        min_move=anchors.min_move[t_all],
-        p_fill=anchors.p_fill[t_all],
-        atr_abs=atr_abs_arr[t_all],
-        slip_stop=anchors.slip_stop[t_all],
-        slip_exit=anchors.slip[t_all],
-        half_spread=anchors.half_spread[t_all],
-        H_max=H_max,
+    batch = batch_exit(
+        open_=open_,
+        high=high,
+        low=low,
+        close=close,
+        p_entry=p_entry_arr,
+        hi_post=hi_post,
+        lo_post=lo_post,
+        is_filled=is_filled,
+        anchors=anchors,
+        signal_bars=t_all,
+        atr_abs=atr_abs_arr,
+        h_max=H_max,
         cfg=exit_cfg,
         tick_size=rule.tick_size,
         fee_taker=fees.taker,

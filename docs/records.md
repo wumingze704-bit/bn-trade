@@ -66,7 +66,7 @@
 ## 06 §3.3 / §3.4（锚点数组与 micro-batch）
 
 - 2026-11-12 优化前 profiling（`scripts/bench_backtest.py --coins 2 --months 2025-07 --suite base --profile`）：jitted 编译约 6.0 s，`prepare_symbols` 3.46 s，`precompute_trades` 12 次调用合计 6.2 s。逐笔 `simulate_exit` 19666 次调用累计 2.74 s（每次约 139 µs，其中 numba 30 个位置参数的调度开销占绝大部分）。
-- 2026-11-12 改动：新增 `trade.common.anchors`（按币一次算 `down`/`up`/`p_fill`/`sl`/`r_dist`/`min_move`/`slip`/`slip_stop`/`half_spread`/`loss_rate` 数组），`exits` 拆出 `_exit_machine_nb` 并新增 `simulate_exit_batch`（一次 numba 调用处理同一币一批交易）；`precompute_trades` 与 `labels.exit_sim` 改为锚点数组 + 批量调用。
+- 2026-11-12 改动：新增 `trade.common.anchors`（按币一次算 `down`/`up`/`p_fill`/`sl`/`r_dist`/`min_move`/`slip`/`slip_stop`/`half_spread`/`loss_rate` 数组），`exits` 拆出 `_exit_machine_nb` 并新增 `simulate_exit_batch`（一次 numba 调用处理同一币一批交易），`trade.common.batch.batch_exit` 作为回测与标签共用的批量入口（信号位置 → 锚点切片 → 批量状态机）；`precompute_trades` 与 `labels.exit_sim` 改为锚点数组 + 批量调用。
 - 等价性：`scripts/bench_compare.py artifacts/bench/baseline_5x1_v3 artifacts/bench/step7_5x1` → “对拍通过：37 个文件逐字段一致（rtol=1e-12, atol=1e-09）”。
 - 提速：同一台本地机器、5 币 × 2025-07、`--suite full`，改动前 `artifacts/bench/baseline_5x1_v3` 合计 316.43 s（reference/base 预计算 16.50 s、sizing_sweep 77.08 s），改动后 `artifacts/bench/step7_5x1` 合计 41.47 s（reference/base 预计算 3.73 s、sizing_sweep 4.32 s）。两次运行都包含 jitted 编译时间。
 

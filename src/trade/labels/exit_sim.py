@@ -10,12 +10,8 @@ import numpy as np
 import pandas as pd
 
 from trade.common.anchors import anchor_series
-from trade.common.exits import (
-    EXIT_TYPE_NAMES,
-    ExitConfig,
-    exit_anchor_spec,
-    simulate_exit_batch,
-)
+from trade.common.batch import batch_exit
+from trade.common.exits import EXIT_TYPE_NAMES, ExitConfig, exit_anchor_spec
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.features.kline import rv_15, true_range, wilder_atr
 
@@ -146,26 +142,19 @@ def exit_sim(
             notional_ref=notional_ref,
         ),
     )
-    batch = simulate_exit_batch(
-        open_,
-        high,
-        low,
-        close,
-        p_entry,
-        hi_post,
-        lo_post,
-        is_filled,
-        t_entries=usable + 1,
-        down=anchors.down[usable],
-        up=anchors.up[usable],
-        r_dist=anchors.r_dist[usable],
-        min_move=anchors.min_move[usable],
-        p_fill=anchors.p_fill[usable],
-        atr_abs=atr_abs_arr[usable],
-        slip_stop=anchors.slip_stop[usable],
-        slip_exit=anchors.slip[usable],
-        half_spread=anchors.half_spread[usable],
-        H_max=H_max,
+    batch = batch_exit(
+        open_=open_,
+        high=high,
+        low=low,
+        close=close,
+        p_entry=p_entry,
+        hi_post=hi_post,
+        lo_post=lo_post,
+        is_filled=is_filled,
+        anchors=anchors,
+        signal_bars=usable,
+        atr_abs=atr_abs_arr,
+        h_max=H_max,
         cfg=exit_cfg,
         tick_size=tick_size,
         fee_taker=fees_taker,
