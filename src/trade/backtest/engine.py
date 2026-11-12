@@ -14,8 +14,13 @@ import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from trade.backtest.costs import FeeSchedule, Scenario, scenario
-from trade.common.entry import compute_entry
-from trade.common.exits import ExitConfig, simulate_exit
+from trade.common.anchors import anchor_series
+from trade.common.exits import (
+    EXIT_TYPE_NAMES,
+    ExitConfig,
+    exit_anchor_spec,
+    simulate_exit_batch,
+)
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 from trade.features.kline import rolling_mean, rv_15, true_range, wilder_atr
@@ -539,11 +544,34 @@ def precompute_trades(
 
     notional_ref = sizing_cfg.initial_equity * sizing_cfg.position_frac * float(sizing_cfg.leverage)
     half_spread_min = backtest_cfg.costs.half_spread_min * scen.half_spread_mult
+    slip_min = backtest_cfg.costs.slip_min * scen.slip_mult
     H_max = exit_cfg.H_max if exit_cfg.type != "fixed" else H_label
+    # 锚点与入场成本按币算一次（06 §3.4）：逐笔只按下标取值，不在信号循环里重算
+    anchors = anchor_series(
+        close=close,
+        p_entry=p_entry_arr,
+        atr_pct=atr_pct_arr,
+        rv15=rv15_arr,
+        qv=qv,
+        tick_size=rule.tick_size,
+        spec=exit_anchor_spec(
+            exit_cfg,
+            k_sl=k_sl,
+            sl_min=sl_min,
+            sl_max=sl_max,
+            half_spread_min=half_spread_min,
+            slip_min=slip_min,
+            Y=backtest_cfg.costs.Y,
+            fixed_slip=scen.fixed_slip,
+            fee_taker=fees.taker,
+            notional_ref=notional_ref,
+        ),
+    )
 
-    trades: list[PrecomputedTrade] = []
     skipped: list[SkippedSignal] = []
     fund_times, fund_rates = prepared.funding_time, prepared.funding_rate
+    kept_t: list[int] = []
+    kept_signal: list[tuple[int, float, float]] = []
 
     for row in signals.itertuples(index=False):
         if float(row.p) < threshold:
@@ -578,99 +606,92 @@ def precompute_trades(
         if not np.isfinite(rv15_arr[t]) or not np.isfinite(mean_qv_60_arr[t]):
             skipped.append(SkippedSignal(symbol, int(row.open_time), float(row.p), "no_lookback"))
             continue
-        entry = compute_entry(
-            c_t=c_t,
-            p_raw=p_raw,
-            sigma=sigma,
-            atr_abs=float(atr_abs_arr[t]),
-            rv15=float(rv15_arr[t]),
-            qv=float(qv[t]),
-            tick_size=rule.tick_size,
-            k_sl=k_sl,
-            sl_min=sl_min,
-            sl_max=sl_max,
-            notional_ref=notional_ref,
-            half_spread_min=half_spread_min,
-            slip_min=backtest_cfg.costs.slip_min * scen.slip_mult,
-            Y=backtest_cfg.costs.Y,
-            fixed_slip=scen.fixed_slip,
-            fee_taker=fees.taker,
-        )
-        sl_ = entry.sl
-        atr_abs = entry.atr_abs
-        hs = entry.half_spread
-        slip_ = entry.slip
-        slip_stop = entry.slip_stop
-        p_fill = entry.p_fill
-        lr = entry.loss_rate
+        kept_t.append(t)
+        kept_signal.append((int(row.open_time), float(row.p), float(row.m)))
 
-        result = simulate_exit(
-            open_,
-            high,
-            low,
-            close,
-            p_entry_arr,
-            hi_post,
-            lo_post,
-            is_filled,
-            t_entry=t + 1,
-            p_fill=p_fill,
-            sl=sl_,
-            atr_abs=atr_abs,
-            tick_size=rule.tick_size,
-            H_max=H_max,
-            cfg=exit_cfg,
-            slip_stop=slip_stop,
-            slip_exit=slip_,
-            half_spread=hs,
-            fee_taker=fees.taker,
-            fee_maker=fees.maker,
-        )
-        exit_price = float(result.exit_price)
+    if not kept_t:
+        return [], skipped
+
+    t_all = np.asarray(kept_t, dtype="int64")
+    batch = simulate_exit_batch(
+        open_,
+        high,
+        low,
+        close,
+        p_entry_arr,
+        hi_post,
+        lo_post,
+        is_filled,
+        t_entries=t_all + 1,
+        down=anchors.down[t_all],
+        up=anchors.up[t_all],
+        r_dist=anchors.r_dist[t_all],
+        min_move=anchors.min_move[t_all],
+        p_fill=anchors.p_fill[t_all],
+        atr_abs=atr_abs_arr[t_all],
+        slip_stop=anchors.slip_stop[t_all],
+        slip_exit=anchors.slip[t_all],
+        half_spread=anchors.half_spread[t_all],
+        H_max=H_max,
+        cfg=exit_cfg,
+        tick_size=rule.tick_size,
+        fee_taker=fees.taker,
+        fee_maker=fees.maker,
+    )
+
+    trades: list[PrecomputedTrade] = []
+    for slot, t in enumerate(kept_t):
+        signal_open_time, p_signal, m_signal = kept_signal[slot]
+        p_fill = float(anchors.p_fill[t])
+        hs = float(anchors.half_spread[t])
+        slip_ = float(anchors.slip[t])
+        exit_idx = int(batch.exit_idx[slot])
+        exit_price = float(batch.exit_price[slot])
         if not np.isfinite(exit_price) or exit_price <= 0.0:
             # 出场分钟缺 aggTrades 时 p_1s 为空、出场价无法确定（06 §3.3 缺数据
             # 分钟不判定）：按该根 K 线收盘价出场（同样扣点差与离场滑点），
             # 避免净盈亏变成 NaN。
-            exit_price = float(close[result.exit_idx]) * (1.0 - hs - slip_)
-        if scen.all_taker or (result.exit_type_code == 3 and scen.tp_taker):
+            exit_price = float(close[exit_idx]) * (1.0 - hs - slip_)
+        exit_type_code = int(batch.exit_type[slot])
+        if scen.all_taker or (exit_type_code == 3 and scen.tp_taker):
             exit_fee_rate = fees.taker
         else:
-            exit_fee_rate = result.fee_rate
+            exit_fee_rate = float(batch.fee_rate[slot])
 
         trades.append(
             PrecomputedTrade(
                 symbol=symbol,
                 group=group,
-                signal_open_time=int(row.open_time),
+                signal_open_time=signal_open_time,
                 entry_open_time=int(open_time[t + 1]),
-                p=float(row.p),
-                m=float(row.m),
+                p=p_signal,
+                m=m_signal,
                 p_fill=p_fill,
-                sl=sl_,
-                loss_rate=lr,
+                sl=float(anchors.sl[t]),
+                loss_rate=float(anchors.loss_rate[t]),
                 mean_qv_60=float(mean_qv_60_arr[t]),
-                exit_open_time=int(open_time[result.exit_idx]),
+                exit_open_time=int(open_time[exit_idx]),
                 exit_price=exit_price,
-                exit_type=result.exit_type,
-                exit_type_code=result.exit_type_code,
-                bars_held=result.bars_held,
-                stop_updates=result.stop_updates,
-                mfe_r=result.mfe_r,
-                mae_r=result.mae_r,
+                exit_type=EXIT_TYPE_NAMES[exit_type_code],
+                exit_type_code=exit_type_code,
+                bars_held=int(batch.bars_held[slot]),
+                stop_updates=int(batch.stop_updates[slot]),
+                mfe_r=float(batch.mfe_r[slot]),
+                mae_r=float(batch.mae_r[slot]),
                 gross_return=exit_price / p_fill - 1.0,
                 exit_fee_rate=exit_fee_rate,
                 funding_rate_sum=funding_rate_between(
                     fund_times,
                     fund_rates,
                     int(open_time[t + 1]),
-                    int(open_time[result.exit_idx]),
+                    int(open_time[exit_idx]),
                 ),
                 tick_size=rule.tick_size,
                 step_size=rule.step_size,
                 min_notional=rule.min_notional,
                 new_entry=new_entry,
-                atr_abs=atr_abs,
-                slip_stop=slip_stop,
+                atr_abs=float(atr_abs_arr[t]),
+                slip_stop=float(anchors.slip_stop[t]),
                 slip_exit=slip_,
                 half_spread=hs,
                 notional_ref=notional_ref,

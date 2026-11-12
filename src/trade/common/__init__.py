@@ -4,11 +4,13 @@
 """
 
 from trade.common.exits import (
+    ExitBatch,
     ExitConfig,
     ExitResult,
     ExitType,
     exit_policy_hash,
     simulate_exit,
+    simulate_exit_batch,
 )
 from trade.common.sizing import (
     SizingConfig,
@@ -20,6 +22,7 @@ from trade.common.sizing import (
 )
 
 __all__ = [
+    "ExitBatch",
     "ExitConfig",
     "ExitResult",
     "ExitType",
@@ -30,5 +33,6 @@ __all__ = [
     "exit_policy_hash",
     "loss_rate",
     "simulate_exit",
+    "simulate_exit_batch",
     "validate_sizing",
 ]
