@@ -393,6 +393,12 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     artifact_root = _resolve(root, str(base_cfg.paths.artifact_root))
     rules_path = artifact_root / "exchange_info" / "rules.json"
     rules = _load_rules_by_alias(rules_path, data_root / "universe" / "aliases.json")
+    missing_rules = sorted(alias for alias in per_coin if alias not in rules)
+    if missing_rules:
+        raise ValueError(
+            f"交易规则缺少 {len(missing_rules)} 个币的条目（前 5 个：{missing_rules[:5]}）："
+            f"{rules_path}（03 §4.6；不得静默排除缺规则的币）"
+        )
     groups = {coin.alias: coin.role for coin in coins}
     fees = FeeSchedule(base_cfg.fees.maker, base_cfg.fees.taker)
     # 每币 numpy 数组只准备一次（06 §3.4），各轮出场参数与 θ 复用同一份数组。

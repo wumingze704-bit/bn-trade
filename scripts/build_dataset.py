@@ -22,6 +22,7 @@ from trade.data.loader import (
     collect_universe_coins,
     load_bars,
     load_universe_membership,
+    month_index_array,
     segment_ids,
     universe_months,
     universe_trade_mask,
@@ -30,6 +31,39 @@ from trade.data.loader import (
 from trade.data.universe import SnapshotCoin, UniverseConfig, load_universe_config, rule_hash
 from trade.features import FeaturesConfig, compute_features, enabled_features, feature_hash
 from trade.labels import exit_sim, is_sample_mask, triple_barrier, uniqueness_weights
+
+# tick_size / 当月收盘价中位数 的告警阈值（03 §4.6、04 §8）
+_TICK_REL_WARN = 0.002
+
+
+def _tick_relative_warnings(
+    alias: str, tick_size: float, month_idx: np.ndarray, close: np.ndarray
+) -> list[str]:
+    """tick_size 相对当月收盘价中位数过大时生成告警文本（03 §4.6）。
+
+    Args:
+        alias: 币别名。
+        tick_size: 价格步长。
+        month_idx: 每分钟的月序号（`month_index_array`，0 表示窗口外）。
+        close: 对应分钟的收盘价。
+
+    Returns:
+        每个超阈值月份一条告警；没有超阈值月份时为空列表。
+    """
+    out: list[str] = []
+    for month in np.unique(month_idx):
+        if month <= 0:
+            continue
+        prices = close[month_idx == month]
+        if prices.size == 0:
+            continue
+        median = float(np.median(prices))
+        if median <= 0:
+            continue
+        ratio = tick_size / median
+        if ratio > _TICK_REL_WARN:
+            out.append(f"{alias} M{int(month)} tick/收盘价中位数 = {ratio:.4f} 超过 0.002")
+    return out
 
 
 def _sha256_file(path: Path) -> str:
@@ -51,8 +85,8 @@ def _load_tick_size_by_alias(rules_path: Path, aliases_path: Path) -> dict[str, 
         aliases_path: data/universe/aliases.json（symbol -> alias）。
 
     Returns:
-        alias -> 价格步长；缺失 symbol 或 tick_size 的币不写入（由 build_dataset 回退
-        默认 0.01）。
+        alias -> 价格步长；缺失 symbol 或 tick_size 的币不写入，由 `build_dataset`
+        直接报错（红线 13，不回退默认值）。
     """
     rules = json.loads(rules_path.read_text(encoding="utf-8"))
     symbol_to_alias = json.loads(aliases_path.read_text(encoding="utf-8"))
@@ -76,6 +110,7 @@ def build_dataset(
     universe_cfg: UniverseConfig | None = None,
     exits_cfg: ExitConfig | None = None,
     tick_size_by_alias: Mapping[str, float] | None = None,
+    rules_path: Path | None = None,
     half_spread_min: float = 0.0001,
     slip_min: float = 0.0001,
     Y: float = 1.0,
@@ -87,7 +122,9 @@ def build_dataset(
     Args:
         universe_cfg: 选币配置（None 则不按月范围过滤样本、不记录 rule_hash）。
         exits_cfg: 出场配置（label.mode=exit_sim 时必填，与回测同一份 exits.yaml）。
-        tick_size_by_alias: alias -> 价格步长（exit_sim 点差与止损取整用，缺省 0.01）。
+        tick_size_by_alias: alias -> 价格步长（exit_sim 点差与止损取整用）。缺失币直接
+            报错，不回退默认值（03 §4.6、红线 13）。
+        rules_path: 交易规则快照路径，仅用于报错信息。
         half_spread_min/slip_min/Y: 成本模型参数（06 §4，base 情景）。
         notional_ref: 参考名义价值（滑点模型用，与回测同口径）。
         max_chase: 追价保护上限（06 §3.1 条件 5）。
@@ -158,7 +195,29 @@ def build_dataset(
                 raise ValueError(
                     "label.mode=exit_sim 时必须提供 exits_cfg（与回测同一份 exits.yaml）"
                 )
-            tick_size = (tick_size_by_alias or {}).get(alias, 0.01)
+            if tick_size_by_alias is None:
+                raise ValueError(
+                    f"未提供交易规则（tick_size_by_alias），无法构建 exit_sim 标签：{alias}"
+                )
+            if alias not in tick_size_by_alias:
+                raise ValueError(
+                    f"交易规则缺少 {alias}（{coin.symbol}）的 tick_size："
+                    f"{rules_path if rules_path is not None else 'rules.json'}"
+                    "（03 §4.6；缺失时不得回退默认值）"
+                )
+            tick_size = float(tick_size_by_alias[alias])
+            warnings.extend(
+                _tick_relative_warnings(
+                    alias,
+                    tick_size,
+                    month_index_array(
+                        bars["open_time"].to_numpy(dtype="int64"),
+                        base_cfg.data_window.end_month,
+                        base_cfg.data_window.months,
+                    ),
+                    bars["close"].to_numpy(dtype="float64"),
+                )
+            )
             labels_df, kept_positions = exit_sim(
                 bars,
                 sample_positions,
@@ -314,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         universe_cfg=universe_cfg,
         exits_cfg=exits_cfg,
         tick_size_by_alias=tick_size_by_alias,
+        rules_path=base_cfg.paths.artifact_root / "exchange_info" / "rules.json",
         half_spread_min=backtest_cfg.costs.half_spread_min,
         slip_min=backtest_cfg.costs.slip_min,
         Y=backtest_cfg.costs.Y,

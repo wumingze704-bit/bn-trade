@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from scripts.build_dataset import _load_tick_size_by_alias, build_dataset
 from tests.features.helpers import make_bars
 from trade.common.config import BaseConfig
@@ -37,7 +39,12 @@ def _inject_breakout(bars, i: int) -> None:
     bars.loc[i, "lo_post_1s"] = new_close
 
 
-def test_build_dataset_end_to_end(tmp_path) -> None:
+def _prepare(tmp_path):
+    """构造 2 币 1 月的 bars、月度快照与配置（各数据集测试共用）。
+
+    Returns:
+        (base_cfg, coins, features_cfg, data_root, universe_cfg)。
+    """
     base_ms = _ms(2026, 1, 1)
     data_root = tmp_path / "data"
     for alias, seed in (("C01", 1), ("C02", 2)):
@@ -100,7 +107,11 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
 
     coins = collect_universe_coins(data_root, ["2026-01"])
     features_cfg = FeaturesConfig(warmup_bars=0)
+    return base_cfg, coins, features_cfg, data_root, universe_cfg
 
+
+def test_build_dataset_end_to_end(tmp_path) -> None:
+    base_cfg, coins, features_cfg, data_root, universe_cfg = _prepare(tmp_path)
     manifest = build_dataset(
         "test_run",
         base_cfg,
@@ -110,6 +121,7 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
         btc_context="BTCUSDT",
         universe_cfg=universe_cfg,
         exits_cfg=ExitConfig(type="trail"),
+        tick_size_by_alias={"C01": 0.01, "C02": 0.0001},
     )
 
     assert len(manifest["coins"]) == 2
@@ -129,6 +141,39 @@ def test_build_dataset_end_to_end(tmp_path) -> None:
     assert (data_root / "labels" / "test_run" / "C01.parquet").exists()
     saved = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert saved["feature_hash"] == manifest["feature_hash"]
+
+
+def test_build_dataset缺交易规则时报错(tmp_path) -> None:
+    base_cfg, coins, features_cfg, data_root, universe_cfg = _prepare(tmp_path)
+    with pytest.raises(ValueError, match="tick_size"):
+        build_dataset(
+            "missing_tick",
+            base_cfg,
+            coins,
+            features_cfg,
+            data_root,
+            btc_context="BTCUSDT",
+            universe_cfg=universe_cfg,
+            exits_cfg=ExitConfig(type="trail"),
+            tick_size_by_alias={"C01": 0.01},
+            rules_path=tmp_path / "rules.json",
+        )
+
+
+def test_tick相对价格过大时写入警告(tmp_path) -> None:
+    base_cfg, coins, features_cfg, data_root, universe_cfg = _prepare(tmp_path)
+    manifest = build_dataset(
+        "tick_warn",
+        base_cfg,
+        coins,
+        features_cfg,
+        data_root,
+        btc_context="BTCUSDT",
+        universe_cfg=universe_cfg,
+        exits_cfg=ExitConfig(type="trail"),
+        tick_size_by_alias={"C01": 10.0, "C02": 0.0001},
+    )
+    assert any("tick/收盘价中位数" in warning for warning in manifest["warnings"])
 
 
 def test_load_tick_size_by_alias(tmp_path) -> None:

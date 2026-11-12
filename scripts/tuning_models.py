@@ -416,6 +416,12 @@ def run_grid(args: argparse.Namespace) -> int:
         month_start_ms(months[base_cfg.data_window.tuning_months]),
     )
     rules = _load_rules(args.rules, base_cfg.paths.data_root / "universe" / "aliases.json")
+    missing_rules = sorted(entry.alias for entry in entries if entry.alias not in rules)
+    if missing_rules:
+        raise ValueError(
+            f"交易规则缺少 {len(missing_rules)} 个币的条目（前 5 个：{missing_rules[:5]}）："
+            f"{args.rules}（03 §4.6；不得静默排除缺规则的币）"
+        )
     feature_names = manifest_features(args.features_dir)
 
     val_start = int(pd.Timestamp(f"{val_months[0]}-01", tz="UTC").timestamp() * 1000)
