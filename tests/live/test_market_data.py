@@ -244,3 +244,28 @@ def test_feed_reconnects_after_handshake_failure_and_reports(
     assert stats.reconnects == 1  # type: ignore[attr-defined]
     assert stats.messages == 2  # type: ignore[attr-defined]
     assert reconnects and reconnects[0][0] == 1_000
+
+
+def test_feed按路由分组成多条连接() -> None:
+    """kline + aggTrade 落在 /market，bookTicker 落在 /public（09 §2、§3.3）。"""
+    market_data = sys.modules["trade.live.market_data"]
+    feed = market_data.MarketDataFeed(
+        endpoints=endpoints_for("mainnet"),
+        streams=["btcusdt@kline_1m", "btcusdt@aggTrade", "btcusdt@bookTicker"],
+        on_message=lambda message: None,
+    )
+    assert feed.urls == [
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker",
+        "wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m/btcusdt@aggTrade",
+    ]
+    assert feed.url == feed.urls[0]
+
+
+def test_feed拒绝用户数据流放入组合流() -> None:
+    market_data = sys.modules["trade.live.market_data"]
+    with pytest.raises(ValueError, match="listenKey"):
+        market_data.MarketDataFeed(
+            endpoints=endpoints_for("mainnet"),
+            streams=["userData"],
+            on_message=lambda message: None,
+        )

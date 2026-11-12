@@ -307,7 +307,8 @@ async def _ws_check(env: EnvName, symbol: str, seconds: int) -> int:
         on_reconnect=on_reconnect,
     )
     print(f"== WS 订阅冒烟 env={env} symbol={symbol} {seconds}s ==")
-    print(f"[INFO] {feed.url}")
+    for url in feed.urls:
+        print(f"[INFO] {url}")
     worker = asyncio.create_task(backfiller())
     try:
         stats = await feed.run(max_runtime_ms=seconds * 1000)

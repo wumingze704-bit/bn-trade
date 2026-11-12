@@ -322,7 +322,8 @@
 - [~] T5-4 行情：多连接、23 小时轮换、缺口回补、延迟监控、原子量录制
   - 完成：`trade.live.exchange.ws`（WsConnection + kline/aggTrade/bookTicker 解析单测）；`trade.live.bar_builder`（缺口判定、分钟完整判定、原子量聚合单测）；`trade.live.health`（LatencyMonitor R10 持续 10 秒、OrderErrorMonitor R11、WeightUsage 09 §6）；`trade.live.market_data`（订阅币种计算、23h 轮换、listenKey 30min 续期）。
   - 完成（2026-11-05，东京服务器实测）：`MarketDataFeed`（组合流消费、断线指数退避重连 1s→30s、23 小时先建新连再关旧连）、流名称构造（`kline_streams`/`agg_trade_streams`/`book_ticker_streams`）、`KlineGapFiller`（REST `klines?startTime&endTime` 回补已收盘缺口）、`missing_minutes`/`reconnect_delay_ms`；`scripts/api_smoke.py --ws-check` 免密钥订阅冒烟。实测：测试网三流组合流 60 秒 1278 条、`@kline_1m` 单流 65 秒 120 条；`iptables` DROP 断网 30 秒**未断链**（TCP 重传 + ping/pong 未超时，重连 0 次）、断网 100 秒**断链后自动重连 1 次并回补 1 根已收盘 K 线**；同一演练还暴露并修复了「重连握手失败会逃出 `run()`」的缺陷（新增单测 `test_feed_reconnects_after_handshake_failure_and_reports`）。
-  - 缺：原子量 parquet 每小时落盘未接；单连接订阅数上限的拆分（09 §6）未实测；**正式网 `@kline_1m`/`@aggTrade` 无推送**（09 §3.3、§9），`shadow`/`live` 的行情来源需使用者决定。
+  - 完成（2026-11-12，第 9 步）：WebSocket 按流类别拆分路由（`public`/`market`/`private`），`endpoints.stream_route` 做流名映射、`MarketDataFeed` 按路由分组并受单连接 1024 条流上限切分；`api_smoke.py --ws-check` 打印每条连接地址。正式网 60 秒实测：`/public`+`@bookTicker` 64967 条、`/market`+`@kline_1m` 180 条、`/market`+`@aggTrade` 1831 条，退出码 0（原始输出见 docs/records.md）。
+  - 缺：原子量 parquet 每小时落盘未接；单连接订阅数上限的拆分只用单测覆盖，未在满负荷下实测；T1-5 的“实时 aggTrade 与次日历史文件逐条比对”仍需在服务器连续录制 1 个 UTC 日，未运行。
 
 - [~] T5-5 月度再平衡（07 §3.5）
   - 完成：`trade.live.market_data.Rebalancer` 复用 `trade.data.universe.build_universe()`+`assign_aliases`；`new_entrants`/`exited_symbols`/`rebalance_due` 纯函数单测。

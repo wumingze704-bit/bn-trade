@@ -16,14 +16,14 @@
 
 ## 2. 域名与环境
 
-| 环境     | REST                                | WebSocket                                                      |
-| :------- | :---------------------------------- | :------------------------------------------------------------- |
-| 正式网   | `https://fapi.binance.com`          | `wss://fstream.binance.com`（组合流：`/stream?streams=a/b/c`） |
-| 测试网   | `https://testnet.binancefuture.com` | 见官方文档测试网说明                                           |
-| 历史数据 | `https://data.binance.vision`       | —                                                              |
+| 环境     | REST                                | WebSocket（按路由）                                                                                    |
+| :------- | :---------------------------------- | :----------------------------------------------------------------------------------------------------- |
+| 正式网   | `https://fapi.binance.com`          | `wss://fstream.binance.com/public`、`/market`、`/private`（组合流：`/{route}/stream?streams=a/b/c`）    |
+| 测试网   | `https://testnet.binancefuture.com` | `wss://stream.binancefuture.com/public`、`/market`、`/private`（写法同上）                             |
+| 历史数据 | `https://data.binance.vision`       | —                                                                                                      |
 
 - 环境由 `live.yaml` 的 `mode` 决定：`paper` → 测试网；`shadow`、`live` → 正式网。代码中禁止出现“正式网与测试网混用”的路径（例如用测试网 Key 访问正式网）。
-- 币安合约 WebSocket 的接入地址可能按流类型（公共 / 行情 / 私有）拆分，以最新文档为准，地址集中在 `trade.live.exchange.endpoints` 一处配置。
+- WebSocket 基址按流类别分为 `public`、`market`、`private` 三个路由，集中在 `trade.live.exchange.endpoints.Endpoints` 的 `ws_public_base`、`ws_market_base`、`ws_private_base`；其他模块不得自行拼接 URL。不带路由路径的旧入口 `wss://<host>/stream` 只推送 public 类数据，market 类流在该入口收不到消息。
 - 网络与部署要求见 02 §5。
 
 ## 3. 接口清单（USDⓈ-M 合约）
@@ -87,15 +87,24 @@
 
 两种写法并存，`trade.live.exchange.ws` 两者都兼容：
 
-- 单流：`wss://<host>/ws/<streamName>`，消息即事件本体。
-- 组合流：`wss://<host>/stream?streams=<a>/<b>/...`，消息为 `{"stream": "<名称>", "data": {事件}}`；`MarketDataFeed` 取 `data` 字段后交给同一套解析函数（07 §3.1）。
+- 单流：`wss://<host>/<route>/ws/<streamName>`，消息即事件本体。
+- 组合流：`wss://<host>/<route>/stream?streams=<a>/<b>/...`，消息为 `{"stream": "<名称>", "data": {事件}}`；`MarketDataFeed` 取 `data` 字段后交给同一套解析函数（07 §3.1）。
 - `/ws/`（带尾斜杠）发 `SUBSCRIBE` 会被拒绝（HTTP 400）；需要主动订阅时用 `/ws`（无尾斜杠），返回 `{"result": null, "id": <id>}` 为成功 ACK。
 
-订阅核对结论（原始数据见 docs/records.md）：
+流到路由的映射由纯函数 `trade.live.exchange.endpoints.stream_route` 决定，未登记的流名称抛 `ValueError`：
 
-- 测试网 `wss://stream.binancefuture.com`：`btcusdt@kline_1m`、`btcusdt@aggTrade`、`btcusdt@bookTicker` 及三者组合流均正常推送。
-- 正式网 `wss://fstream.binance.com`：`@bookTicker`、`@trade`、`@depth@100ms` 正常；`@kline_1m`、`@aggTrade`、`@markPrice`、`@ticker`、`@miniTicker` 在 `/ws/`、`/stream?streams=`、`/ws`+`SUBSCRIBE` 三种写法下均无消息。正式网 `trade` 事件带 `st` 字段，是测试网当前没有的字段。
-- 正式网 `@kline_1m` / `@aggTrade` 的可用写法**仍未确定**；官方文档站在 Cloudflare 挑战页拦截（HTTP 202、正文 0 字节）时以官方 SDK 与服务器实测为准。`paper` 模式不受影响；`shadow` / `live` 的行情来源待使用者决定（见 docs/tasks.md）。
+| 路由      | 流名称（`@` 之后的部分）                                                              | 写法                                        |
+| :-------- | :------------------------------------------------------------------------------------ | :------------------------------------------ |
+| `market`  | `aggTrade`、`kline_<interval>`、`markPrice`、`miniTicker`、`ticker`、`compositeIndex`、`contractInfo` | `/{route}/stream?streams=<a>/<b>/...`       |
+| `public`  | `bookTicker`、`depth`、`depth5`/`depth10`/`depth20`                                   | `/{route}/stream?streams=<a>/<b>/...`       |
+| `private` | 用户数据流（listenKey）                                                               | `/private/ws?listenKey=<key>`               |
+
+订阅约束：
+
+- 单连接订阅流上限 1024；`MarketDataFeed` 先按路由分组，再按该上限切分成多条连接（07 §3.1）。
+- 用户数据流不能放进组合流，必须用 listenKey 单独连接。
+
+订阅核对结论见 docs/records.md；`scripts/api_smoke.py --ws-check` 按路由各订阅一段时间，逐类打印消息数，任一为 0 判失败（09 §8）。
 
 ### 3.4 历史数据仓库（data.binance.vision）
 

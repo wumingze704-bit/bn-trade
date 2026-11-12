@@ -4,7 +4,7 @@
 """
 
 from trade.live.exchange.client import ExchangeClient, ExchangeError
-from trade.live.exchange.endpoints import Endpoints, endpoints_for
+from trade.live.exchange.endpoints import Endpoints, WsRoute, endpoints_for, stream_route
 from trade.live.exchange.models import (
     AccountInfo,
     AccountPosition,
@@ -58,6 +58,7 @@ __all__ = [
     "SymbolRule",
     "UserTrade",
     "WsConnection",
+    "WsRoute",
     "ed25519_signature",
     "endpoints_for",
     "hmac_sha256_signature",
@@ -67,4 +68,5 @@ __all__ = [
     "parse_ws_message",
     "private_key_kind",
     "rsa_signature",
+    "stream_route",
 ]

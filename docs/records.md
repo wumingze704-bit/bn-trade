@@ -38,6 +38,21 @@
 
 - 实测（2026-11-05，东京服务器，`scripts/notify_smoke.py`）：10 类事件各 1 条 + 突发 6 条，共 16 条在约 30 秒内全部返回 `code = 1000`（成功），未见服务端限流拒绝；单条送达耗时 170 ms ~ 6.4 s（其中一次 6.4 s 应为服务端排队）。
 
+## 09 §2 / §3.3（WebSocket 路由）
+
+- 2026-11-12 东京服务器（腾讯云 NRT）用 `websockets` 直连探测正式网，单连接 12 秒消息数：
+  - `/public` + `btcusdt@bookTicker`：11576 条（首条 `{"stream":"btcusdt@bookTicker","data":{...}}`）
+  - `/market` + `btcusdt@aggTrade`：836 条；`@kline_1m`：41 条；`@markPrice@1s`：11 条；`@miniTicker`：4 条；`@ticker`：4 条；`!markPrice@arr`：6 条
+  - `/public` + `@depth5@100ms`：97 条；`@depth10@100ms`：78 条；`@ticker` 在 `/public`：0 条
+  - 旧入口 `/stream?streams=btcusdt@aggTrade`：0 条
+  - `/private/ws?listenKey=invalid_key_probe`：握手成功、无消息
+  - 测试网：`/public` + `@bookTicker` 24 条；`/market` + `@aggTrade` 14 条；`/public` + `@depth5@100ms` 18 条；`/private/ws?listenKey=invalid_key_probe` 握手成功、无消息；旧入口 `/stream?streams=btcusdt@aggTrade` 仍 22 条
+  - 官方文档站 `developers.binance.com` 在服务器侧返回 `HTTP/2 202`、`x-amzn-waf-action: challenge`（CloudFront WAF 挑战页，正文 2110 字节、无可用内容），未能取到 HTML 正文，路由结论以上述实测为准。
+- 2026-11-12 代码上线后服务器 `api_smoke.py --env mainnet --ws-check --symbol BTCUSDT --ws-seconds 60`：
+  - 连接地址 `wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker` 与 `wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m/btcusdt@aggTrade`
+  - 消息 66978 条：`bookTicker` 64967、`kline` 180、`aggTrade` 1831；已收盘 1m K 线 1 根（open_time 1794496680000）；断线重连 0 次，缺口回补 0 根；退出码 0
+- T1-5（实时 aggTrade 与次日 data.binance.vision 逐条比对）未运行：需连续录制 1 个 UTC 日后再下载同日历史文件。
+
 ## 09 §9
 
 | 核对日期   | 核对人                     | 范围                    | 结论 / 变更                                                                                                                                                                                                                                                                                                  |

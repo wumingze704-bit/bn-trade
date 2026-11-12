@@ -25,7 +25,7 @@ from trade.data.universe import (
     write_universe_snapshot,
 )
 from trade.live.exchange.client import ExchangeClient
-from trade.live.exchange.endpoints import Endpoints
+from trade.live.exchange.endpoints import Endpoints, WsRoute, stream_route
 from trade.live.exchange.ws import WsConnection
 
 # 连接轮换周期（07 §3.1：23 小时主动新建连接）
@@ -39,6 +39,60 @@ _RECONNECT_CAP_MS = 30_000
 _KLINE_INTERVAL_MS = 60_000
 # 单次 REST K 线请求上限（09 §3.1）
 _KLINE_LIMIT = 1_500
+
+# 单连接订阅流上限（09 §3.3）：超过则拆分成多条连接
+_MAX_STREAMS_PER_CONNECTION = 1_024
+
+
+def group_streams_by_route(streams: Iterable[str]) -> dict[WsRoute, list[str]]:
+    """按 WebSocket 路由（public / market / private）分组（09 §2、§3.3）。
+
+    Args:
+        streams: 组合流名称列表。
+
+    Returns:
+        route -> 流名称列表（保持输入顺序）。
+
+    Raises:
+        ValueError: 含未登记的流名称（`stream_route`，红线 13）。
+    """
+    groups: dict[WsRoute, list[str]] = {}
+    for name in streams:
+        groups.setdefault(stream_route(name), []).append(name)
+    return groups
+
+
+def split_stream_batches(
+    streams: list[str], *, limit: int = _MAX_STREAMS_PER_CONNECTION
+) -> list[list[str]]:
+    """按单连接订阅上限切分流名称（09 §3.3）。"""
+    return [streams[index : index + limit] for index in range(0, len(streams), limit)]
+
+
+def _build_connection_urls(endpoints: Endpoints, streams: list[str]) -> list[str]:
+    """按路由分组并切分，生成每条连接的组合流地址（09 §2、§3.3）。
+
+    Args:
+        endpoints: 环境端点配置。
+        streams: 组合流名称列表。
+
+    Returns:
+        连接地址列表，顺序固定为 public → market，路由内保持输入顺序。
+
+    Raises:
+        ValueError: 含用户数据流（需用 listenKey 单独连接）或未登记流名（红线 13）。
+    """
+    groups = group_streams_by_route(streams)
+    if "private" in groups:
+        raise ValueError("用户数据流必须用 listenKey 单独连接，不能放入组合流（09 §3.3）")
+    urls: list[str] = []
+    for route in ("public", "market"):
+        names = groups.get(route)
+        if not names:
+            continue
+        for batch in split_stream_batches(names):
+            urls.append(endpoints.ws_stream_url(route, batch))
+    return urls
 
 
 def subscription_symbols(
@@ -296,7 +350,7 @@ class MarketDataFeed:
     ) -> None:
         if not streams:
             raise ValueError("streams 不可为空")
-        self._url = endpoints.ws_stream_url(streams)
+        self._urls = _build_connection_urls(endpoints, streams)
         self._on_message = on_message
         self._on_reconnect = on_reconnect
         self._max_attempts = max_attempts
@@ -306,11 +360,16 @@ class MarketDataFeed:
 
     @property
     def url(self) -> str:
-        """组合流 WebSocket 地址（09 §2）。"""
-        return self._url
+        """首条连接的组合流 WebSocket 地址（09 §2）。"""
+        return self._urls[0]
+
+    @property
+    def urls(self) -> list[str]:
+        """全部连接的组合流 WebSocket 地址（按 public → market 顺序，09 §2）。"""
+        return list(self._urls)
 
     async def run(self, *, max_runtime_ms: int | None = None) -> FeedStats:
-        """建立连接并持续消费，直到达到 `max_runtime_ms` 或重连次数超限。
+        """为每条路由连接建立消费循环，直到运行期限或重连次数超限。
 
         Args:
             max_runtime_ms: 最长运行毫秒数；None 表示无限运行（实盘）。
@@ -319,32 +378,55 @@ class MarketDataFeed:
             累计统计（含重连与轮换次数）。
 
         Raises:
-            RuntimeError: 连续重连次数超过 `max_attempts`。
+            RuntimeError: 任一连接的连续失败次数超过 `max_attempts`。
         """
         deadline_ms = None if max_runtime_ms is None else self._clock() + max_runtime_ms
-        conn = await self._connect(attempt=0, deadline_ms=deadline_ms)
+        if len(self._urls) == 1:
+            await self._run_connection(self._urls[0], deadline_ms=deadline_ms)
+        else:
+            await asyncio.gather(
+                *(self._run_connection(url, deadline_ms=deadline_ms) for url in self._urls)
+            )
+        return self.stats
+
+    async def _run_connection(self, url: str, *, deadline_ms: int | None) -> None:
+        """单条连接的消费与轮换循环（07 §3.1）。"""
+        conn = await self._connect(url, attempt=0, deadline_ms=deadline_ms)
+        connected_ms = self._clock()
         while True:
             try:
-                reason = await self._consume(conn, deadline_ms=deadline_ms)
+                reason = await self._consume(
+                    conn, deadline_ms=deadline_ms, connected_ms=connected_ms
+                )
             except Exception:  # noqa: BLE001 - 任何传输异常都必须进入重连流程
                 await conn.close()
-                conn = await self._connect(attempt=0, is_reconnect=True, deadline_ms=deadline_ms)
+                conn = await self._connect(
+                    url, attempt=0, is_reconnect=True, deadline_ms=deadline_ms
+                )
+                connected_ms = self._clock()
                 continue
             if reason == "stop":
                 await conn.close()
-                return self.stats
+                return
             old = conn
             # 23 小时轮换：先建立新连接，成功后再关闭旧连接（07 §3.1）
-            conn = await self._connect(attempt=0)
+            conn = await self._connect(url, attempt=0)
+            connected_ms = self._clock()
             await old.close()
             self.stats.rotated += 1
 
     async def _connect(
-        self, *, attempt: int, is_reconnect: bool = False, deadline_ms: int | None = None
+        self,
+        url: str,
+        *,
+        attempt: int,
+        is_reconnect: bool = False,
+        deadline_ms: int | None = None,
     ) -> WsConnection:
         """按指数退避建立连接，直到成功（07 §3.1）。
 
         Args:
+            url: 该连接的组合流地址。
             attempt: 起始失败计数（0 表示首次尝试）。
             is_reconnect: 是否为断线后的重连；成功后累加重连次数并触发缺口回补回调。
             deadline_ms: 运行期限；为 None 表示不限期（实盘）。
@@ -357,7 +439,7 @@ class MarketDataFeed:
         """
         while True:
             attempt += 1
-            conn = WsConnection(self._url)
+            conn = WsConnection(url)
             try:
                 await conn.connect()
             except Exception:  # noqa: BLE001 - 连接阶段的异常一律计入重试
@@ -374,7 +456,9 @@ class MarketDataFeed:
                     self._on_reconnect(self.stats.last_event_ms, self._clock())
             return conn
 
-    async def _consume(self, conn: WsConnection, *, deadline_ms: int | None) -> FeedReason:
+    async def _consume(
+        self, conn: WsConnection, *, deadline_ms: int | None, connected_ms: int
+    ) -> FeedReason:
         """消费一条连接直到需要轮换或到达运行期限（07 §3.1）。"""
         async for message in conn:
             data = message.get("data")
@@ -392,7 +476,7 @@ class MarketDataFeed:
             now = self._clock()
             if deadline_ms is not None and now >= deadline_ms:
                 return "stop"
-            if now - self.stats.connected_ms >= self._rotate_ms:
+            if now - connected_ms >= self._rotate_ms:
                 return "rotate"
         raise ConnectionError("行情连接已被对端关闭")
 
