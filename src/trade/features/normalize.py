@@ -10,7 +10,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from trade.common._numba import njit
+
 EPS = 1e-12
+
+# `ewm_step` 的 `(x - μ) ** 2` 由 CPython 调用 libm pow 计算；LLVM 会把常量指数 2.0
+# 折叠成 x * x，少数取值差 1 ulp。numba 内核因此把指数作为运行时参数传入（红线 15：
+# 批量结果必须与逐点递推逐位一致）。
+_SQUARE_POWER = 2.0
 
 
 @dataclass(frozen=True)
@@ -44,17 +51,54 @@ def ewm_step(
     return z, EwmState(new_mean, new_var)
 
 
+@njit
+def _ewm_standardize_kernel(
+    x: np.ndarray, alpha: float, clip: float, min_var: float, square_power: float
+) -> np.ndarray:
+    """EWM 标准化的 numba 批量内核（04 §5）。
+
+    算术顺序与 `ewm_step` 逐点相同：先用旧统计量标准化并裁剪，再更新 mean 与 var；
+    不开 fastmath。`square_power` 由调用方传入 2.0，使 libm pow 不被折叠成乘法。
+    """
+    out = np.empty(x.shape[0], dtype=np.float64)
+    mean = 0.0
+    var = 1.0
+    for i in range(x.shape[0]):
+        z = (x[i] - mean) / (np.sqrt(var) + min_var)
+        if z > clip:
+            z = clip
+        elif z < -clip:
+            z = -clip
+        out[i] = z
+        new_mean = (1.0 - alpha) * mean + alpha * x[i]
+        var = (1.0 - alpha) * var + alpha * math.pow(x[i] - mean, square_power)
+        mean = new_mean
+    return out
+
+
 def ewm_standardize(x: np.ndarray, halflife_bars: int, clip: float, min_var: float) -> np.ndarray:
-    """对整列做 EWM 标准化（逐点递推，天然无未来信息）。
+    """对整列做 EWM 标准化（numba 批量实现，逐点递推，天然无未来信息）。
 
     Args:
-        x: 原始特征序列。
+        x: 原始特征序列（NaN/Inf 应由 `sanitize` 先置 0）。
         halflife_bars: EWM 半衰期（根数）。
         clip: z 值裁剪上限（对称 [-clip, clip]）。
         min_var: 防除零 ε。
 
     Returns:
         与输入等长的 z 序列。
+    """
+    alpha = alpha_from_halflife(halflife_bars)
+    arr = np.asarray(x, dtype="float64")
+    return _ewm_standardize_kernel(arr, alpha, clip, min_var, _SQUARE_POWER)
+
+
+def ewm_standardize_py(
+    x: np.ndarray, halflife_bars: int, clip: float, min_var: float
+) -> np.ndarray:
+    """EWM 标准化的纯 Python 参考实现（04 §5）。
+
+    与 `ewm_standardize` 的 numba 内核逐元素一致，供一致性测试与排查使用。
     """
     alpha = alpha_from_halflife(halflife_bars)
     arr = np.asarray(x, dtype="float64")

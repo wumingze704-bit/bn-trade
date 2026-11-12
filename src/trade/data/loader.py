@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pyarrow.parquet as pq
 
@@ -199,6 +200,30 @@ def month_index(open_time_ms: int, end_month: str, months: int) -> int | None:
     if number < start_number or number > end_number:
         return None
     return number - start_number + 1
+
+
+def month_index_array(
+    open_time_ms: npt.ArrayLike, end_month: str, months: int
+) -> npt.NDArray[np.int64]:
+    """`month_index` 的向量化版本：返回 int64 月序号，窗口外记 0（03 §6）。
+
+    Args:
+        open_time_ms: 毫秒时间戳数组（UTC）。
+        end_month: 窗口最后一个月 `YYYY-MM`。
+        months: 窗口月数。
+
+    Returns:
+        与输入等长的月序号数组，元素为 1..months 或 0（窗口外，对应 `month_index` 的 None）。
+    """
+    end_year, end_month_num = (int(part) for part in end_month.split("-"))
+    end_number = end_year * 12 + end_month_num
+    start_number = end_number - months + 1
+    times = np.asarray(open_time_ms, dtype="int64")
+    # datetime64[M] 为自 1970-01 起的月数；换算到 _month_number 的 year*12+month 口径。
+    month_numbers = times.astype("datetime64[ms]").astype("datetime64[M]").astype("int64")
+    month_numbers += 1970 * 12 + 1
+    inside = (month_numbers >= start_number) & (month_numbers <= end_number)
+    return np.where(inside, month_numbers - start_number + 1, 0).astype("int64")
 
 
 def segment_of(

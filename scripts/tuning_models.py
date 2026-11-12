@@ -44,10 +44,10 @@ from trade.data.loader import (
     window_bounds,
 )
 from trade.data.universe import SnapshotCoin, load_universe_config, role_for_symbol
-from trade.features import FeaturesConfig
+from trade.features import FeaturesConfig, enabled_features, feature_hash
 from trade.models.calibration import calibration_metrics, select_threshold, threshold_grid
 from trade.models.config import ModelConfig
-from trade.models.dataset import WindowDataset
+from trade.models.dataset import WindowDataset, month_start_ms
 from trade.models.train import train_ensemble
 
 TRIAL_BUDGET = 30
@@ -213,6 +213,40 @@ def manifest_features(features_dir: Path) -> list[str]:
     return list(manifest["features"])
 
 
+def require_dataset_window(
+    features_dir: Path, features_cfg: FeaturesConfig, start_ms: int, end_ms: int
+) -> None:
+    """校验数据集 manifest 与当前注册表一致且覆盖所需区间（05 §6.1）。
+
+    Args:
+        features_dir: 数据集特征目录 `data/features/{run_id}`。
+        features_cfg: 当前特征配置。
+        start_ms: 需要的起点（毫秒，含）。
+        end_ms: 需要的终点（毫秒，不含）。
+
+    Raises:
+        ValueError: `feature_hash` 或特征列表不一致、覆盖区间不足（红线 13）。
+    """
+    manifest_path = features_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"数据集缺少 manifest.json：{manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_hash = feature_hash(enabled_features(features_cfg))
+    if manifest.get("feature_hash") != expected_hash:
+        raise ValueError(
+            f"数据集 feature_hash 与当前注册表不一致：{manifest_path}；"
+            f"数据集 {manifest.get('feature_hash')}，当前 {expected_hash}（04 §3、05 §6.1）"
+        )
+    window = manifest.get("window") or {}
+    window_start = int(window.get("start_ms", 0))
+    window_end = int(window.get("end_ms", 0))
+    if window_start > start_ms or window_end < end_ms:
+        raise ValueError(
+            f"数据集覆盖区间 [{window_start}, {window_end}) 不包含所需区间 "
+            f"[{start_ms}, {end_ms})：{manifest_path}（05 §6.1）"
+        )
+
+
 def require_dataset_files(features_dir: Path, labels_dir: Path, aliases: Sequence[str]) -> None:
     """确认数据集包含全部所需币的特征与标签文件（05 §5）。
 
@@ -375,6 +409,12 @@ def run_grid(args: argparse.Namespace) -> int:
     groups = {entry.alias: role_for_symbol(entry.symbol, universe_cfg.roles) for entry in entries}
     train_symbols = [alias for alias, role in groups.items() if role == "train"]
     require_dataset_files(args.features_dir, args.labels_dir, [entry.alias for entry in entries])
+    require_dataset_window(
+        args.features_dir,
+        features_cfg,
+        wb.start_ms,
+        month_start_ms(months[base_cfg.data_window.tuning_months]),
+    )
     rules = _load_rules(args.rules, base_cfg.paths.data_root / "universe" / "aliases.json")
     feature_names = manifest_features(args.features_dir)
 

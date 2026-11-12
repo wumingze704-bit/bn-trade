@@ -40,6 +40,15 @@ python -m pip install -e .
 - `.clineignore` 让 Cline 不读取 `data/`、`artifacts/`、`.env` 与密钥类文件（AGENTS.md §6 红线 2、6）。
 - 摘要与 AGENTS.md 的一致性由 `tests/test_agent_rules.py` 校验：改 AGENTS.md 后同步 `.clinerules/` 并运行该测试。
 
+## 长时脚本与 numba 编译缓存
+
+`scripts/` 下的长时任务（`tuning_exits.py`、`tuning_models.py`、`train_walkforward.py`、`build_dataset.py`、`bench_backtest.py`）可在启动前设置环境变量 `TRADE_NUMBA_CACHE=1`，让 numba 把编译结果缓存到模块旁的 `__pycache__`，后续进程直接复用（02 §7）。默认关闭：`pytest` 与一次性脚本不写缓存，缓存目录已在 `.gitignore` 覆盖。
+
+```powershell
+$env:TRADE_NUMBA_CACHE = "1"
+python scripts/tuning_exits.py --features-dir data/features/ds_20261107 --limit 2
+```
+
 ## P0 检查
 
 ```powershell

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import numpy as np
 import pytest
 
 from tests.features.helpers import make_bars
@@ -17,6 +18,7 @@ from trade.data.loader import (
     load_bars,
     load_daily_bars,
     month_index,
+    month_index_array,
     month_key,
     rebalance_ms_of,
     segment_of,
@@ -78,6 +80,29 @@ def test_month_key_and_index() -> None:
     # end_month=2026-09, months=24 → M1=2024-10，2026-01 = M16
     assert month_index(_ms(2026, 1, 15), "2026-09", 24) == 16
     assert month_index(_ms(2024, 9, 30), "2026-09", 24) is None  # 窗口前
+
+
+def test_month_index_array与逐元素版本一致() -> None:
+    times = np.array(
+        [
+            _ms(2024, 9, 1),
+            _ms(2024, 9, 30),
+            _ms(2024, 10, 1),
+            _ms(2024, 12, 31),
+            _ms(2025, 1, 1),
+            _ms(2026, 1, 15),
+            _ms(2026, 9, 30),
+            _ms(2026, 10, 1),
+            _ms(2026, 12, 31),
+        ],
+        dtype=np.int64,
+    )
+    got = month_index_array(times, "2026-09", 24)
+    want = np.array([month_index(int(t), "2026-09", 24) or 0 for t in times], dtype=np.int64)
+    np.testing.assert_array_equal(got, want)
+    assert got[0] == 0  # 窗口前
+    assert got[5] == 16  # 2026-01 = M16
+    assert got[-1] == 0  # 窗口后
 
 
 def test_segment_of() -> None:

@@ -51,7 +51,7 @@ from trade.data.loader import (
     collect_universe_coins,
     load_bars,
     load_universe_membership,
-    month_index,
+    month_index_array,
     rebalance_ms_of,
     segment_ids,
     universe_months,
@@ -60,6 +60,7 @@ from trade.data.loader import (
 )
 from trade.data.universe import SnapshotCoin, load_universe_config
 from trade.features import FeaturesConfig, compute_features, enabled_features
+from trade.features.registry import feature_hash
 from trade.labels.exit_sim import exit_sim
 from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
@@ -209,6 +210,91 @@ class SampleSet:
     symbol: np.ndarray
 
 
+def _load_disk_features(
+    features_dir: Path,
+    features_cfg: FeaturesConfig,
+    feature_names: list[str],
+    aliases: list[str],
+    start_ms: int,
+    end_ms: int,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """读取已构建数据集的特征 parquet，并校验 manifest（05 §6.1）。
+
+    Args:
+        features_dir: 数据集特征目录 `data/features/{run_id}`。
+        features_cfg: 当前特征配置。
+        feature_names: 当前启用特征名（有序）。
+        aliases: 本次需要的币别名（只读取这些文件）。
+        start_ms: 需要的起点（毫秒，含）。
+        end_ms: 需要的终点（毫秒，不含）。
+
+    Returns:
+        alias -> (`open_time` int64 数组, 特征 float16 矩阵)，`open_time` 严格递增。
+
+    Raises:
+        ValueError: manifest 缺失、`feature_hash`/特征列表与当前注册表不一致，
+            或数据集覆盖区间不包含所需区间（红线 13，不回退到现场计算）。
+    """
+    manifest_path = features_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"数据集缺少 manifest.json：{manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected_hash = feature_hash(enabled_features(features_cfg))
+    if manifest.get("feature_hash") != expected_hash:
+        raise ValueError(
+            f"数据集 feature_hash 与当前注册表不一致：{manifest_path}；"
+            f"数据集 {manifest.get('feature_hash')}，当前 {expected_hash}（04 §3、05 §6.1）"
+        )
+    if list(manifest.get("features") or []) != feature_names:
+        raise ValueError(f"数据集特征列表与当前注册表不一致：{manifest_path}")
+    window = manifest.get("window") or {}
+    window_start = int(window.get("start_ms", 0))
+    window_end = int(window.get("end_ms", 0))
+    if window_start > start_ms or window_end < end_ms:
+        raise ValueError(
+            f"数据集覆盖区间 [{window_start}, {window_end}) 不包含所需区间 "
+            f"[{start_ms}, {end_ms})：{manifest_path}（05 §6.1）"
+        )
+    frames: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for alias in aliases:
+        path = features_dir / f"{alias}.parquet"
+        if not path.is_file():
+            raise ValueError(f"数据集缺少币 {alias} 的特征文件：{path}（05 §6.1）")
+        frame = pd.read_parquet(path, columns=["open_time", *feature_names])
+        times = frame["open_time"].to_numpy(dtype="int64")
+        if times.size > 1 and not bool(np.all(np.diff(times) > 0)):
+            raise ValueError(f"数据集 open_time 非严格递增：{path}")
+        frames[alias] = (times, frame[feature_names].to_numpy(dtype="float16"))
+    if not frames:
+        raise ValueError(f"数据集目录内没有特征 parquet：{features_dir}")
+    return frames
+
+
+def _align_disk_features(
+    frames: dict[str, tuple[np.ndarray, np.ndarray]],
+    alias: str,
+    open_time: np.ndarray,
+) -> np.ndarray:
+    """把落盘特征按 bars 的 `open_time` 对齐，返回 fp16 特征矩阵（05 §6.1）。"""
+    entry = frames.get(alias)
+    if entry is None:
+        raise ValueError(f"数据集缺少币 {alias} 的特征 parquet，无法复用落盘特征（05 §6.1）")
+    dataset_time, values = entry
+    pos = np.searchsorted(dataset_time, open_time)
+    matched = pos < dataset_time.size
+    if matched.any():
+        matched[matched] = dataset_time[pos[matched]] == open_time[matched]
+    if not bool(matched.all()):
+        raise ValueError(
+            f"数据集特征缺少 {alias} 的 {int((~matched).sum())} 个分钟（open_time 对不上），"
+            f"无法复用落盘特征（05 §6.1）"
+        )
+    aligned = values[pos]
+    if not np.isfinite(aligned.astype("float32")).all():
+        raise ValueError(f"落盘特征在调参期存在非有限值：{alias}（05 §6.1）")
+    return aligned
+
+
 def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     """加载配置与调参期 M1~M12 行情，逐币算特征与预过滤样本（05 §6.1）。"""
     base_cfg = load_config(BaseConfig, _resolve(root, args.base))
@@ -232,16 +318,31 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     wb = window_bounds(base_cfg)
     membership = load_universe_membership(data_root, months)
     delay = universe_cfg.rule.new_entry_delay_days
-    btc_bars = load_bars(
-        data_root,
-        universe_cfg.btc_context,
-        wb.start_ms,
-        tuning_end_ms,
-        holdout_start_ms=wb.holdout_start_ms,
-        allow_holdout=False,
-    )
     features = enabled_features(features_cfg)
     feature_names = [f.name for f in features]
+    disk_features: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
+    if args.features_dir is not None:
+        disk_features = _load_disk_features(
+            _resolve(root, str(args.features_dir)),
+            features_cfg,
+            feature_names,
+            [coin.alias for coin in coins],
+            wb.start_ms,
+            tuning_end_ms,
+        )
+    # 复用落盘特征时不需要 BTC 上下文（只用于 compute_features）。
+    btc_bars = (
+        None
+        if disk_features is not None
+        else load_bars(
+            data_root,
+            universe_cfg.btc_context,
+            wb.start_ms,
+            tuning_end_ms,
+            holdout_start_ms=wb.holdout_start_ms,
+            allow_holdout=False,
+        )
+    )
 
     per_coin: dict[str, CoinData] = {}
     bars_mtm: dict[str, pd.DataFrame] = {}
@@ -256,7 +357,14 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             allow_holdout=False,
         )
         seg = segment_ids(bars["open_time"].to_numpy(dtype="int64"))
-        feat_df = compute_features(bars, btc_bars, features, features_cfg, seg)
+        times = bars["open_time"].to_numpy(dtype="int64")
+        if disk_features is not None:
+            x = _align_disk_features(disk_features, alias, times)
+        else:
+            if btc_bars is None:  # pragma: no cover - 防御性检查（红线 13）
+                raise ValueError("缺少 BTC 上下文但需要现场计算特征（05 §6.1）")
+            feat_df = compute_features(bars, btc_bars, features, features_cfg, seg)
+            x = feat_df[feature_names].to_numpy(dtype="float16")
         sample = is_sample_mask(
             bars,
             features_cfg.prefilter.vol_z_60,
@@ -265,19 +373,13 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             features_cfg.warmup_bars,
             seg,
         )
-        trade_mask = universe_trade_mask(
-            bars["open_time"].to_numpy(dtype="int64"),
-            coin.symbol,
-            membership,
-            delay,
-        )
+        trade_mask = universe_trade_mask(times, coin.symbol, membership, delay)
         sample = sample & trade_mask
-        times = bars["open_time"].to_numpy(dtype="int64")
         per_coin[alias] = CoinData(
             symbol=coin.symbol,
             bars=bars,
             segments=seg,
-            x=feat_df[feature_names].to_numpy(dtype="float16"),
+            x=x,
             open_time=times,
             sample_positions=np.nonzero(sample)[0],
         )
@@ -369,15 +471,7 @@ def _build_samples(
         w_parts.append(weights)
         ot = labels_df["open_time"].to_numpy(dtype="int64")
         ot_parts.append(ot)
-        m_parts.append(
-            np.array(
-                [
-                    month_index(int(t), data.base_cfg.data_window.end_month, len(data.months)) or 0
-                    for t in ot
-                ],
-                dtype="int64",
-            )
-        )
+        m_parts.append(month_index_array(ot, data.base_cfg.data_window.end_month, len(data.months)))
         sym_parts.append(np.full(n, alias, dtype=object))
     if not x_parts:
         return None
@@ -906,6 +1000,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exits", default="configs/exits.yaml")
     parser.add_argument("--sizing", default="configs/sizing.yaml")
     parser.add_argument("--backtest", default="configs/backtest.yaml")
+    parser.add_argument(
+        "--features-dir",
+        type=Path,
+        default=None,
+        help="已构建数据集目录（data/features/{run_id}），直接读取落盘 fp16 特征（05 §6.1）",
+    )
     parser.add_argument("--limit", type=int, default=None, help="只处理前 N 个币（冒烟用）")
     parser.add_argument("--groups", type=int, default=6, help="跑前 N 组出场参数")
     parser.add_argument("--checkup", action="store_true", help="只跑组 N 体检（不参与选择）")

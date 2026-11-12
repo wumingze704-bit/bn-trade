@@ -12,6 +12,7 @@ from trade.features.normalize import (
     EwmState,
     alpha_from_halflife,
     ewm_standardize,
+    ewm_standardize_py,
     ewm_step,
     sanitize,
 )
@@ -43,3 +44,16 @@ def test_ewm_standardize_no_future_information() -> None:
 def test_sanitize_replaces_nonfinite() -> None:
     out = sanitize(np.array([1.0, np.nan, np.inf, -np.inf, 2.0]))
     assert out.tolist() == [1.0, 0.0, 0.0, 0.0, 2.0]
+
+
+def test_ewm_numba与python参考实现逐元素完全相等() -> None:
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=200_000) * 3.0
+    x[50:120] = 1.25  # 常数段
+    x[200:260] = np.nan  # 缺失段（sanitize 后为 0）
+    x[300] = np.inf
+    x[1000:2000] *= 100.0  # 触发裁剪
+    cleaned = sanitize(x)
+    got = ewm_standardize(cleaned, halflife_bars=4320, clip=5.0, min_var=1e-12)
+    want = ewm_standardize_py(cleaned, halflife_bars=4320, clip=5.0, min_var=1e-12)
+    np.testing.assert_array_equal(got, want)
