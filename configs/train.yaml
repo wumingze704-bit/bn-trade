@@ -37,7 +37,7 @@ model:
 
 walk_forward: # 03 §6、05 §6
   window: expanding # expanding | rolling_12m
-  purge_bars: 60 # 边界 Purge：删除训练集末尾 H_label 根
+  purge_bars: 121 # 边界 Purge 下限：删除 t_exit 落入验证段的训练样本（≥ H_max + 1）
   embargo_days: 1 # 边界 Embargo：再删下一段开头 1 天
   fold_train_start: "2024-10" # M1
   max_folds: 5

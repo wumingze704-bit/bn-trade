@@ -47,6 +47,7 @@ def _make_coin(root: Path, alias: str, feature_names: list[str], seed: int) -> N
             "y": y,
             "r_mult": np.where(y == 1, 1.0, -1.0),
             "weight": 1.0,
+            "t_exit": open_time + 60_000,
         }
     ).to_parquet(labels_dir / f"{alias}.parquet", index=False)
 

@@ -25,6 +25,7 @@ class Sample:
     r_mult: float
     w: float
     open_time: int = 0
+    t_exit: int = 0
 
 
 def month_start_ms(month: str) -> int:
@@ -127,7 +128,7 @@ class WindowDataset:
 
             lab = pd.read_parquet(
                 labels_dir / f"{symbol}.parquet",
-                columns=["open_time", "y", "r_mult", "weight"],
+                columns=["open_time", "y", "r_mult", "weight", "t_exit"],
             )
             row_of = {int(t): i for i, t in enumerate(open_time)}
             # 数据段边界：相邻 open_time 间隔 > 1 分钟（03 §6），窗口不得跨段。
@@ -135,8 +136,13 @@ class WindowDataset:
             boundary[1:] = np.diff(open_time) > 60_000
 
             count = 0
-            for open_t, y, r_mult, w in zip(
-                lab["open_time"], lab["y"], lab["r_mult"], lab["weight"], strict=True
+            for open_t, y, r_mult, w, t_exit in zip(
+                lab["open_time"],
+                lab["y"],
+                lab["r_mult"],
+                lab["weight"],
+                lab["t_exit"],
+                strict=True,
             ):
                 if self.months is not None and _month_key(int(open_t)) not in self.months:
                     continue
@@ -150,7 +156,17 @@ class WindowDataset:
                     continue  # 窗口跨数据段
                 if filled[start : row_idx + 1].mean() > max_fill_ratio:
                     continue  # 补齐分钟占比过高
-                raw.append(Sample(sym_id, row_idx, float(y), float(r_mult), float(w), int(open_t)))
+                raw.append(
+                    Sample(
+                        sym_id,
+                        row_idx,
+                        float(y),
+                        float(r_mult),
+                        float(w),
+                        int(open_t),
+                        int(t_exit),
+                    )
+                )
                 count += 1
             per_sym.append(count)
 
@@ -163,13 +179,22 @@ class WindowDataset:
         if not raw:
             return []
         balanced = [
-            Sample(s.sym_id, s.row_idx, s.y, s.r_mult, s.w / max(per_sym[s.sym_id], 1), s.open_time)
+            Sample(
+                s.sym_id,
+                s.row_idx,
+                s.y,
+                s.r_mult,
+                s.w / max(per_sym[s.sym_id], 1),
+                s.open_time,
+                s.t_exit,
+            )
             for s in raw
         ]
         total = sum(s.w for s in balanced)
         scale = len(balanced) / total if total > 0 else 1.0
         return [
-            Sample(s.sym_id, s.row_idx, s.y, s.r_mult, s.w * scale, s.open_time) for s in balanced
+            Sample(s.sym_id, s.row_idx, s.y, s.r_mult, s.w * scale, s.open_time, s.t_exit)
+            for s in balanced
         ]
 
     def __len__(self) -> int:

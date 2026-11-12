@@ -48,6 +48,7 @@ def _make_coin(
             "y": np.array([1, 0, 1, 0, 1]),
             "r_mult": np.array([1.0, -0.5, 0.5, -1.0, 0.2]),
             "weight": np.ones(5),
+            "t_exit": open_time[-5:] + 60_000,
         }
     )
     lab.to_parquet(labels_dir / f"{alias}.parquet", index=False)
@@ -163,6 +164,7 @@ def _make_two_month_coin(data_root, alias: str = "C01") -> None:
             "y": [0, 1],
             "r_mult": [0.0, 1.0],
             "weight": [1.0, 1.0],
+            "t_exit": [times[99] + 60_000, times[-1] + 60_000],
         }
     )
     lab.to_parquet(labels_dir / f"{alias}.parquet", index=False)

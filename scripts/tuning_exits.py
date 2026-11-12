@@ -208,6 +208,7 @@ class SampleSet:
     m: np.ndarray
     open_time: np.ndarray
     symbol: np.ndarray
+    t_exit: np.ndarray
 
 
 def _load_disk_features(
@@ -444,6 +445,7 @@ def _build_samples(
     w_parts: list[np.ndarray] = []
     m_parts: list[np.ndarray] = []
     ot_parts: list[np.ndarray] = []
+    tx_parts: list[np.ndarray] = []
     sym_parts: list[np.ndarray] = []
     label_cfg = data.features_cfg.label
     for alias, info in data.per_coin.items():
@@ -477,6 +479,7 @@ def _build_samples(
         w_parts.append(weights)
         ot = labels_df["open_time"].to_numpy(dtype="int64")
         ot_parts.append(ot)
+        tx_parts.append(labels_df["t_exit"].to_numpy(dtype="int64"))
         m_parts.append(month_index_array(ot, data.base_cfg.data_window.end_month, len(data.months)))
         sym_parts.append(np.full(n, alias, dtype=object))
     if not x_parts:
@@ -490,10 +493,10 @@ def _build_samples(
         if n_total > _MAX_SAMPLES
         else None
     )
-    xl, yl, wl, ml, ol, sl2 = [], [], [], [], [], []
+    xl, yl, wl, ml, ol, sl2, txl = [], [], [], [], [], [], []
     offset = 0
-    for xp, yp, wp, mp, otp, sp in zip(
-        x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts, strict=True
+    for xp, yp, wp, mp, otp, sp, txp in zip(
+        x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts, tx_parts, strict=True
     ):
         n = len(yp)
         local = (
@@ -505,6 +508,7 @@ def _build_samples(
         ml.append(mp[local])
         ol.append(otp[local])
         sl2.append(sp[local])
+        txl.append(txp[local])
         offset += n
     return SampleSet(
         x=np.concatenate(xl),
@@ -513,14 +517,19 @@ def _build_samples(
         m=np.concatenate(ml),
         open_time=np.concatenate(ol),
         symbol=np.concatenate(sl2),
+        t_exit=np.concatenate(txl),
     )
 
 
 def _train_and_predict(
     data: TuningData, samples: SampleSet
 ) -> tuple[lgb.Booster, pd.DataFrame, int, int]:
-    """训练 M0（训练 M1~M9）并在验证段 M10~M12 输出信号（05 §6、§7.2）。"""
-    train_mask = (samples.m >= 1) & (samples.m <= 9)
+    """训练 M0（训练 M1~M9）并在验证段 M10~M12 输出信号（05 §6、§7.2）。
+
+    Purge 按样本自身的 `t_exit`：`t_exit` 落入验证段起点（M10 起点）的 M1~M9
+    样本从训练集删除（03 §6）。
+    """
+    train_mask = (samples.m >= 1) & (samples.m <= 9) & (samples.t_exit < data.val_start_ms)
     val_mask = (samples.m >= 10) & (samples.m <= 12)
     if train_mask.sum() == 0 or val_mask.sum() == 0:
         raise ValueError("训练/验证样本为空，无法训练 M0（05 §6.1）")

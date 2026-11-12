@@ -101,6 +101,27 @@ def build_folds(
     return folds
 
 
+def require_purge_floor(purge_bars: int, *, label_mode: str, h_max: int, h_label: int) -> None:
+    """校验 `purge_bars` 不小于标签最长持仓（03 §6、05 §5.1）。
+
+    Args:
+        purge_bars: `train.yaml` 的 Purge 根数（下限）。
+        label_mode: `exit_sim` 或 `triple_barrier`。
+        h_max: `exits.yaml` 的最长持仓根数。
+        h_label: `features.yaml` 的时间障碍根数。
+
+    Raises:
+        ValueError: `purge_bars` 小于下限（`exit_sim` 取 `H_max + 1`，
+            `triple_barrier` 取 `H_label + 1`）。
+    """
+    floor = h_max + 1 if label_mode == "exit_sim" else h_label + 1
+    if purge_bars < floor:
+        raise ValueError(
+            f"purge_bars={purge_bars} 小于标签最长持仓 {floor}"
+            f"（label.mode={label_mode}，h_max={h_max}，h_label={h_label}；03 §6）"
+        )
+
+
 def apply_purge_embargo(
     train_ds: WindowDataset,
     val_ds: WindowDataset,
@@ -108,19 +129,42 @@ def apply_purge_embargo(
     boundary_ms: int,
     purge_bars: int,
     embargo_days: int,
+    next_boundary_ms: int | None = None,
 ) -> tuple[WindowDataset, WindowDataset]:
     """在训练/验证边界执行 Purge 与 Embargo（03 §6）。
 
-    Purge：删除训练集末尾 `purge_bars` 根内的样本（标签窗口会延伸进验证段）。
+    Purge：删除 `t_exit >= boundary_ms` 的训练样本，并保留 `purge_bars` 作为下限
+    （`open_time` 须早于 `boundary_ms - purge_bars × 60s`）。
     Embargo：删除验证段开头 `embargo_days` 天的样本（避免与训练段标签重叠）。
+    给出 `next_boundary_ms` 时，验证样本中 `t_exit` 落入下一段（测试月）的也被删除。
+
+    Args:
+        train_ds: 训练段数据集。
+        val_ds: 验证段数据集。
+        boundary_ms: 训练/验证边界（验证段起点，毫秒）。
+        purge_bars: Purge 下限根数。
+        embargo_days: 验证段开头屏蔽天数。
+        next_boundary_ms: 验证/测试边界（毫秒）；None 表示不裁剪验证段尾部。
+
+    Returns:
+        (裁剪后的训练集, 裁剪后的验证集)。
     """
     purge_ms = purge_bars * 60_000
     train_mask = np.asarray(
-        [sample.open_time <= boundary_ms - purge_ms for sample in train_ds.samples], dtype=bool
+        [
+            sample.open_time <= boundary_ms - purge_ms and sample.t_exit < boundary_ms
+            for sample in train_ds.samples
+        ],
+        dtype=bool,
     )
     embargo_until = boundary_ms + embargo_days * 86_400_000
     val_mask = np.asarray(
-        [sample.open_time >= embargo_until for sample in val_ds.samples], dtype=bool
+        [
+            sample.open_time >= embargo_until
+            and (next_boundary_ms is None or sample.t_exit < next_boundary_ms)
+            for sample in val_ds.samples
+        ],
+        dtype=bool,
     )
     return train_ds.select(train_mask), val_ds.select(val_mask)
 
@@ -223,12 +267,19 @@ def run_fold(
         months=[fold.val_month],
         data_placement=cfg.data_placement,
     )
+    require_purge_floor(
+        walk_cfg.purge_bars,
+        label_mode=features_cfg.label.mode,
+        h_max=int(exit_cfg.H_max),
+        h_label=int(features_cfg.label.H_label),
+    )
     train_ds, val_ds = apply_purge_embargo(
         train_ds,
         val_ds,
         boundary_ms=month_start_ms(fold.val_month),
         purge_bars=walk_cfg.purge_bars,
         embargo_days=walk_cfg.embargo_days,
+        next_boundary_ms=(month_start_ms(fold.test_months[0]) if fold.test_months else None),
     )
     short_hash = feature_hash(enabled_features(features_cfg))
     model_id = f"{make_model_id(cfg.arch, short_hash)}_{fold.fold_id}"
@@ -383,6 +434,12 @@ def run_final(
         window_L=cfg.window_L,
         months=[val_month],
         data_placement=cfg.data_placement,
+    )
+    require_purge_floor(
+        walk_cfg.purge_bars,
+        label_mode=features_cfg.label.mode,
+        h_max=int(exit_cfg.H_max),
+        h_label=int(features_cfg.label.H_label),
     )
     train_ds, val_ds = apply_purge_embargo(
         train_ds,

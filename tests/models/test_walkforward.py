@@ -18,7 +18,12 @@ from trade.features import enabled_features
 from trade.features.registry import FeaturesConfig
 from trade.models.config import ModelConfig, WalkForwardConfig
 from trade.models.dataset import Sample, WindowDataset, month_start_ms
-from trade.models.walkforward import apply_purge_embargo, build_folds, run_fold
+from trade.models.walkforward import (
+    apply_purge_embargo,
+    build_folds,
+    require_purge_floor,
+    run_fold,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _MONTHS = [
@@ -153,6 +158,7 @@ def _make_month_coin(root: Path, alias: str, months: list[str], feature_names: l
                     "y": y,
                     "r_mult": np.where(y == 1, 1.0, -1.0),
                     "weight": 1.0,
+                    "t_exit": np.asarray(times, dtype="int64") + 60_000,
                 }
             )
         )
@@ -220,7 +226,7 @@ def test_run_fold_smoke(wf_fixture: dict[str, object]) -> None:
         train_symbols=["C01", "C02"],
         all_symbols=["C01", "C02", "C03"],
         cfg=cfg,
-        walk_cfg=WalkForwardConfig(purge_bars=5, embargo_days=1),
+        walk_cfg=WalkForwardConfig(purge_bars=121, embargo_days=1),
         threshold_evaluator=evaluator,
         features_cfg=wf_fixture["features_cfg"],  # type: ignore[arg-type]
         exit_cfg=wf_fixture["exits_cfg"],  # type: ignore[arg-type]
@@ -239,3 +245,56 @@ def test_run_fold_smoke(wf_fixture: dict[str, object]) -> None:
     assert set(signals["symbol"]) == {"C01", "C02", "C03"}
     assert result.threshold == pytest.approx(0.30)
     assert 0.0 <= result.val_pr_auc <= 1.0
+
+
+class _StubDataset:
+    """只实现 `apply_purge_embargo` 需要的 `samples` 与 `select`。"""
+
+    def __init__(self, samples: list[Sample]) -> None:
+        self.samples = samples
+
+    def select(self, mask: np.ndarray) -> _StubDataset:
+        return _StubDataset([s for s, keep in zip(self.samples, mask, strict=True) if keep])
+
+
+def test_按t_exit做Purge() -> None:
+    """t_exit 跨边界的训练样本被删除，t_exit 在边界前的保留（03 §6）。"""
+    boundary = 1_000 * 60_000
+    purge_ms = 121 * 60_000
+    keep = Sample(0, 0, 1.0, 1.0, 1.0, boundary - purge_ms - 60_000, boundary - 60_000)
+    cross = Sample(0, 1, 1.0, 1.0, 1.0, boundary - purge_ms - 90 * 60_000, boundary + 30 * 60_000)
+    too_late = Sample(0, 2, 1.0, 1.0, 1.0, boundary - 60_000, boundary + 60_000)
+    train, val = apply_purge_embargo(
+        _StubDataset([keep, cross, too_late]),
+        _StubDataset([]),
+        boundary_ms=boundary,
+        purge_bars=121,
+        embargo_days=0,
+    )
+    assert [sample.row_idx for sample in train.samples] == [0]  # type: ignore[attr-defined]
+    assert val.samples == []  # type: ignore[attr-defined]
+
+
+def test_验证样本t_exit落入测试月时删除() -> None:
+    """验证样本 t_exit 进入测试月的从验证集删除（03 §6）。"""
+    boundary = 1_000 * 60_000
+    next_boundary = 2_000 * 60_000
+    inside = Sample(0, 0, 1.0, 1.0, 1.0, boundary + 10 * 60_000, boundary + 20 * 60_000)
+    leak = Sample(0, 1, 1.0, 1.0, 1.0, next_boundary - 30 * 60_000, next_boundary + 60_000)
+    _, val = apply_purge_embargo(
+        _StubDataset([]),
+        _StubDataset([inside, leak]),
+        boundary_ms=boundary,
+        purge_bars=121,
+        embargo_days=0,
+        next_boundary_ms=next_boundary,
+    )
+    assert [sample.row_idx for sample in val.samples] == [0]  # type: ignore[attr-defined]
+
+
+def test_purge_bars小于H_max时报错() -> None:
+    with pytest.raises(ValueError, match="purge_bars"):
+        require_purge_floor(60, label_mode="exit_sim", h_max=120, h_label=120)
+    with pytest.raises(ValueError, match="purge_bars"):
+        require_purge_floor(60, label_mode="triple_barrier", h_max=120, h_label=120)
+    require_purge_floor(121, label_mode="exit_sim", h_max=120, h_label=120)

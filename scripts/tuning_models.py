@@ -486,6 +486,21 @@ def run_grid(args: argparse.Namespace) -> int:
                 months=val_months,
                 data_placement=cfg.data_placement,
             )
+            from trade.models.walkforward import apply_purge_embargo, require_purge_floor
+
+            require_purge_floor(
+                train_cfg.walk_forward.purge_bars,
+                label_mode=features_cfg.label.mode,
+                h_max=int(exit_cfg.H_max),
+                h_label=int(features_cfg.label.H_label),
+            )
+            train_ds, val_ds = apply_purge_embargo(
+                train_ds,
+                val_ds,
+                boundary_ms=month_start_ms(val_months[0]),
+                purge_bars=train_cfg.walk_forward.purge_bars,
+                embargo_days=train_cfg.walk_forward.embargo_days,
+            )
             result = train_ensemble(train_ds, val_ds, cfg)
             # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1）。
             ensemble_logit = np.mean(

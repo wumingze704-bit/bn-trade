@@ -58,6 +58,7 @@ def _make_dataset(root: Path, alias: str, seed: int) -> None:
             "y": y,
             "r_mult": np.where(y == 1, 1.0, -1.0),
             "weight": np.ones(_ROWS),
+            "t_exit": open_time + 60_000,
         }
     )
     lab.to_parquet(labels_dir / f"{alias}.parquet", index=False)
