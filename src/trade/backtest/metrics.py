@@ -84,6 +84,7 @@ def compute_metrics(
         "avg_mae_r": float(np.mean(mae)) if mae else 0.0,
         "giveback_ratio": _giveback_ratio(trades),
         "max_drawdown": _portfolio_max_drawdown(result, trades, initial_equity, group),
+        **(monthly_return_stats(result.equity_curve, initial_equity) if group is None else {}),
         **{f"exit_{k}": float(v) for k, v in exit_dist.items()},
     }
 
@@ -293,3 +294,46 @@ def kurtosis(returns: pd.Series) -> float:
     if sigma <= 0.0:
         return 3.0
     return float(((values - values.mean()) ** 4).mean() / sigma**4)
+
+
+def monthly_returns(equity_curve: pd.DataFrame, initial_equity: float) -> pd.Series:
+    """UTC 自然月收益序列（08 §3 G2-U）。
+
+    每行取该月最后一个盯市权益；分母为上一月最后盯市权益，首月用 `initial_equity`。
+
+    Args:
+        equity_curve: 引擎输出，含 `ts_ms` 与 `equity` 列。
+        initial_equity: 初始权益（首月基准）。
+
+    Returns:
+        `YYYY-MM` -> 月收益率（比例，0.01 = 1%）。
+    """
+    if equity_curve is None or equity_curve.empty:
+        return pd.Series(dtype="float64")
+    frame = equity_curve.loc[:, ["ts_ms", "equity"]].drop_duplicates("ts_ms").sort_values("ts_ms")
+    months = pd.to_datetime(frame["ts_ms"], unit="ms", utc=True).dt.strftime("%Y-%m")
+    out: dict[str, float] = {}
+    prev = float(initial_equity)
+    for month, group in frame.groupby(months, sort=True):
+        end = float(group["equity"].iloc[-1])
+        out[str(month)] = end / prev - 1.0 if prev else 0.0
+        prev = end
+    return pd.Series(out, dtype="float64")
+
+
+def monthly_return_stats(equity_curve: pd.DataFrame, initial_equity: float) -> dict[str, float]:
+    """月收益统计：月数、月收益中位数、最差月、亏损月数（08 §3 G2-U）。"""
+    returns = monthly_returns(equity_curve, initial_equity)
+    if returns.empty:
+        return {
+            "months": 0.0,
+            "median_monthly_return": float("nan"),
+            "worst_monthly_return": float("nan"),
+            "losing_months": 0.0,
+        }
+    return {
+        "months": float(returns.size),
+        "median_monthly_return": float(returns.median()),
+        "worst_monthly_return": float(returns.min()),
+        "losing_months": float((returns < 0).sum()),
+    }

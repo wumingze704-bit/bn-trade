@@ -194,6 +194,7 @@ def write_report(
     sizing_sweep_frame: pd.DataFrame | None = None,
     signals_kind: str | None = None,
     model_id: str | None = None,
+    g2_user: dict[str, object] | None = None,
 ) -> None:
     """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。
 
@@ -235,11 +236,15 @@ def write_report(
         signals_kind=signals_kind,
         model_id=model_id,
     )
+    if g2_user is not None:
+        gate["g2_user"] = g2_user
     (report_dir / "gate.json").write_text(
         json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (report_dir / "report.md").write_text(
-        _render_report_md(run_id, source, summary, reference_metrics, sanity_results, s11),
+        _render_report_md(
+            run_id, source, summary, reference_metrics, sanity_results, s11, g2_user=g2_user
+        ),
         encoding="utf-8",
     )
     if sizing_sweep_frame is not None:
@@ -259,6 +264,7 @@ def _render_report_md(
     reference_metrics: dict[str, float],
     sanity_results: dict[str, str],
     s11: dict[str, float] | None = None,
+    g2_user: dict[str, object] | None = None,
 ) -> str:
     lines = [
         f"# 回测报告 {run_id}",
@@ -283,6 +289,16 @@ def _render_report_md(
         "avg_pnl_per_trade_rebated",
     ):
         lines.append(f"- {key}: {reference_metrics.get(key)}")
+    if g2_user is not None:
+        status = "通过" if g2_user.get("passed") else "未通过"
+        lines.append(
+            "- G2-U（user 运行）：月收益中位数 "
+            f"{float(g2_user['median_monthly_return']):.2%}、最差月 "
+            f"{float(g2_user['worst_monthly_return']):.2%}、亏损月数 "
+            f"{int(g2_user['losing_months'])}、最大回撤 "
+            f"{float(g2_user['max_drawdown']):.2%}、stress 净收益 "
+            f"{float(g2_user['stress_net_return_usdt']):.4f} → {status}"
+        )
     if s11 is not None:
         n_trials = int(s11["n_trials"])
         dsr = float(s11["dsr"])

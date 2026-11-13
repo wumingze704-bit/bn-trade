@@ -32,6 +32,7 @@ from trade.backtest.metrics import (
     daily_block_bootstrap_ci,
     daily_returns,
     kurtosis,
+    monthly_return_stats,
     sharpe,
     skew,
 )
@@ -344,6 +345,36 @@ def main(argv: list[str] | None = None) -> int:
     reference_result = run_results["reference"]["base"]
     reference_metrics = compute_metrics(reference_result, backtest_cfg.reference.initial_equity)
 
+    # G2-U（08 §3）：user 运行（实际仓位）的月度收益与回撤口径，只判定与展示，不替代 G2。
+    user_base = run_results["user"]["base"]
+    user_stats = monthly_return_stats(user_base.equity_curve, sizing_cfg.initial_equity)
+    user_dd = (
+        float(user_base.equity_curve["drawdown"].max()) if not user_base.equity_curve.empty else 0.0
+    )
+    user_stress = run_results["user"].get("stress")
+    stress_net = (
+        float(sum(t.net_pnl for t in user_stress.trades)) if user_stress is not None else 0.0
+    )
+    g2_user = {
+        **user_stats,
+        "max_drawdown": user_dd,
+        "stress_net_return_usdt": stress_net,
+        "thresholds": {
+            "median_monthly_return_gt": 0.0,
+            "max_drawdown_max": 0.20,
+            "losing_months_max": 4,
+            "worst_monthly_return_min": -0.12,
+            "stress_net_return_usdt_gt": 0.0,
+        },
+        "passed": bool(
+            user_stats["median_monthly_return"] > 0.0
+            and user_dd <= 0.20
+            and user_stats["losing_months"] <= 4
+            and user_stats["worst_monthly_return"] >= -0.12
+            and stress_net > 0.0
+        ),
+    }
+
     # 仓位比例敏感性扫描（06 §5.5）：每个比例都重跑完整组合模拟。
     sweep_frame = sizing_sweep(
         prepared,
@@ -562,6 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         sizing_sweep_frame=sweep_frame,
         signals_kind=signals_kind,
         model_id=model_id,
+        g2_user=g2_user,
     )
     if args.final:
         final_log = base.paths.artifact_root / "reports" / "FINAL_RUNS.log"
