@@ -2,7 +2,7 @@
 # 字段与 pydantic 模型 trade.common.sizing.SizingConfig 一一对应，未知字段报错。
 # 说明：回测与实盘共用 trade.common.sizing.calc_notional（06 §5）。
 
-initial_equity: 10 # 初始本金 USDT（user 运行）
+initial_equity: 100 # 初始本金 USDT（user 运行，由使用者设定）
 mode: fixed_fraction # fixed_fraction | fixed_risk（06 §5.2）
 position_frac: 0.20 # 每笔保证金 = 当前权益 × 20%
 leverage: 5

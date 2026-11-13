@@ -24,7 +24,7 @@ sanity: # 健全性检验开关（06 §7）
   bootstrap_seed: 42 # G2 bootstrap 种子
 
 reference: # reference 运行（06 §5.1，用于 G2/G3 闸门判定）
-  initial_equity: 10000.0
+  initial_equity: 100.0
   mode: fixed_risk
   risk_per_trade: 0.005
   base: initial
