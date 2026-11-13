@@ -384,7 +384,7 @@ def _load_data(args: argparse.Namespace, timing: Timing) -> BenchContext:
         exit_cfg=exit_cfg,
         sizing_cfg=sizing_cfg,
         reference_sizing=reference_sizing,
-        fees=FeeSchedule(base.fees.maker, base.fees.taker),
+        fees=FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate),
         coins=coins,
         months=months,
         start_ms=wb.start_ms,

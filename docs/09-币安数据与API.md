@@ -68,7 +68,7 @@
 - 价格取整：tick 取整必须消掉浮点尾差（`round(x/tick)*tick` 会产生 `77710.90000000001`，被拒 `-1111 Precision is over the maximum`），统一用 `trade.live.orders.floor_to_tick`。
 
 | `GET /fapi/v1/userTrades`                                                                                | 成交明细（对账、补记出场）                                                                                                                                        |
-| `GET /fapi/v1/income`                                                                                    | 资金费、手续费、已实现盈亏流水（日报核算、断线缺口补齐）                                                                                                          |
+| `GET /fapi/v1/income`                                                                                    | 资金费、手续费、已实现盈亏与代理返佣到账流水（日报核算、断线缺口补齐）                                                                                            |
 | `POST` / `PUT` / `DELETE /fapi/v1/listenKey`                                                             | 创建、续期、关闭用户数据流（07 §3.1）                                                                                                                             |
 
 `userTrades`、`allOrders` 单次查询的时间范围为最近 7 天（[币安公告](https://www.binance.com/es-LA/support/announcement/detail/6bc47f8b8a05445cb07b30454fec4084)），`income` 的查询窗口以最新文档为准，P5 用 `api_smoke.py` 核对。交易记录以状态库为准、永久保留（07 §6.1），这些接口只用于补齐断线缺口，必须在缺口发生后 7 天内执行。**看板不调用任何币安接口**（10 §1）。

@@ -52,11 +52,23 @@ def compute_metrics(
     mfe = [t.mfe_r for t in trades]
     mae = [t.mae_r for t in trades]
 
+    rebate_total = sum(t.rebate for t in trades)
+    net_pnl_rebated = net_pnl + rebate_total
+    wins_rebated = [t for t in trades if t.net_pnl + t.rebate > 0]
+    losses_rebated = [t for t in trades if t.net_pnl + t.rebate < 0]
+    profit_rebated = sum(t.net_pnl + t.rebate for t in wins_rebated)
+    loss_rebated = -sum(t.net_pnl + t.rebate for t in losses_rebated)
+
     return {
         "n_trades": float(n),
         "final_equity": final_equity,
         "net_return_usdt": net_pnl,
         "net_return_pct": net_pnl / initial_equity if initial_equity else 0.0,
+        "rebate_usdt": rebate_total,
+        "net_return_usdt_rebated": net_pnl_rebated,
+        "net_return_pct_rebated": net_pnl_rebated / initial_equity if initial_equity else 0.0,
+        "profit_factor_rebated": profit_rebated / loss_rebated if loss_rebated > 0 else math.inf,
+        "avg_pnl_per_trade_rebated": net_pnl_rebated / n if n else 0.0,
         "gross_pnl": gross_pnl,
         "fees": fees,
         "funding_fee": funding_fee,

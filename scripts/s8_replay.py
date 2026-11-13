@@ -149,7 +149,7 @@ def main() -> int:
     rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
     rules: dict[str, TradeRule] = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
     signals = pd.read_parquet(args.signals)
-    fees = FeeSchedule(base.fees.maker, base.fees.taker)
+    fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     scen = scenario("base")
     price_col = "p_1s" if scen.latency_ms == 1000 else "p_3s"
 

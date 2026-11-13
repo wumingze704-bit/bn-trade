@@ -130,7 +130,7 @@ def main() -> int:
         trade_masks[coin.alias] = trade_mask
     signals = pd.concat(signal_frames, ignore_index=True).sort_values(["open_time", "symbol"])
 
-    fees = FeeSchedule(base.fees.maker, base.fees.taker)
+    fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     reference_sizing = sizing_cfg.model_copy(
         update={
             "initial_equity": backtest_cfg.reference.initial_equity,

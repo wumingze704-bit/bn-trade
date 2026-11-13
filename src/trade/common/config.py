@@ -39,6 +39,8 @@ class FeeConfig(BaseModel):
 
     maker: float = Field(ge=0, le=0.1)
     taker: float = Field(ge=0, le=0.1)
+    # 上级代理返佣比例（06 §4.1）：只影响回测报告中的“含返佣”口径，不改变交易所费率
+    rebate_rate: float = Field(default=0.0, ge=0.0, le=0.5)
 
 
 class PathsConfig(BaseModel):

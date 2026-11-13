@@ -401,7 +401,7 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             f"{rules_path}（03 §4.6；不得静默排除缺规则的币）"
         )
     groups = {coin.alias: coin.role for coin in coins}
-    fees = FeeSchedule(base_cfg.fees.maker, base_cfg.fees.taker)
+    fees = FeeSchedule(base_cfg.fees.maker, base_cfg.fees.taker, base_cfg.fees.rebate_rate)
     # 每币 numpy 数组只准备一次（06 §3.4），各轮出场参数与 θ 复用同一份数组。
     prepared = prepare_symbols({alias: info.bars for alias, info in per_coin.items()})
     return TuningData(

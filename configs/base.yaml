@@ -9,6 +9,7 @@ data_window:
 fees:
   maker: 0.0002
   taker: 0.0005
+  rebate_rate: 0.40 # 上级代理返佣比例：只用于报告的“含返佣”口径，不改交易所费率（06 §4.1）
 display_tz: Asia/Shanghai
 paths:
   data_root: ./data

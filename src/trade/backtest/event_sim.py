@@ -178,6 +178,8 @@ def _event_combine(
                 continue
             funding_fee = sz.notional * tr.funding_rate_sum
             net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate) - funding_fee
+            entry_fee = sz.notional * fees.taker
+            exit_fee = sz.notional * tr.exit_fee_rate
             trade = ExecutedTrade(
                 symbol=tr.symbol,
                 group=tr.group,
@@ -198,11 +200,12 @@ def _event_combine(
                 stop_updates=tr.stop_updates,
                 mfe_r=tr.mfe_r,
                 mae_r=tr.mae_r,
-                entry_fee=sz.notional * fees.taker,
-                exit_fee=sz.notional * tr.exit_fee_rate,
+                entry_fee=entry_fee,
+                exit_fee=exit_fee,
                 funding_fee=funding_fee,
                 gross_pnl=sz.notional * tr.gross_return,
                 net_pnl=net_pnl,
+                rebate=(entry_fee + exit_fee) * fees.rebate_rate,
                 capped_by=sz.capped_by,
                 new_entry=tr.new_entry,
             )

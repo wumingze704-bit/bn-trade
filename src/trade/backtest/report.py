@@ -276,6 +276,11 @@ def _render_report_md(
         "n_trades",
         "win_rate",
         "funding_fee",
+        "rebate_usdt",
+        "net_return_usdt_rebated",
+        "net_return_pct_rebated",
+        "profit_factor_rebated",
+        "avg_pnl_per_trade_rebated",
     ):
         lines.append(f"- {key}: {reference_metrics.get(key)}")
     if s11 is not None:
@@ -292,8 +297,8 @@ def _render_report_md(
         "",
         "## 2. 各情景核心指标（reference / user）",
         "",
-        "| 情景 | 运行 | 净收益 USDT | 净收益率 | PF | 笔数 |",
-        "| :-- | :-- | :-- | :-- | :-- | :-- |",
+        "| 情景 | 运行 | 净收益 USDT | 净收益率 | PF | 笔数 | 含返佣净收益 USDT | 含返佣 PF |",
+        "| :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |",
     ]
     for scen, runs in summary.items():
         for run in sorted(runs):
@@ -301,7 +306,9 @@ def _render_report_md(
             lines.append(
                 f"| {scen} | {run} | {m.get('net_return_usdt', 0):.4f} "
                 f"| {m.get('net_return_pct', 0):.4%} | {m.get('profit_factor', 0):.3f} "
-                f"| {int(m.get('n_trades', 0))} |"
+                f"| {int(m.get('n_trades', 0))} "
+                f"| {m.get('net_return_usdt_rebated', 0):.4f} "
+                f"| {m.get('profit_factor_rebated', 0):.3f} |"
             )
     lines += ["", "## 3. 健全性检验（06 §7）", "", "| 编号 | 结果 |", "| :-- | :-- |"]
     for code, status in sanity_results.items():

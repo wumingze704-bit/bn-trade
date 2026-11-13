@@ -8,12 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # 纯函数移入 trade.common.costs（避免 trade.common → trade.backtest 循环导入），此处再导出
-from trade.common.costs import breakeven_slip, half_spread, slip
+from trade.common.costs import breakeven_slip, effective_fee, half_spread, slip
 
 __all__ = [
     "FeeSchedule",
     "Scenario",
     "breakeven_slip",
+    "effective_fee",
     "half_spread",
     "scenario",
     "slip",
@@ -22,10 +23,25 @@ __all__ = [
 
 @dataclass(frozen=True)
 class FeeSchedule:
-    """挂单/吃单费率（base.yaml，06 §4.1）。"""
+    """挂单/吃单费率（base.yaml，06 §4.1）。
+
+    `rebate_rate` 为上级代理返佣比例：返佣在成交之后另行到账，不计入交易所费率，
+    因此只用于报告中的“含返佣”口径（`taker_eff`/`maker_eff`）。
+    """
 
     maker: float
     taker: float
+    rebate_rate: float = 0.0
+
+    @property
+    def taker_eff(self) -> float:
+        """返佣后的吃单费率（06 §4.1）。"""
+        return effective_fee(self.taker, self.rebate_rate)
+
+    @property
+    def maker_eff(self) -> float:
+        """返佣后的挂单费率（06 §4.1）。"""
+        return effective_fee(self.maker, self.rebate_rate)
 
 
 @dataclass(frozen=True)

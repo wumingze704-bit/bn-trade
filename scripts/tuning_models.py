@@ -516,7 +516,11 @@ def run_grid(args: argparse.Namespace) -> int:
                 bars_by_symbol=bars_by_symbol,
                 rules=rules,
                 groups=groups,
-                fees=FeeSchedule(maker=base_cfg.fees.maker, taker=base_cfg.fees.taker),
+                fees=FeeSchedule(
+                    maker=base_cfg.fees.maker,
+                    taker=base_cfg.fees.taker,
+                    rebate_rate=base_cfg.fees.rebate_rate,
+                ),
                 backtest_cfg=backtest_cfg,
                 exit_cfg=exit_cfg,
                 sizing_cfg=sizing_cfg,

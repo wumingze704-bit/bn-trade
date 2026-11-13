@@ -5,8 +5,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+# 返佣到账的 incomeType（09 §3.2：以服务器上 GET /fapi/v1/income 的实际返回为准）
+REBATE_INCOME_TYPES = ("COMMISSION_REBATE", "FEE_RETURN")
+
+
+def sum_rebate_income(income_rows: Sequence[Mapping[str, Any]]) -> float:
+    """汇总返佣到账金额（07 §8.5）。
+
+    返佣只用于日报展示，**不参与仓位基准计算**（06 §5.1）。
+
+    Args:
+        income_rows: `GET /fapi/v1/income` 的当日流水，元素含 `incomeType` 与 `income`。
+
+    Returns:
+        返佣合计（USDT）。
+    """
+    total = 0.0
+    for row in income_rows:
+        if str(row.get("incomeType", "")) in REBATE_INCOME_TYPES:
+            total += float(row.get("income", 0.0))
+    return total
 
 
 @dataclass(frozen=True)

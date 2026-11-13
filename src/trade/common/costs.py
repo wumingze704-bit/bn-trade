@@ -13,6 +13,19 @@ from collections.abc import Callable
 _EPS = 1e-12
 
 
+def effective_fee(rate: float, rebate_rate: float) -> float:
+    """返佣后的实际费率（06 §4.1）：`rate × (1 − rebate_rate)`。
+
+    Args:
+        rate: 交易所名义费率（吃单或挂单）。
+        rebate_rate: 上级代理返佣比例（0.0 = 无返佣）。
+
+    Returns:
+        计入返佣后的实际费率。
+    """
+    return rate * (1.0 - rebate_rate)
+
+
 def half_spread(tick_rel: float, half_spread_min: float) -> float:
     """半价差 = max(0.5 × tick_rel, half_spread_min)（06 §3.2）。"""
     return max(0.5 * tick_rel, half_spread_min)

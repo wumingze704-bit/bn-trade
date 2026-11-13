@@ -267,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     ne_symbols = new_entry_symbols(membership, base.data_window.tuning_months)
     new_entry_aliases = {coin.alias for coin in coins if coin.symbol in ne_symbols}
 
-    fees = FeeSchedule(base.fees.maker, base.fees.taker)
+    fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     # reference 运行权益/口径来自配置（06 §5.1），user 运行按 sizing.yaml（06 §5.4）。
     reference_sizing = sizing_cfg.model_copy(
         update={

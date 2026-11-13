@@ -102,3 +102,16 @@ def test_reconcile_fills_six_differences() -> None:
     assert [t["id"] for t in result.missing_fills] == [2]
     assert [i["tranId"] for i in result.missing_income] == [11]
     assert result.cancelled_client_ids == ["trd-B"]
+
+
+def test_返佣流水只统计返佣类型() -> None:
+    from trade.live.reconcile import sum_rebate_income
+
+    rows = [
+        {"incomeType": "COMMISSION_REBATE", "income": "0.12"},
+        {"incomeType": "FUNDING_FEE", "income": "-0.30"},
+        {"incomeType": "FEE_RETURN", "income": "0.03"},
+        {"incomeType": "REALIZED_PNL", "income": "1.00"},
+    ]
+    assert sum_rebate_income(rows) == 0.15
+    assert sum_rebate_income([]) == 0.0
