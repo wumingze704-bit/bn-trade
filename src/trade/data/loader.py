@@ -54,7 +54,13 @@ ATOMIC_COLUMNS = (
 )
 
 # 必需列（特征 + 标签所需）；metrics/funding 为可选列（03 §2.3）
-REQUIRED_BAR_COLUMNS = (*KLINE_COLUMNS, *ATOMIC_COLUMNS, "is_filled")
+REQUIRED_BAR_COLUMNS = (
+    *KLINE_COLUMNS,
+    *ATOMIC_COLUMNS,
+    "is_filled",
+    "kline_missing",
+    "aggtrades_missing",
+)
 OPTIONAL_BAR_COLUMNS = ("oi", "funding_rate", "funding_time")
 
 # 一天毫秒数（用于从数据窗口推导预热起点，03 §6）

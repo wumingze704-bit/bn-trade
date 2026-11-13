@@ -39,6 +39,8 @@ def _bars(n: int = 300, *, rise_after: int = 20) -> pd.DataFrame:
             "volume": 1000.0,
             "quote_volume": 100_000.0,
             "is_filled": 0,
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
             "p_1s": close,
             "hi_post_1s": high,
             "lo_post_1s": low,

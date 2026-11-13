@@ -57,6 +57,8 @@ def _bars() -> pd.DataFrame:
             "hi_post_3s": high,
             "lo_post_3s": low,
             "is_filled": 0,
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
     return frame

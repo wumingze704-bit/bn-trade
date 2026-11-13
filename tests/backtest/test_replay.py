@@ -49,6 +49,8 @@ def _bars(
             entry_price_col: np.array(p_1s, dtype="float64"),
             "close": np.array(close, dtype="float64"),
             "is_filled": np.array(filled or [0] * len(p_1s), dtype="int64"),
+            "kline_missing": np.array(filled or [0] * len(p_1s), dtype="int64"),
+            "aggtrades_missing": 0,
         }
     )
     return BarsArrays.from_frame(frame, entry_price_col)
@@ -230,6 +232,7 @@ def test_逐笔级不比K线级乐观():
         hi_post,
         lo_post,
         is_filled,
+        np.zeros_like(is_filled),
         t_entry=1,
         p_fill=100.0,
         sl=0.01,
@@ -428,6 +431,8 @@ def _write_s8_fixture(tmp_path):
             "taker_buy_volume": np.full(n, 5.0),
             "taker_buy_quote_volume": np.full(n, 500.0),
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
     for column in ATOMIC_COLUMNS:

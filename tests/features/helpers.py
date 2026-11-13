@@ -74,6 +74,8 @@ def make_bars(
             "hi_post_3s": high,
             "lo_post_3s": low,
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": np.zeros(n, dtype="int64"),
+            "aggtrades_missing": np.zeros(n, dtype="int64"),
         }
     )
     if with_futures:

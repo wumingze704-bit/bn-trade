@@ -107,7 +107,8 @@ class ExitResult:
     mfe_r: float  # 最大有利波动（R）
     mae_r: float  # 最大不利波动（R）
     bars_held: int  # 持有根数（= exit_idx - t）
-    data_gaps: int  # 持仓期补齐分钟数
+    data_gaps: int  # 持仓期 K 线缺失分钟数
+    entry_bar_post_missing: int  # 入场 K 线只缺逐笔、改用 K 线高低点（0/1）
     fee_rate: float  # 出场适用费率（吃单/挂单）
 
 
@@ -321,7 +322,8 @@ def _exit_machine_nb(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     t_entry: int,
     stop: float,
     cap: float,
@@ -344,7 +346,7 @@ def _exit_machine_nb(
     half_spread: float,
     fee_taker: float,
     fee_maker: float,
-) -> tuple[int, float, int, int, float, float, int, int, float]:
+) -> tuple[int, float, int, int, float, float, int, int, float, int]:
     """numba 版逐笔出场状态机（06 §3.3）：锚点由调用方算好，本函数只推进状态。"""
     n = open_.shape[0]
     R = r_dist
@@ -353,8 +355,10 @@ def _exit_machine_nb(
     min_lo = np.inf
     phase = _EXIT_INITIAL_STOP
     made_progress = False
+    stall_checked = False
     stop_updates = 0
     data_gaps = 0
+    entry_bar_post_missing = 0
     if min_move < tick_size:  # 锚点已取 max(1 tick, min_stop_move_r × R)，此处仅防御（06 §3.3）
         min_move = tick_size
 
@@ -373,14 +377,20 @@ def _exit_machine_nb(
             fee_rate = fee_taker
             exited = True
             break
-        if is_filled[j] == 1:
-            # 补齐分钟不判定（06 §3.3），但时间仍在推进
+        if kline_missing[j] == 1:
+            # K 线缺失：无价格信息，不判定（06 §3.3），但时间仍在推进
             data_gaps += 1
             j += 1
             continue
         if j == t_entry:
-            lo = lo_post[j]
-            hi = hi_post[j]
+            if aggtrades_missing[j] == 1:
+                # 入场 K 线只缺逐笔：hi_post/lo_post 不可用，改用 K 线高低点（06 §3.3）
+                lo = low[j]
+                hi = high[j]
+                entry_bar_post_missing = 1
+            else:
+                lo = lo_post[j]
+                hi = hi_post[j]
         else:
             lo = low[j]
             hi = high[j]
@@ -430,12 +440,14 @@ def _exit_machine_nb(
         )
         stop_updates += updates
         made_progress = made_progress or progress_now
-        if mode == _MODE_TRAIL and j - t_entry + 1 == stall_bars and not made_progress:
-            exit_idx = j + 1
-            exit_type = _EXIT_STALL
-            fee_rate = fee_taker
-            exited = True
-            break
+        if mode == _MODE_TRAIL and not stall_checked and j - t_entry + 1 >= stall_bars:
+            stall_checked = True
+            if not made_progress:
+                exit_idx = j + 1
+                exit_type = _EXIT_STALL
+                fee_rate = fee_taker
+                exited = True
+                break
         j += 1
 
     if not exited:
@@ -467,6 +479,7 @@ def _exit_machine_nb(
         bars_held,
         data_gaps,
         fee_rate,
+        entry_bar_post_missing,
     )
 
 
@@ -479,7 +492,8 @@ def _simulate_exit_nb(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     t_entry: int,
     p_fill: float,
     sl: float,
@@ -502,7 +516,7 @@ def _simulate_exit_nb(
     half_spread: float,
     fee_taker: float,
     fee_maker: float,
-) -> tuple[int, float, int, int, float, float, int, int, float]:
+) -> tuple[int, float, int, int, float, float, int, int, float, int]:
     """numba 版单笔出场：先按锚点算 D0/cap，再推进状态机（06 §3.3）。"""
     stop, cap, r_dist, min_move = trade_anchors_nb(
         p_fill, sl, tick_size, mode, rr, tp_cap_r, min_stop_move_r
@@ -515,7 +529,8 @@ def _simulate_exit_nb(
         p_entry,
         hi_post,
         lo_post,
-        is_filled,
+        kline_missing,
+        aggtrades_missing,
         t_entry,
         stop,
         cap,
@@ -549,7 +564,8 @@ def simulate_exit(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     *,
     t_entry: int,
     p_fill: float,
@@ -573,7 +589,8 @@ def simulate_exit(
         open_/high/low/close: 该币分钟 K 线数组。
         p_entry: 每根 K 线的入场参考价（p_1s 或 p_3s）。
         hi_post/lo_post: 每根 K 线开盘延迟后的最高/最低价。
-        is_filled: 补齐分钟标记（1=补齐，不判定）。
+        kline_missing: K 线缺失标记（1=缺失，不判定）。
+        aggtrades_missing: 逐笔缺失标记（1=只缺逐笔，仍用 K 线高低点判定）。
         t_entry: 入场 K 线位置（= 信号 t + 1）。
         p_fill: 开仓成交价（已含点差与入场滑点）。
         sl: 止损幅度（比例）。
@@ -599,7 +616,8 @@ def simulate_exit(
         p_entry,
         hi_post,
         lo_post,
-        is_filled,
+        kline_missing,
+        aggtrades_missing,
         t_entry,
         p_fill,
         sl,
@@ -634,6 +652,7 @@ def simulate_exit(
         bars_held,
         data_gaps,
         fee_rate,
+        entry_bar_post_missing,
     ) = result
     code = int(exit_type)
     return ExitResult(
@@ -646,6 +665,7 @@ def simulate_exit(
         mae_r=float(mae_r),
         bars_held=int(bars_held),
         data_gaps=int(data_gaps),
+        entry_bar_post_missing=int(entry_bar_post_missing),
         fee_rate=float(fee_rate),
     )
 
@@ -662,6 +682,7 @@ class ExitBatch:
     mae_r: npt.NDArray[np.float64]
     bars_held: npt.NDArray[np.int64]
     data_gaps: npt.NDArray[np.int64]
+    entry_bar_post_missing: npt.NDArray[np.int64]
     fee_rate: npt.NDArray[np.float64]
 
     def __len__(self) -> int:
@@ -681,6 +702,7 @@ class ExitBatch:
             mae_r=float(self.mae_r[index]),
             bars_held=int(self.bars_held[index]),
             data_gaps=int(self.data_gaps[index]),
+            entry_bar_post_missing=int(self.entry_bar_post_missing[index]),
             fee_rate=float(self.fee_rate[index]),
         )
 
@@ -694,7 +716,8 @@ def _simulate_exit_batch_nb(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     t_entries: npt.NDArray[np.int64],
     down: npt.NDArray[np.float64],
     up: npt.NDArray[np.float64],
@@ -727,6 +750,7 @@ def _simulate_exit_batch_nb(
     npt.NDArray[np.int64],
     npt.NDArray[np.int64],
     npt.NDArray[np.float64],
+    npt.NDArray[np.int64],
 ]:
     """一次 numba 调用推进同一币的一批交易（06 §3.4 micro-batch）。
 
@@ -743,6 +767,7 @@ def _simulate_exit_batch_nb(
     bars_held = np.zeros(count, dtype=np.int64)
     data_gaps = np.zeros(count, dtype=np.int64)
     fee_rate = np.zeros(count, dtype=np.float64)
+    entry_bar_post_missing = np.zeros(count, dtype=np.int64)
     for k in range(count):
         values = _exit_machine_nb(
             open_,
@@ -752,7 +777,8 @@ def _simulate_exit_batch_nb(
             p_entry,
             hi_post,
             lo_post,
-            is_filled,
+            kline_missing,
+            aggtrades_missing,
             int(t_entries[k]),
             down[k],
             up[k],
@@ -785,6 +811,7 @@ def _simulate_exit_batch_nb(
         bars_held[k] = values[6]
         data_gaps[k] = values[7]
         fee_rate[k] = values[8]
+        entry_bar_post_missing[k] = values[9]
     return (
         exit_idx,
         exit_price,
@@ -795,6 +822,7 @@ def _simulate_exit_batch_nb(
         bars_held,
         data_gaps,
         fee_rate,
+        entry_bar_post_missing,
     )
 
 
@@ -806,7 +834,8 @@ def simulate_exit_batch(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     *,
     t_entries: npt.NDArray[np.int64],
     down: npt.NDArray[np.float64],
@@ -833,7 +862,8 @@ def simulate_exit_batch(
         open_/high/low/close: 该币分钟 K 线数组。
         p_entry: 每根 K 线的入场参考价（p_1s 或 p_3s）。
         hi_post/lo_post: 每根 K 线开盘延迟后的最高/最低价。
-        is_filled: 补齐分钟标记（1=补齐，不判定）。
+        kline_missing: K 线缺失标记（1=缺失，不判定）。
+        aggtrades_missing: 逐笔缺失标记（1=只缺逐笔，仍用 K 线高低点判定）。
         t_entries: 每笔的入场 K 线位置（= 信号 t + 1）。
         down/up/r_dist/min_move: 每笔的初始止损价、封顶止盈价、1R 距离、最小上移幅度。
         p_fill/atr_abs/slip_stop/slip_exit/half_spread: 每笔的入场成本与滑点。
@@ -878,7 +908,8 @@ def simulate_exit_batch(
         p_entry,
         hi_post,
         lo_post,
-        is_filled,
+        kline_missing,
+        aggtrades_missing,
         t_entries,
         down,
         up,
@@ -912,6 +943,7 @@ def simulate_exit_batch(
         bars_held=values[6],
         data_gaps=values[7],
         fee_rate=values[8],
+        entry_bar_post_missing=values[9],
     )
 
 
@@ -923,7 +955,8 @@ def _simulate_exit_py(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     t_entry: int,
     p_fill: float,
     sl: float,
@@ -946,7 +979,7 @@ def _simulate_exit_py(
     half_spread: float,
     fee_taker: float,
     fee_maker: float,
-) -> tuple[int, float, int, int, float, float, int, int, float]:
+) -> tuple[int, float, int, int, float, float, int, int, float, int]:
     """纯 Python 参考实现（与 numba 版逐字段一致，AGENTS.md §6）。"""
     n = open_.shape[0]
     stop, cap, R, min_move = trade_anchors_py(
@@ -963,8 +996,10 @@ def _simulate_exit_py(
     min_lo = float("inf")
     phase = _EXIT_INITIAL_STOP
     made_progress = False
+    stall_checked = False
     stop_updates = 0
     data_gaps = 0
+    entry_bar_post_missing = 0
 
     exit_idx = -1
     exit_price = float("nan")
@@ -981,13 +1016,18 @@ def _simulate_exit_py(
             fee_rate = fee_taker
             exited = True
             break
-        if is_filled[j] == 1:
+        if kline_missing[j] == 1:
             data_gaps += 1
             j += 1
             continue
         if j == t_entry:
-            lo = float(lo_post[j])
-            hi = float(hi_post[j])
+            if aggtrades_missing[j] == 1:
+                lo = float(low[j])
+                hi = float(high[j])
+                entry_bar_post_missing = 1
+            else:
+                lo = float(lo_post[j])
+                hi = float(hi_post[j])
         else:
             lo = float(low[j])
             hi = float(high[j])
@@ -1033,12 +1073,14 @@ def _simulate_exit_py(
         )
         stop_updates += updates
         made_progress = made_progress or progress_now
-        if mode == _MODE_TRAIL and j - t_entry + 1 == stall_bars and not made_progress:
-            exit_idx = j + 1
-            exit_type = _EXIT_STALL
-            fee_rate = fee_taker
-            exited = True
-            break
+        if mode == _MODE_TRAIL and not stall_checked and j - t_entry + 1 >= stall_bars:
+            stall_checked = True
+            if not made_progress:
+                exit_idx = j + 1
+                exit_type = _EXIT_STALL
+                fee_rate = fee_taker
+                exited = True
+                break
         j += 1
 
     if not exited:
@@ -1068,4 +1110,5 @@ def _simulate_exit_py(
         bars_held,
         data_gaps,
         fee_rate,
+        entry_bar_post_missing,
     )

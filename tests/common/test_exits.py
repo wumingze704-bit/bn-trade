@@ -64,6 +64,7 @@ def _run(
         hi_post,
         lo_post,
         is_filled,
+        np.zeros_like(is_filled),
         t_entry=t_entry,
         p_fill=p_fill,
         sl=sl,
@@ -283,3 +284,48 @@ def test_numba与python一致():
     a = _run(open_, high, low, close, p_entry, hi_post, lo_post, is_filled, use_numba=True)
     b = _run(open_, high, low, close, p_entry, hi_post, lo_post, is_filled, use_numba=False)
     assert a == b
+
+
+def test_只缺逐笔的分钟仍按K线高低点判定止损():
+    o, h, l, c, pe, hp, lp, f = _flat(30)
+    l[2] = 98.5  # 第 2 根 K 线完整、只有逐笔缺失：低点打穿 D0=99
+    hp[1] = 100.5
+    r = _run(o, h, l, c, pe, hp, lp, f)
+    assert r.exit_type == "initial_stop"
+    assert r.exit_idx == 2
+
+
+def test_K线缺失分钟不判定并计入data_gaps():
+    o, h, l, c, pe, hp, lp, f = _flat(30)
+    hp[1] = 100.5
+    f[2] = 1
+    l[2] = 90.0  # 缺失分钟的价格不可信，不应触发止损
+    l[3] = 98.5
+    r = _run(o, h, l, c, pe, hp, lp, f)
+    assert r.exit_idx == 3
+    assert r.data_gaps == 1
+
+
+def test_第stall_bars根被跳过时仍触发无进展离场():
+    o, h, l, c, pe, hp, lp, f = _flat(60)
+    cfg = _cfg(stall_bars=5)
+    f[5] = 1  # held=5 的那根被跳过
+    r = _run(o, h, l, c, pe, hp, lp, f, cfg=cfg)
+    assert r.exit_type == "stall"
+
+
+def test_缺失分钟语义下numba与Python参考逐字段一致():
+    o, h, l, c, pe, hp, lp, f = _flat(60)
+    hp[1] = 101.0
+    f[4] = 1
+    l[4] = 90.0
+    cfg = _cfg(stall_bars=5)
+    a = _run(o, h, l, c, pe, hp, lp, f, cfg=cfg, use_numba=True)
+    b = _run(o, h, l, c, pe, hp, lp, f, cfg=cfg, use_numba=False)
+    assert (a.exit_idx, a.exit_type, a.bars_held, a.data_gaps) == (
+        b.exit_idx,
+        b.exit_type,
+        b.bars_held,
+        b.data_gaps,
+    )
+    assert a.exit_price == b.exit_price

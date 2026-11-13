@@ -70,23 +70,23 @@ class BarsArrays:
     open_time: npt.NDArray[np.int64]
     p_entry: npt.NDArray[np.float64]
     close: npt.NDArray[np.float64]
-    is_filled: npt.NDArray[np.int64]
+    kline_missing: npt.NDArray[np.int64]
+    aggtrades_missing: npt.NDArray[np.int64]
 
     @classmethod
     def from_frame(cls, bars: pd.DataFrame, entry_price_col: str) -> BarsArrays:
         """从分钟 bars 构造（`entry_price_col` 为 `p_1s` 或 `p_3s`）。"""
         if entry_price_col not in bars.columns:
             raise ValueError(f"bars 缺少入场参考价列：{entry_price_col}")
-        is_filled = (
-            bars["is_filled"].to_numpy(dtype="int64")
-            if "is_filled" in bars.columns
-            else np.zeros(len(bars), dtype="int64")
-        )
+        missing_cols = [name for name in ("kline_missing", "aggtrades_missing") if name not in bars]
+        if missing_cols:
+            raise ValueError(f"bars 缺少列 {missing_cols}（03 §2.3、红线 13）")
         return cls(
             open_time=bars["open_time"].to_numpy(dtype="int64"),
             p_entry=bars[entry_price_col].to_numpy(dtype="float64"),
             close=bars["close"].to_numpy(dtype="float64"),
-            is_filled=is_filled,
+            kline_missing=bars["kline_missing"].to_numpy(dtype="int64"),
+            aggtrades_missing=bars["aggtrades_missing"].to_numpy(dtype="int64"),
         )
 
     @property
@@ -247,8 +247,8 @@ def replay_trade(
             exited = True
             break
         bar_end = int(bars.open_time[j]) + _BAR_MS
-        if bars.is_filled[j] == 1:
-            # 补齐分钟不判定（06 §3.3），但时间仍在推进：丢弃该分钟的逐笔后继续。
+        if bars.kline_missing[j] == 1:
+            # K 线缺失：无价格信息，不判定（06 §3.3），但时间仍在推进：丢弃该分钟的逐笔后继续。
             while pos < len(ticks) and int(ticks.time_ms[pos]) < bar_end:
                 pos += 1
             if not math.isnan(pending_stop) and bar_end >= pending_ms:

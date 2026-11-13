@@ -30,6 +30,8 @@ PRECOMPUTE_BAR_COLUMNS: tuple[str, ...] = (
     "close",
     "quote_volume",
     "is_filled",
+    "kline_missing",
+    "aggtrades_missing",
     "p_1s",
     "hi_post_1s",
     "lo_post_1s",
@@ -152,6 +154,7 @@ class PrecomputedTrade:
     half_spread: float = 0.0
     notional_ref: float = 0.0
     h_max: int = 0
+    entry_bar_post_missing: int = 0
 
 
 @dataclass
@@ -195,6 +198,7 @@ class ExecutedTrade:
     funding_fee: float = 0.0
     new_entry: bool = False
     rebate: float = 0.0
+    entry_bar_post_missing: int = 0
 
 
 @dataclass
@@ -256,7 +260,8 @@ class PreparedSymbol:
     low: np.ndarray
     close: np.ndarray
     quote_volume: np.ndarray
-    is_filled: np.ndarray
+    kline_missing: np.ndarray
+    aggtrades_missing: np.ndarray
     p_1s: np.ndarray | None
     hi_post_1s: np.ndarray | None
     lo_post_1s: np.ndarray | None
@@ -322,7 +327,8 @@ def prepare_symbols(bars_by_symbol: Mapping[str, pd.DataFrame]) -> dict[str, Pre
             low=_bar_column(bars, "low", "float64"),
             close=_bar_column(bars, "close", "float64"),
             quote_volume=_bar_column(bars, "quote_volume", "float64"),
-            is_filled=_bar_column(bars, "is_filled", "int64"),
+            kline_missing=_bar_column(bars, "kline_missing", "int64"),
+            aggtrades_missing=_bar_column(bars, "aggtrades_missing", "int64"),
             p_1s=_optional_bar_column(bars, "p_1s"),
             hi_post_1s=_optional_bar_column(bars, "hi_post_1s"),
             lo_post_1s=_optional_bar_column(bars, "lo_post_1s"),
@@ -529,7 +535,8 @@ def precompute_trades(
     open_time = prepared.open_time
     close = prepared.close
     qv = prepared.quote_volume
-    is_filled = prepared.is_filled
+    kline_missing = prepared.kline_missing
+    aggtrades_missing = prepared.aggtrades_missing
     high = prepared.high
     low = prepared.low
     open_ = prepared.open
@@ -581,7 +588,7 @@ def precompute_trades(
                 SkippedSignal(symbol, int(row.open_time), float(row.p), "not_in_universe")
             )
             continue
-        if is_filled[t + 1] == 1:
+        if kline_missing[t + 1] == 1:
             skipped.append(
                 SkippedSignal(symbol, int(row.open_time), float(row.p), "entry_bar_filled")
             )
@@ -618,7 +625,8 @@ def precompute_trades(
         p_entry=p_entry_arr,
         hi_post=hi_post,
         lo_post=lo_post,
-        is_filled=is_filled,
+        kline_missing=kline_missing,
+        aggtrades_missing=aggtrades_missing,
         anchors=anchors,
         signal_bars=t_all,
         atr_abs=atr_abs_arr,
@@ -670,6 +678,7 @@ def precompute_trades(
                 mae_r=float(batch.mae_r[slot]),
                 gross_return=exit_price / p_fill - 1.0,
                 exit_fee_rate=exit_fee_rate,
+                entry_bar_post_missing=int(batch.entry_bar_post_missing[slot]),
                 funding_rate_sum=funding_rate_between(
                     fund_times,
                     fund_rates,
@@ -806,6 +815,7 @@ def simulate_portfolio(
             rebate=(entry_fee + exit_fee) * fees.rebate_rate,
             capped_by=sz.capped_by,
             new_entry=tr.new_entry,
+            entry_bar_post_missing=tr.entry_bar_post_missing,
         )
         positions[tr.symbol] = trade
         result.trades.append(trade)

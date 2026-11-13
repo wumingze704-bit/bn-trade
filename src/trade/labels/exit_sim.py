@@ -79,11 +79,11 @@ def exit_sim(
     p_entry = bars[p_col].to_numpy(dtype="float64")
     hi_post = bars[hi_col].to_numpy(dtype="float64")
     lo_post = bars[lo_col].to_numpy(dtype="float64")
-    is_filled = (
-        bars["is_filled"].to_numpy(dtype="int64")
-        if "is_filled" in bars.columns
-        else np.zeros(n, dtype="int64")
-    )
+    missing_cols = [name for name in ("kline_missing", "aggtrades_missing") if name not in bars]
+    if missing_cols:
+        raise ValueError(f"bars 缺少列 {missing_cols}（03 §2.3、红线 13）")
+    kline_missing = bars["kline_missing"].to_numpy(dtype="int64")
+    aggtrades_missing = bars["aggtrades_missing"].to_numpy(dtype="int64")
     qv = bars["quote_volume"].to_numpy(dtype="float64")
 
     atr_abs_arr = wilder_atr(true_range(high, low, close), 14)
@@ -110,7 +110,7 @@ def exit_sim(
         p_raw_arr = p_entry[usable + 1]
         close_at = close[usable]
         keep_mask = (
-            (is_filled[usable + 1] == 0)
+            (kline_missing[usable + 1] == 0)
             & np.isfinite(p_raw_arr)
             & (p_raw_arr > 0.0)
             & (p_raw_arr <= close_at * (1.0 + max_chase))
@@ -150,7 +150,8 @@ def exit_sim(
         p_entry=p_entry,
         hi_post=hi_post,
         lo_post=lo_post,
-        is_filled=is_filled,
+        kline_missing=kline_missing,
+        aggtrades_missing=aggtrades_missing,
         anchors=anchors,
         signal_bars=usable,
         atr_abs=atr_abs_arr,

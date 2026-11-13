@@ -26,7 +26,8 @@ def batch_exit(
     p_entry: npt.NDArray[np.float64],
     hi_post: npt.NDArray[np.float64],
     lo_post: npt.NDArray[np.float64],
-    is_filled: npt.NDArray[np.int64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
     anchors: AnchorSeries,
     signal_bars: npt.NDArray[np.int64],
     atr_abs: npt.NDArray[np.float64],
@@ -42,7 +43,7 @@ def batch_exit(
         open_/high/low/close: 该币分钟 K 线数组。
         p_entry: 每根 K 线的入场参考价（p_1s 或 p_3s）。
         hi_post/lo_post: 每根 K 线开盘延迟后的最高/最低价。
-        is_filled: 补齐分钟标记（1=补齐，不判定）。
+        kline_missing/aggtrades_missing: K 线缺失与逐笔缺失标记（1=缺失，03 §2.3）。
         anchors: `anchor_series` 算出的锚点与入场成本数组。
         signal_bars: 每笔的信号 K 线位置 t（入场 K 线 = t+1）。
         atr_abs: 每根 K 线的 ATR14 绝对值（持仓期固定用）。
@@ -66,7 +67,8 @@ def batch_exit(
         p_entry,
         hi_post,
         lo_post,
-        is_filled,
+        kline_missing,
+        aggtrades_missing,
         t_entries=slots + 1,
         down=anchors.down[slots],
         up=anchors.up[slots],

@@ -39,6 +39,8 @@ def _bars() -> pd.DataFrame:
             "quote_volume": qv,
             "taker_buy_quote_volume": tbq,
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
 
@@ -79,6 +81,8 @@ def test_r0与手算规则一致():
             "quote_volume": qv,
             "taker_buy_quote_volume": tbq,
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
     out = r0_signals_for_symbol(

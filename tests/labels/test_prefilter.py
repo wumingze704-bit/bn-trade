@@ -20,6 +20,8 @@ def _bars(n: int, *, close: float = 100.0, high: float = 100.5) -> pd.DataFrame:
             "close": np.full(n, close),
             "quote_volume": np.full(n, 1000.0),
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
 

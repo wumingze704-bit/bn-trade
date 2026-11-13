@@ -47,6 +47,8 @@ def _make_dataset(root: Path, alias: str, seed: int) -> None:
             "f3": rng.normal(size=_ROWS).astype("float16"),
             "open_time": open_time,
             "is_filled": 0,
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
         }
     )
     frame.to_parquet(features_dir / f"{alias}.parquet", index=False)

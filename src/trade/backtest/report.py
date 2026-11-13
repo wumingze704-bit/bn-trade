@@ -99,6 +99,7 @@ def trades_to_frame(trades: list[ExecutedTrade], run: str, scenario: str) -> pd.
             "entry_fee": [t.entry_fee for t in trades],
             "exit_fee": [t.exit_fee for t in trades],
             "funding_fee": [t.funding_fee for t in trades],
+            "entry_bar_post_missing": [t.entry_bar_post_missing for t in trades],
             "gross_pnl": [t.gross_pnl for t in trades],
             "net_pnl": [t.net_pnl for t in trades],
             "size_capped_by": [t.capped_by for t in trades],

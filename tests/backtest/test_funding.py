@@ -140,6 +140,8 @@ def test_precompute_trades记录资金费率() -> None:
             "close": close,
             "quote_volume": np.full(n, 1e6),
             "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
             "p_1s": close,
             "hi_post_1s": close * 1.001,
             "lo_post_1s": close * 0.999,
