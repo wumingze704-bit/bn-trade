@@ -7,6 +7,10 @@
   - 结论：该修复对当前数据集的可成交结果无影响，语义差异由单测（`tests/labels/test_exit_sim.py`、`tests/backtest/test_engine.py`）覆盖；C012 2025-01 整月只缺逐笔（44,620/44,640 分钟）导致该月没有任何信号，无法作为验收样本。
 - **第 4 步（基准快照）**：`scripts/bench_backtest.py` 补 `theta` 列（R0 驱动无模型阈值时按 `backtest_cfg.threshold` 填充，与 `scripts/backtest.py`、`scripts/r0_signals.py` 一致；此前脚本因缺列直接报错）。重建基准 `artifacts/bench/baseline_5x1_20261114`（5 币 × 2025-07，`full` 套件，服务器总耗时 **22.57 s**，其中 `sizing_sweep` 2.97 s、`s1_candidates` 7.91 s 为最大项）；重复运行 `bench_compare.py` **7 个文件逐字段一致（rtol=1e-12, atol=1e-9）**，基准可用。
 - **第 20 步（θ 决定）**：θ 网格维持 05 §7.2 的 0.30~0.80 不变，`select_threshold` 不改；6 组无法选出 θ（M0 P99 0.24~0.30）时保留冻结参数，失败组写入 `EXPERIMENTS.log`。05 §7.2 新增第 5 条固化该行为与 G2 披露要求，08 G2 表新增“报告披露”一行。概率尺度与 θ 网格不匹配的问题移交 T4-3 第 2 步（模型调参：校准/温度或特征与阈值复核）。
+- **第 15 步第 5 项（封存月重生成）**：SUIUSDT = `C001`，其 2026-08/09 月文件在 T1-9 修复脚本运行时已重写（`2026-11-05T21:13`）；此后没有任何影响 bars 内容的改动（`loader` 的改动只影响读取顺序，`exit_sim`/`uniqueness_weights` 只影响标签）。原始逐笔目录 `data/raw/aggtrades/C001` 已清空，重新生成需先从 data.binance.vision 重新下载两个月聚合原始数据。当前 SHA256：`202608.parquet = 4b47537eb8cc5e3e6d346e9a220b69327fa0e0a2040bc329cb1252c15b6f85b7`、`202609.parquet = 9b5536f8b196e5b2d236f9c1d154899d222cdb24b11162b36896468e6eddbe54`（只算哈希，未读取内容）。G3 运行 `--final` 之前按 08 的检查单重跑一次并记录哈希变化。
+- **第 19 步（点差）**：`record_book_ticker` 以 `--days 7` 持续录制（PID 1508638，已 223 MB，别名分组目录），预计 2026-11-21 结束；结束后执行 `spread_profile.py --book-root artifacts/live/book --out artifacts/costs --aliases-file data/universe/aliases.json` 出分位画像，并按同期 bars 计算“信号分钟”口径。
+
+
 - **第 22 步补充（月化 15% 测算）**：`artifacts/reports/monthly_15pct.md`。真实数字：标签单笔 `r_mult` 均值 −0.1584 R、标准差 0.8295 R，`sl` 中位 1.000%，单笔波动 0.863%；θ=0.30 时 1.69 笔/日（50.7 笔/月）；月化 15% 需单笔净 **27.9 bp**（扣成本前约 37.9 bp），当前为 **−16.5 bp**，差约 44 bp；G2 的 3 bp 门槛在同密度下等价于 **+0.15%/月**，与 15%/月 相差约 9 倍。
 - **服务器**：代码树按本地 `src/configs/scripts` 重新同步（此前 `~/trade` 与仓库有漂移，`scripts/bench_backtest.py` 等文件缺失）；清理临时数据集 `ds_verify_tmp`、`ds_20261114`、`ds_probe`、`ds_profile`、`ds_smoke_server`、`ds_smoke_server2`，磁盘可用 24 GB → **31 GB**，只保留 `ds_20261114b`。
 
