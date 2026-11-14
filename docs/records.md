@@ -8,7 +8,9 @@
 | 标签装配去掉逐样本 Python 循环，资金费改用前缀和区间求和 | `trade.labels.exit_sim` | 4.03 s | 3.30 s | labels 逐字段一致：整数与字符串完全相同，浮点最大绝对差 4.4e-16 |
 | 平均独特性权重改为逐根累加（去掉逐样本 numpy 切片） | `trade.labels.triple_barrier.uniqueness_weights` | 0.52 s | 0.06 s | 最大绝对差 1.3e-15、最大相对差 2.9e-15（rtol 1e-12 内） |
 | `load_bars` 先判已升序无重复，命中时跳过 `sort_values`/`drop_duplicates` | `trade.data.loader.load_bars` | — | — | 返回值与改动前相同 |
-| 单币 `build_dataset` 稳态耗时（服务器，5 币连续构建） | `scripts/build_dataset.py` | 41.4 s / 5 币（≈7.7 s/币） | 23.5 s / 5 币（≈4.1 s/币） | 未跑全量 237 币；按 4.1 s/币估算约 17 min（改动前同口径约 30 min） |
+| 单币 `build_dataset` 稳态耗时（服务器，5 币连续构建，各自独立进程） | `scripts/build_dataset.py` | 41.4 s / 5 币 | 23.5 s / 5 币（≈1.76×） | 6 币标签全列一致（整数与字符串完全相同，浮点最大绝对差 8.9e-16）、特征表逐列完全相同 |
+
+- 全量重建对照：优化后用 `build_dataset.py --run-id ds_verify_tmp` 重建 237 币，从首个到最后一个特征文件写盘 **5.6 min**（页面缓存已热）；与 `ds_20261114b` 逐文件对拍，C001~C006 的 labels 全列一致、features 逐列完全相同（`ds_20261114b` 由优化前代码构建）。
 
 - 尝试并回退：`_simulate_exit_batch_nb` 改 numba `parallel=True` + `prange`（逐笔独立、结果理论上与调度无关）。服务器实测该内核 1.58 s → 2.63 s（该内核内存受限、线程开销大于收益），已还原串行实现。
 - 未采用的候选：特征文件 fp16 改 fp32（写入 1.46 s → 0.97 s，但改变 `data/features` 落盘契约）、EWM 内核 `math.pow(x, 2.0)` 改 `x*x`（会改变个别值的 1 ulp，与现有“批量与逐点逐位一致”的测试约定冲突）、跨币进程池并行（3.6 GB 机器上峰值内存不够，需先评估）。
