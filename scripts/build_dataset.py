@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from trade.backtest.engine import BacktestConfig
 from trade.common.config import BaseConfig, load_config
@@ -65,6 +66,25 @@ def _tick_relative_warnings(
         if ratio > _TICK_REL_WARN:
             out.append(f"{alias} M{int(month)} tick/收盘价中位数 = {ratio:.4f} 超过 0.002")
     return out
+
+
+def _nan_entry_price_minutes(bars: pd.DataFrame) -> int:
+    """统计 `p_1s` 为空但 `is_filled = 0` 的分钟数（数据质量告警，04 §8）。
+
+    这类分钟没有逐笔价却未被标为补齐分钟：入场会被 `no_entry_price` 放弃，但数据管道
+    没有记录缺口，因此写入 manifest 告警，避免静默（AGENTS.md §6 红线 13）。
+
+    Args:
+        bars: 分钟数据（需含 `p_1s` 与 `is_filled`）。
+
+    Returns:
+        满足条件的分钟数。
+    """
+    if "p_1s" not in bars or "is_filled" not in bars:
+        return 0
+    missing_price = bars["p_1s"].isna().to_numpy()
+    not_filled = bars["is_filled"].to_numpy() == 0
+    return int((missing_price & not_filled).sum())
 
 
 def _segment_tail_dropped(sample_positions: np.ndarray, segments: np.ndarray, h_max: int) -> int:
@@ -204,6 +224,12 @@ def build_dataset(
                 bars["open_time"].to_numpy(dtype="int64"), coin.symbol, membership, delay
             )
             sample &= trade_mask
+        nan_entry_minutes = _nan_entry_price_minutes(bars)
+        if nan_entry_minutes:
+            warnings.append(
+                f"{alias} 有 {nan_entry_minutes} 个分钟 p_1s 为空但 is_filled=0"
+                "（入场按 no_entry_price 放弃）"
+            )
         features_df["is_sample"] = sample.astype("int64")
         # 特征以 fp16 落盘（design §4、05 §5；open_time/is_sample 保持 int64）
         feature_cols = [feature.name for feature in features]
@@ -319,6 +345,7 @@ def build_dataset(
                 "retention": retention,
                 "positive_rate": positive_rate,
                 "segment_tail_dropped": segment_tail_dropped,
+                "nan_entry_price_minutes": nan_entry_minutes,
                 "features_sha256": _sha256_file(features_path),
                 "labels_sha256": _sha256_file(labels_path),
             }

@@ -113,7 +113,7 @@ class ReferenceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    initial_equity: float = Field(default=10000.0, gt=0.0)
+    initial_equity: float = Field(default=100.0, gt=0.0)
     mode: str = Field(default="fixed_risk", pattern=r"^(fixed_fraction|fixed_risk)$")
     risk_per_trade: float = Field(default=0.005, ge=0.001, le=0.05)
     base: str = Field(default="initial", pattern=r"^(equity|initial)$")

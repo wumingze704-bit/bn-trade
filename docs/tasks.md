@@ -468,5 +468,7 @@
 - [x] 2026-11-13 实测点差情景（第 19 步，A 方案）：`Scenario.half_spread_by_symbol` + `spread_measured_scenario`；`scripts/record_book_ticker.py`（服务器录制）与 `scripts/spread_profile.py`（分位画像）；`backtest.yaml` 新增 `costs.spread_profile`。分位数需服务器录制 ≥ 7 天，本地未运行。
 - [x] 2026-11-13 嵌套确认与阈值规则统一（第 20 步）：`tuning_exits._scan_theta` 改为调用 `trade.models.calibration.select_threshold`；新增 `--nested-check`（M10 早停、M11 选 θ、M12 评估，6 组）。真实 6 组结果未运行（需重建后的数据集）。
 - [x] 2026-11-13 信号密度只读分析（第 22 步）：新增 `scripts/analyze_signal_density.py`，已用本地调参期数据（169 个币）运行，结果见 `artifacts/reports/signal_density.md`；θ 相关日均信号数未运行（本地无 M0 信号）。
+- [x] 2026-11-13 待决项定案：`risk.halt_mode=strict`（闸门口径）、reference 与 G6 本金统一 100 USDT、段尾样本保留“丢弃”现状、验证月不拆分（另设 `--nested-check`）、`ioc_miss` 情景暂不加入、点差只做 `spread_measured` 只报告、`p_1s` 空值分钟改为 manifest 告警；代码默认值同步（`ReferenceConfig.initial_equity`、`sweep` 默认本金）。**数据集仍需按新标签重建**：先 `scripts/sync.ps1 pull-data`，再 `build_dataset --run-id <新id>`（约数小时）。
+
 - [x] 2026-11-13 次要问题合集（第 23 步）：出场手续费改为按出场名义价值 `notional × (1 + gross_return) × exit_fee_rate`（回测/逐笔重放/`exit_sim` 共用 `net_return_after_fees`）；报告首页注记 tick/历史价格口径与段尾丢弃条数；manifest 新增 `label_dropped.segment_tail`；`model_meta.json` 的 `threshold_selection` 新增 `validation_n_trades` 与 `pf_curve`。
 

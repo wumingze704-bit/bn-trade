@@ -98,3 +98,15 @@
 - 真实数据冒烟（2026-11-13，本地 C001、M1~M22 bars 1006560 行、146007 个 p=1 信号、θ=0）：`run_backtest` 用时 10.53 秒，成交 68 笔、跳过 145939 条；跳过原因含 `entry_price_stale` 12455、`halted` 132680、`chase` 23、`no_entry_price` 1；风控触发 R5（2025-01-11、2025-01-12）与 R8（2025-01-13）后按 `halt_mode=strict` 停止交易；期末权益 83.61（起始 100）。该次冒烟说明：单币、全部预过滤样本开仓时，R5/R8 会在两周内触发，回测剩余月份不再交易——闸门运行需要按真实仓位口径复核停机模式（见 `.clinerules` 与 06 §2）。
 - 数据质量：C001 的 M1~M22 bars 中有 34 个分钟 `p_1s` 与 `p_1s_filled` 同时为 NaN（`is_filled = 0`）。回测把这类分钟按 `no_entry_price` 放弃，不把 NaN 当作“非陈旧价”也不当作 1。
 
+## 2026-11-13 待决项按建议定案
+
+- **停机模式**：`risk.halt_mode = strict`（严格停机，触发 R6/R8 后停止交易至本次运行结束）作为闸门口径；`reset` 保留为可选实现，不改默认。
+- **reference 本金统一为 100 USDT**：`06 §2` yaml 示例的 `reference.initial_equity` 由 10000.0 改为 100.0，`06 §4.2`、`06 §5.1` 表与 `06 §5.5` 扫描口径同步为 100；代码默认值同步（`ReferenceConfig.initial_equity` 100.0、`sweep.sizing_sweep(initial_equity=100.0)`）。原先 `06 §5.1` 写 10000 而 `configs/backtest.yaml` 写 100 的不一致已消除。
+- **G6 改为 100 USDT**：`08 §3 G6` 标题由“10 USDT”改为“100 USDT”，其余标准（每笔 20%、≥ 30 天且 ≥ 50 笔）不变；修改发生在查看任何测试段/封存集结果之前。
+- **段尾样本**：保留“丢弃”现状（不做 `eod` 保留），只在 manifest 与报告首页报告条数，避免再引入一次标签规则变更。
+- **验证月不拆分**：五折内早停、温度缩放与 θ 仍用同一验证月；调参期另设 `--nested-check`（M10 早停、M11 选 θ、M12 评估）作为选择偏差的独立核对，`model_meta.json` 记录 `pf_curve` 供复查。
+- **`ioc_miss` 压力情景暂不加入**：只保留 `scripts/analyze_ioc_miss.py` 的报告口径，待实测“可能未成交”比例与收益差异证明有必要再议（需使用者新增情景授权）。
+- **点差**：`base` 不改，只保留 `spread_measured` 只报告情景（方案 A）。
+- **`p_1s` 为空但 `is_filled = 0` 的分钟**：不回改历史聚合，改为在 `build_dataset` 统计 `nan_entry_price_minutes` 并写入 `manifest.warnings`，回测按 `no_entry_price` 放弃。
+
+

@@ -37,7 +37,7 @@ def sizing_sweep(
     sizing_cfg: SizingConfig,
     features_cfg: FeaturesConfig,
     fractions: list[float] | None = None,
-    initial_equity: float = 10.0,
+    initial_equity: float = 100.0,
     scenario_name: str = "base",
     trade_masks: dict[str, object] | None = None,
 ) -> pd.DataFrame:

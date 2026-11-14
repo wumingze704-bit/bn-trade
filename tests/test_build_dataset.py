@@ -10,7 +10,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from scripts.build_dataset import _load_tick_size_by_alias, build_dataset
+from scripts.build_dataset import (
+    _load_tick_size_by_alias,
+    _nan_entry_price_minutes,
+    build_dataset,
+)
 from tests.features.helpers import make_bars
 from trade.common.config import BaseConfig
 from trade.common.exits import ExitConfig
@@ -195,3 +199,16 @@ def test_load_tick_size_by_alias(tmp_path) -> None:
     )
     result = _load_tick_size_by_alias(rules_path, aliases_path)
     assert result == {"C01": 0.01, "C02": 0.0001}
+
+
+def test_p_1s为空但未标记补齐的分钟计入告警统计():
+    """`p_1s` 为空且 `is_filled = 0` 的分钟数写入 manifest 告警（04 §8、红线 13）。"""
+    bars = make_bars(20, seed=3)
+    bars["is_filled"] = 0
+    bars.loc[5, "p_1s"] = float("nan")
+    bars.loc[6, "p_1s"] = float("nan")
+    bars.loc[7, "p_1s"] = float("nan")
+    bars.loc[7, "is_filled"] = 1  # 补齐分钟不算未标记缺口
+    assert _nan_entry_price_minutes(bars) == 2
+    bars["is_filled"] = 1
+    assert _nan_entry_price_minutes(bars) == 0
