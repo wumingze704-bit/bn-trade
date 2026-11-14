@@ -366,6 +366,10 @@ def _load_data(args: argparse.Namespace, timing: Timing) -> BenchContext:
             for coin in coins
         ]
         signals = pd.concat(frames, ignore_index=True).sort_values(["open_time", "symbol"])
+        # 与 scripts/backtest.py、r0_signals.py 一致：R0 驱动没有模型阈值时按配置阈值填 theta 列
+        # （engine 要求每行带 θ；06 §3.1 条件 1、§8、红线 13）
+        if "theta" not in signals.columns:
+            signals = signals.assign(theta=float(backtest_cfg.threshold))
         timing.count("n_signal_rows", float(len(signals)))
         timing.count("n_signals_p1", float((signals["p"] == 1).sum()))
 
