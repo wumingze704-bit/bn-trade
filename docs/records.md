@@ -1,3 +1,19 @@
+## 2026-11-14 性能优化（红线 15 等价性验证）
+
+单币基准（C001，568,800 根分钟、76,610 个样本，本地）：
+
+| 改动 | 位置 | 改动前 | 改动后 | 等价性 |
+| :-- | :-- | --: | --: | :-- |
+| 按月交易范围改为月序号向量化（去掉逐分钟 `strftime`） | `trade.data.loader.universe_trade_mask` | 0.55 s | 0.02 s | mask 逐位一致（差异 0 个元素） |
+| 标签装配去掉逐样本 Python 循环，资金费改用前缀和区间求和 | `trade.labels.exit_sim` | 4.03 s | 3.30 s | labels 逐字段一致：整数与字符串完全相同，浮点最大绝对差 4.4e-16 |
+| 平均独特性权重改为逐根累加（去掉逐样本 numpy 切片） | `trade.labels.triple_barrier.uniqueness_weights` | 0.52 s | 0.06 s | 最大绝对差 1.3e-15、最大相对差 2.9e-15（rtol 1e-12 内） |
+| `load_bars` 先判已升序无重复，命中时跳过 `sort_values`/`drop_duplicates` | `trade.data.loader.load_bars` | — | — | 返回值与改动前相同 |
+| 单币 `build_dataset` 稳态耗时（服务器，5 币连续构建） | `scripts/build_dataset.py` | 41.4 s / 5 币（≈7.7 s/币） | 23.5 s / 5 币（≈4.1 s/币） | 未跑全量 237 币；按 4.1 s/币估算约 17 min（改动前同口径约 30 min） |
+
+- 尝试并回退：`_simulate_exit_batch_nb` 改 numba `parallel=True` + `prange`（逐笔独立、结果理论上与调度无关）。服务器实测该内核 1.58 s → 2.63 s（该内核内存受限、线程开销大于收益），已还原串行实现。
+- 未采用的候选：特征文件 fp16 改 fp32（写入 1.46 s → 0.97 s，但改变 `data/features` 落盘契约）、EWM 内核 `math.pow(x, 2.0)` 改 `x*x`（会改变个别值的 1 ulp，与现有“批量与逐点逐位一致”的测试约定冲突）、跨币进程池并行（3.6 GB 机器上峰值内存不够，需先评估）。
+
+
 # 过程记录
 
 本文件保存从设计书（`docs/design.md` 与 `docs/01`~`docs/10`）移出的实测流程、原始结论与接口核对记录，按“文档名 §章节号”分组。**本文件不是规格**：规格以设计书对应章节为准，这里的数字与原始输出仅供追溯。

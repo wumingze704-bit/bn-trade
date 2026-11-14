@@ -178,7 +178,11 @@ def load_bars(
         raise ValueError(f"未找到可用的分钟数据文件：{bars_dir}")
     bars = pd.concat(frames, ignore_index=True)
     bars = bars[(bars["open_time"] >= start_ms) & (bars["open_time"] < end_ms)]
-    bars = bars.sort_values("open_time").drop_duplicates("open_time").reset_index(drop=True)
+    # 月度文件顺序拼接后通常已升序且无重复；先做一次廉价检查，跳过 sort/dedup 的大数组拷贝
+    times = bars["open_time"].to_numpy(dtype="int64", copy=False)
+    if times.shape[0] > 1 and not bool(np.all(times[1:] > times[:-1])):
+        bars = bars.sort_values("open_time").drop_duplicates("open_time")
+    bars = bars.reset_index(drop=True)
     if bars.empty:
         raise ValueError(f"区间内无分钟数据：{alias} [{start_ms}, {end_ms})")
     _validate_columns(bars, alias, REQUIRED_BAR_COLUMNS if selected is None else selected)
@@ -195,6 +199,12 @@ def _month_number(open_time_ms: int) -> int:
     """返回 year*12 + month 的整数（便于比较）。"""
     day = datetime.fromtimestamp(open_time_ms // 1000, tz=UTC)
     return day.year * 12 + day.month
+
+
+def _month_number_of_key(month: str) -> int:
+    """把 "YYYY-MM" 换成 `_month_number` 同口径的整数。"""
+    year, month_num = (int(part) for part in month.split("-"))
+    return year * 12 + month_num
 
 
 def month_index(open_time_ms: int, end_month: str, months: int) -> int | None:
@@ -359,13 +369,16 @@ def universe_trade_mask(
     if n == 0:
         return np.zeros(0, dtype=bool)
     months = sorted(membership)
-    month_str = pd.to_datetime(open_time, unit="ms", utc=True).strftime("%Y-%m").to_numpy()
+    # 月序号向量化（与 month_key 同口径），避免逐分钟 strftime（03 §4.2）
+    month_numbers = (
+        open_time.astype("datetime64[ms]").astype("datetime64[M]").astype("int64") + 1970 * 12 + 1
+    )
     mask = np.zeros(n, dtype=bool)
     delay_ms = new_entry_delay_days * _MS_PER_DAY
     for i, month in enumerate(months):
         if symbol not in membership[month]:
             continue
-        in_month = month_str == month
+        in_month = month_numbers == _month_number_of_key(month)
         if i == 0 or symbol not in membership[months[i - 1]]:
             in_month &= open_time >= rebalance_ms_of(month) + delay_ms
         mask |= in_month

@@ -6,15 +6,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 import pandas as pd
 
 from trade.common.anchors import anchor_series
 from trade.common.batch import batch_exit
-from trade.common.costs import net_return_after_fees
 from trade.common.entry import chase_exceeded_array, half_spread_array, stale_entry_mask
 from trade.common.exits import EXIT_TYPE_NAMES, ExitConfig, exit_anchor_spec
-from trade.common.funding import funding_rate_between, funding_settlements
+from trade.common.funding import funding_settlements
 from trade.features.kline import rv_15, true_range, wilder_atr
 
 # exit_sim 的 r_mult 截断区间（04 §7.3；triple_barrier 用 [-1.5, 3.0]，见 04 §7.4）
@@ -33,9 +34,14 @@ _LABEL_COLUMNS = (
 )
 
 
-def _labels_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+def _labels_frame(columns: Mapping[str, Sequence[object]]) -> pd.DataFrame:
     """按固定列顺序构造 labels 表（04 §7.3）。"""
-    return pd.DataFrame(rows, columns=list(_LABEL_COLUMNS))
+    return pd.DataFrame(columns, columns=list(_LABEL_COLUMNS))
+
+
+def _empty_labels_frame() -> pd.DataFrame:
+    """空 labels 表（04 §7.3），列顺序固定。"""
+    return _labels_frame({name: [] for name in _LABEL_COLUMNS})
 
 
 def _entry_columns(entry_latency_ms: int) -> tuple[str, str, str]:
@@ -105,10 +111,8 @@ def exit_sim(
     H_max = exit_cfg.H_max if exit_cfg.type != "fixed" else H_label
     sample_idx = np.asarray(sample_idx, dtype="int64")
 
-    rows: list[dict[str, object]] = []
-    kept: list[int] = []
     if sample_idx.size == 0:
-        return _labels_frame(rows), np.empty(0, dtype="int64")
+        return _empty_labels_frame(), np.empty(0, dtype="int64")
 
     # 分段边界与样本合法性一次筛完（04 §7.3、06 §3.4）：跨段的样本不产生标签
     usable = sample_idx[(sample_idx >= 0) & (sample_idx + H_max < n)]
@@ -139,7 +143,7 @@ def exit_sim(
             keep_mask[keep_mask] = subset
         usable = usable[keep_mask]
     if usable.size == 0:
-        return _labels_frame(rows), np.empty(0, dtype="int64")
+        return _empty_labels_frame(), np.empty(0, dtype="int64")
 
     # 锚点与入场成本按币算一次，与回测 precompute_trades 取同一份（06 §3.4）
     anchors = anchor_series(
@@ -182,42 +186,45 @@ def exit_sim(
         fee_maker=fees_maker,
     )
 
-    for slot in range(int(usable.shape[0])):
-        t = int(usable[slot])
-        p_fill = float(anchors.p_fill[t])
-        hs = float(anchors.half_spread[t])
-        slip_ = float(anchors.slip[t])
-        sl_t = float(anchors.sl[t])
-        exit_idx = int(batch.exit_idx[slot])
-        exit_type_code = int(batch.exit_type[slot])
-        exit_fee_rate = float(batch.fee_rate[slot])
-        exit_price = float(batch.exit_price[slot])
-        if not np.isfinite(exit_price) or exit_price <= 0.0:
-            # 出场分钟缺 aggTrades（p_1s 为空）时按该根 K 线收盘价扣成本出场（06 §3.3）；
-            # 与回测 precompute_trades 的同一回退保持一致，否则标签 r_mult 会是 NaN。
-            exit_price = float(close[exit_idx]) * (1.0 - hs - slip_)
-        fr_sum = funding_rate_between(
-            fund_times, fund_rates, int(open_time[t + 1]), int(open_time[exit_idx])
+    n_keep = int(usable.shape[0])
+    t_idx = np.asarray(usable, dtype="int64")
+    # 逐笔数值装配全部向量化（04 §7.3）：取值与逐样本循环相同，只去掉 Python 循环开销
+    p_fill = np.asarray(anchors.p_fill, dtype="float64")[t_idx]
+    hs = np.asarray(anchors.half_spread, dtype="float64")[t_idx]
+    slip_ = np.asarray(anchors.slip, dtype="float64")[t_idx]
+    sl_t = np.asarray(anchors.sl, dtype="float64")[t_idx]
+    exit_idx = np.asarray(batch.exit_idx, dtype="int64")
+    exit_fee = np.asarray(batch.fee_rate, dtype="float64")
+    exit_price = np.array(batch.exit_price, dtype="float64", copy=True)
+    bad_price = ~np.isfinite(exit_price) | (exit_price <= 0.0)
+    if bad_price.any():
+        # 出场分钟缺 aggTrades（p_1s 为空）时按该根 K 线收盘价扣成本出场（06 §3.3）；
+        # 与回测 precompute_trades 的同一回退保持一致，否则标签 r_mult 会是 NaN。
+        exit_price[bad_price] = close[exit_idx[bad_price]] * (
+            1.0 - hs[bad_price] - slip_[bad_price]
         )
-        ret_net = net_return_after_fees(
-            gross_return=exit_price / p_fill - 1.0,
-            entry_fee_rate=fees_taker,
-            exit_fee_rate=exit_fee_rate,
-            funding_rate=fr_sum,
-        )
-        r_net = ret_net / sl_t
-        rows.append(
-            {
-                "open_time": int(open_time[t]),
-                "y": int(r_net >= y_min_r),
-                "r_mult": float(np.clip(r_net, _R_MULT_CLIP[0], _R_MULT_CLIP[1])),
-                "exit_type": EXIT_TYPE_NAMES[exit_type_code],
-                "sl": sl_t,
-                "ret_net": ret_net,
-                "bars_held": int(batch.bars_held[slot]),
-                "t_exit": int(open_time[exit_idx]),
-            }
-        )
-        kept.append(t)
-
-    return _labels_frame(rows), np.asarray(kept, dtype="int64")
+    if fund_times.size:
+        # 前缀和做区间求和：entry_ts < ft <= exit_ts 的费率之和（06 §3.3），与
+        # funding_rate_between 的 searchsorted 口径一致
+        lo = np.searchsorted(fund_times, open_time[t_idx + 1], side="right")
+        hi = np.searchsorted(fund_times, open_time[exit_idx], side="right")
+        cumulative = np.concatenate((np.zeros(1, dtype="float64"), np.cumsum(fund_rates)))
+        fr_sum = cumulative[hi] - cumulative[lo]
+    else:
+        fr_sum = np.zeros(n_keep, dtype="float64")
+    gross_return = exit_price / p_fill - 1.0
+    ret_net = gross_return - fees_taker - exit_fee * (1.0 + gross_return) - fr_sum
+    r_net = ret_net / sl_t
+    labels = _labels_frame(
+        {
+            "open_time": open_time[t_idx],
+            "y": (r_net >= y_min_r).astype("int64"),
+            "r_mult": np.clip(r_net, _R_MULT_CLIP[0], _R_MULT_CLIP[1]),
+            "exit_type": [EXIT_TYPE_NAMES[int(code)] for code in np.asarray(batch.exit_type)],
+            "sl": sl_t,
+            "ret_net": ret_net,
+            "bars_held": np.asarray(batch.bars_held, dtype="int64"),
+            "t_exit": open_time[exit_idx],
+        }
+    )
+    return labels, t_idx

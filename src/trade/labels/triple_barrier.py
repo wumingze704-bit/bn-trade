@@ -316,11 +316,18 @@ def uniqueness_weights(sample_idx: np.ndarray, bars_held: np.ndarray) -> np.ndar
     bars_held = np.asarray(bars_held, dtype="int64")
     if sample_idx.shape[0] == 0:
         return np.empty(0, dtype="float64")
-    max_bar = int(np.max(sample_idx + bars_held))
+    starts = sample_idx + 1
+    ends = starts + bars_held  # 标签窗口 [start+1, start+held] 的右开边界
+    max_bar = int(ends.max())
     concurrent = np.zeros(max_bar + 2, dtype="int64")
-    for start, held in zip(sample_idx, bars_held, strict=True):
-        concurrent[start + 1 : start + held + 1] += 1
-    weights = np.empty(sample_idx.shape[0], dtype="float64")
-    for i, (start, held) in enumerate(zip(sample_idx, bars_held, strict=True)):
-        weights[i] = float(np.mean(1.0 / concurrent[start + 1 : start + held + 1]))
-    return weights
+    np.add.at(concurrent, starts, 1)
+    np.add.at(concurrent, ends, -1)
+    concurrent = np.cumsum(concurrent)
+    with np.errstate(divide="ignore"):
+        inverse = 1.0 / concurrent
+    # 逐根 K 线向后累加（每样本至多 H_max 项），避免逐样本 numpy 切片开销
+    weights = np.zeros(sample_idx.shape[0], dtype="float64")
+    for offset in range(1, int(bars_held.max()) + 1):
+        active = bars_held >= offset
+        weights[active] += inverse[starts[active] + offset - 1]
+    return weights / bars_held
