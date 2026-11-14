@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
     parser.add_argument("--backtest", type=Path, default=Path("configs/backtest.yaml"))
     parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
+    parser.add_argument(
+        "--limit-coins",
+        type=int,
+        default=None,
+        help="只处理前 N 个币（按 alias 升序）；小内存机器跑通流程用，正式运行不要给",
+    )
     return parser
 
 
@@ -51,6 +57,14 @@ def main() -> None:
     months = universe_months(base)
     membership = load_universe_membership(base.paths.data_root, months)
     entries = collect_universe_coins(base.paths.data_root, months)
+    if args.limit_coins is not None:
+        # 小内存跑通用：只取有首个调参月数据的币（缺数据的币正式运行必须报错，红线 13）
+        first_key = months[0].replace("-", "")
+        entries = [
+            entry
+            for entry in entries
+            if (base.paths.data_root / "bars" / entry.alias / f"{first_key}.parquet").is_file()
+        ][: args.limit_coins]
     frames = []
     for entry in entries:
         bars = load_bars(

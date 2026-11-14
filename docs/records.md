@@ -1,3 +1,18 @@
+## 2026-11-15 R0 回测跑通、θ 候选下限调整与服务器约束
+
+- **θ 候选下限（05 §7.2）**：候选集由 {0.30, 0.32, …, 0.80} 改为 {0.10, 0.12, …, 0.80}（36 个）。原因：M0 概率 P99 实测 0.24~0.30，原下限 0.30 在任何折都无法满足“验证段日均 ≥ 3 笔”，`select_threshold` 必然报错；下调下限只扩大候选集，PF 保留 0.9 与日均 3 笔的判定规则不变。`tests/models/test_calibration.py::test_threshold_grid_range` 同步改为断言 0.10/0.80/36 个（红线 12 要求记录：本次改测试是使用者授权的方法调整附带项）。
+- **`--limit-coins N`**：`scripts/r0_signals.py`、`scripts/backtest.py`、`scripts/train_walkforward.py` 新增该开关（按 alias 升序、只取有首个调参月 bars 的币）。小内存机器跑通用，正式运行不给该参数；缺数据的币在正式路径仍按红线 13 报错。
+- **服务器工具链**：venv 补装 `torch 2.15.0+cpu`（`trade.models.dataset` 顶层 import torch，LightGBM 路径也绕不开）、`matplotlib`（报告绘图必需，缺它回测会在最后一步失败）。
+- **服务器内存天花板**：366 MB~3.6 GB 的机器上，全量 237 币的训练与回测都需要 10~20 GB（`WindowDataset` 常驻每币 (分钟数 × F) 的张量、`prepare_symbols` 常驻每币 15 个 float64 数组）。因此本轮全部用 `--limit-coins 20` 规模跑通；全量必须换 16 GB+ 机器或把这两处改成流式（与 `tuning_exits --low-memory` 同一思路）。
+- **OOM 事故与恢复**：全量训练（237 币）启动后被内核 OOM 杀掉，连带把 bookTicker 录制进程带走；已重启录制（tmux `rec`，日志 `artifacts/live/book_recording4.log`，7 天窗口重新计时）。事故后 `free` 恢复正常，`ds_20261114b` 未受影响。
+- **R0 回测（真实运行，reference / base）**：
+  - 全窗口信号（M1 起）：979 笔，net −19.31 USDT（−19.31%）、PF 0.535；第 6 天即触发 R8（峰値回撤 ≥ 20%）并按 `halt_mode=strict` 停止交易 → 报告里 `halted` 跳过 19,845 条。
+  - 测试段信号（M13~M22，20 币、389,671 行信号、6,525 条 p=1）：206 笔，net −18.36 USDT（−18.36%）、PF 0.499、胜率 27.2%、含返佣 −14.76 USDT（PF 0.567）；G2-U 月收益中位 −8.23%、最差月 −16.46%、11 个月为负、最大回撤 20.19%、stress −15.81 → **G2 不通过**；DSR 0.546（N=3）。
+  - 结论：R0（规则基线）在测试段明确为负期望，模型必须显著优于它才有意义；这两份报告是 G2「必须优于 R0」的对照基线。
+- **G2 回测的调用口径**：`scripts/backtest.py` 的权益曲线起点是数据窗口起点（M1），`test_months` 只影响报告/闸门的月份口径；要跑测试段必须把 signals.parquet 裁剪到 M13~M22（本轮用独立信号文件 `artifacts/signals/r0_scope20_test.parquet`）。
+- **仍缺的一块**：`trade.models.walkforward.run_fold` 只有 PyTorch 路径（`train_ensemble`），`arch=lgbm` 会抛 `build_model` 的 ValueError；M0 的 LightGBM 训练只存在于 `tuning_models`/分析脚本。要在服务器（无 GPU、3.6 GB）产出 M0 的 walk-forward signals，需要给 `run_fold` 加 lgbm 分支（表格特征 + `train_lgbm` + 温度校准），或在 GPU 大内存机器上跑 TCN。
+
+
 ## 2026-11-14 剩余步骤收尾（第 4、12、15、19、20、22 步）
 
 - **第 15 步（bars 一致性）**：以本地 `data/bars` 的 2077 个文件为清单，两端各算一遍 SHA256（本地 `artifacts/reports/bars_sha256_local.txt`、服务器 `artifacts/reports/bars_sha256_remote.txt`）：**2077/2077 完全相同、0 处差异**。数据集在服务器重建为 `ds_20261114b`（237 币、7,108,730 样本、`notional_ref=100`）。本地不再拉取 4.9 GB 数据集，训练与回测统一在服务器执行。

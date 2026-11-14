@@ -142,6 +142,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--signals-dir", type=Path, default=Path("artifacts/signals/walkforward"))
     parser.add_argument("--final", action="store_true", help="训练 F_final（M1~M21 / M22）")
     parser.add_argument("--dry-run", action="store_true", help="只打印折划分")
+    parser.add_argument(
+        "--limit-coins",
+        type=int,
+        default=None,
+        help="只处理前 N 个币（按 alias 升序）；小内存机器跑通流程用，正式运行不要给",
+    )
     return parser
 
 
@@ -180,6 +186,14 @@ def main(argv: list[str] | None = None) -> int:
     # 排除封存集才首次入选的币：本地没有它们的 bars，红线 2 禁止加载（03 §6）。
     dev_months = months[: len(months) - base_cfg.data_window.holdout_months]
     entries = collect_universe_coins(base_cfg.paths.data_root, dev_months)
+    if args.limit_coins is not None:
+        # 小内存跑通用：只取有首个调参月数据的币（缺数据的币正式运行必须报错，红线 13）
+        first_key = months[0].replace("-", "")
+        entries = [
+            entry
+            for entry in entries
+            if (base_cfg.paths.data_root / "bars" / entry.alias / f"{first_key}.parquet").is_file()
+        ][: args.limit_coins]
     membership = load_universe_membership(base_cfg.paths.data_root, dev_months)
     groups = {entry.alias: role_for_symbol(entry.symbol, universe_cfg.roles) for entry in entries}
     train_symbols = [alias for alias, role in groups.items() if role == "train"]

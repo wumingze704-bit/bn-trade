@@ -133,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="数据集 manifest.json：报告首页注明段尾丢弃样本数（04 §8、06 §9）",
     )
+    parser.add_argument(
+        "--limit-coins",
+        type=int,
+        default=None,
+        help="只处理前 N 个币（按 alias 升序）；小内存机器跑通流程用，正式运行不要给",
+    )
     return parser
 
 
@@ -312,6 +318,14 @@ def main(argv: list[str] | None = None) -> int:
     # 非 --final 时排除封存集才首次入选的币：本地没有它们的 bars，红线 2 禁止加载（03 §6）。
     dev_months = months if args.final else months[: len(months) - base.data_window.holdout_months]
     coins = collect_universe_coins(base.paths.data_root, dev_months)
+    if args.limit_coins is not None:
+        # 小内存跑通用：只取有首个调参月数据的币（缺数据的币正式运行必须报错，红线 13）
+        first_key = months[0].replace("-", "")
+        coins = [
+            coin
+            for coin in coins
+            if (base.paths.data_root / "bars" / coin.alias / f"{first_key}.parquet").is_file()
+        ][: args.limit_coins]
 
     wb = window_bounds(base)
     run_end_ms = wb.end_ms if args.final else wb.holdout_start_ms

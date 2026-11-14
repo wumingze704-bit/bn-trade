@@ -19,7 +19,7 @@ from trade.common.exits import ExitConfig
 from trade.features import enabled_features, feature_hash
 from trade.features.registry import FeaturesConfig
 
-THRESHOLD_MIN = 0.30
+THRESHOLD_MIN = 0.10
 THRESHOLD_MAX = 0.80
 THRESHOLD_STEP = 0.02
 MIN_TRADES_PER_DAY = 3.0
@@ -91,7 +91,7 @@ def expected_calibration_error(y: np.ndarray, p: np.ndarray, *, bins: int = 10) 
 
 
 def threshold_grid() -> list[float]:
-    """阈值候选 θ ∈ {0.30, 0.32, …, 0.80}（05 §7.2）。"""
+    """阈值候选 θ ∈ {0.10, 0.12, …, 0.80}（05 §7.2）。"""
     count = int(round((THRESHOLD_MAX - THRESHOLD_MIN) / THRESHOLD_STEP)) + 1
     return [round(THRESHOLD_MIN + index * THRESHOLD_STEP, 4) for index in range(count)]
 

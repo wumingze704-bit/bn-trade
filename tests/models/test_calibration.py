@@ -33,9 +33,9 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 def test_threshold_grid_range() -> None:
     grid = threshold_grid()
-    assert grid[0] == 0.30
+    assert grid[0] == 0.10
     assert grid[-1] == 0.80
-    assert len(grid) == 26
+    assert len(grid) == 36
     assert all(abs(b - a - 0.02) < 1e-9 for a, b in zip(grid, grid[1:], strict=False))
 
 
