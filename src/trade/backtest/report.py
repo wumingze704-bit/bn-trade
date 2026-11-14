@@ -10,6 +10,7 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
 
@@ -181,6 +182,43 @@ def write_gate_s8(gate_path: Path, payload: dict[str, object]) -> dict[str, obje
     return gate
 
 
+def risk_summary(run_results: dict[str, dict[str, PortfolioResult]]) -> dict[str, object]:
+    """汇总各运行/情景的风控触发与因风控放弃的信号数（06 §6、§8）。
+
+    Returns:
+        `{"reference/base": {"events": [...], "skipped_by_reason": {...}}, ...}`；
+        没有触发也没有放弃记录时不写入该键。
+    """
+    summary: dict[str, object] = {}
+    watched = {
+        "daily_loss_stop",
+        "consecutive_loss_pause",
+        "halted",
+        "equity_floor",
+    }
+    for run, scenarios in run_results.items():
+        for scen, result in scenarios.items():
+            counts: dict[str, int] = {}
+            for item in result.skipped:
+                if item.reason in watched:
+                    counts[item.reason] = counts.get(item.reason, 0) + 1
+            if not result.risk_events and not counts:
+                continue
+            summary[f"{run}/{scen}"] = {
+                "events": [
+                    {
+                        "ts_ms": event.ts_ms,
+                        "day": event.day,
+                        "rule": event.rule,
+                        "action": event.action,
+                    }
+                    for event in result.risk_events
+                ],
+                "skipped_by_reason": counts,
+            }
+    return summary
+
+
 def write_report(
     report_dir: Path,
     run_id: str,
@@ -196,12 +234,15 @@ def write_report(
     signals_kind: str | None = None,
     model_id: str | None = None,
     g2_user: dict[str, object] | None = None,
+    fold_summary: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
 ) -> None:
     """写出 report.md / summary.json / equity / trades / skipped / gate.json（06 §8）。
 
     `run_results` 为 run → scenario → PortfolioResult；每笔交易与放弃信号保留真实的
     run 与 scenario（06 §8，T0.11）。`s11` 为 S11 的 `{"n_trials", "dsr"}`，用于
-    报告首页展示 Deflated Sharpe 概率（06 §7 S11）。
+    报告首页展示 Deflated Sharpe 概率（06 §7 S11）。`notes` 为报告首页的注记
+    （如 tick/历史价格口径、段尾丢弃样本数，06 §9）。
     """
     report_dir.mkdir(parents=True, exist_ok=True)
     trade_frames: list[pd.DataFrame] = []
@@ -239,12 +280,26 @@ def write_report(
     )
     if g2_user is not None:
         gate["g2_user"] = g2_user
+    risk = risk_summary(run_results)
+    if risk:
+        gate["risk"] = risk
+    if fold_summary is not None:
+        gate["folds"] = fold_summary
     (report_dir / "gate.json").write_text(
         json.dumps(gate, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (report_dir / "report.md").write_text(
         _render_report_md(
-            run_id, source, summary, reference_metrics, sanity_results, s11, g2_user=g2_user
+            run_id,
+            source,
+            summary,
+            reference_metrics,
+            sanity_results,
+            s11,
+            g2_user=g2_user,
+            risk=risk,
+            fold_summary=fold_summary,
+            notes=notes,
         ),
         encoding="utf-8",
     )
@@ -258,6 +313,20 @@ def write_report(
     write_all_charts(report_dir)
 
 
+def _float_of(value: object) -> float:
+    """把 gate/report 里的数值字段转成 float（容忍 int/float/字符串）。"""
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(str(value))
+
+
+def _int_of(value: object) -> int:
+    """把 gate/report 里的计数字段转成 int（容忍 float 形态的整数）。"""
+    return int(round(_float_of(value)))
+
+
 def _render_report_md(
     run_id: str,
     source: str,
@@ -266,6 +335,9 @@ def _render_report_md(
     sanity_results: dict[str, str],
     s11: dict[str, float] | None = None,
     g2_user: dict[str, object] | None = None,
+    risk: dict[str, Any] | None = None,
+    fold_summary: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
 ) -> str:
     lines = [
         f"# 回测报告 {run_id}",
@@ -276,6 +348,8 @@ def _render_report_md(
         "## 1. 摘要（reference / base）",
         "",
     ]
+    for note in notes or []:
+        lines.append(f"- {note}")
     for key in (
         "net_return_usdt",
         "net_return_pct",
@@ -292,13 +366,18 @@ def _render_report_md(
         lines.append(f"- {key}: {reference_metrics.get(key)}")
     if g2_user is not None:
         status = "通过" if g2_user.get("passed") else "未通过"
+        median_monthly = _float_of(g2_user["median_monthly_return"])
+        worst_monthly = _float_of(g2_user["worst_monthly_return"])
+        losing_months = _int_of(g2_user["losing_months"])
+        max_drawdown = _float_of(g2_user["max_drawdown"])
+        stress_net = _float_of(g2_user["stress_net_return_usdt"])
         lines.append(
             "- G2-U（user 运行）：月收益中位数 "
-            f"{float(g2_user['median_monthly_return']):.2%}、最差月 "
-            f"{float(g2_user['worst_monthly_return']):.2%}、亏损月数 "
-            f"{int(g2_user['losing_months'])}、最大回撤 "
-            f"{float(g2_user['max_drawdown']):.2%}、stress 净收益 "
-            f"{float(g2_user['stress_net_return_usdt']):.4f} → {status}"
+            f"{median_monthly:.2%}、最差月 "
+            f"{worst_monthly:.2%}、亏损月数 "
+            f"{losing_months}、最大回撤 "
+            f"{max_drawdown:.2%}、stress 净收益 "
+            f"{stress_net:.4f} → {status}"
         )
     if s11 is not None:
         n_trials = int(s11["n_trials"])
@@ -330,6 +409,38 @@ def _render_report_md(
     lines += ["", "## 3. 健全性检验（06 §7）", "", "| 编号 | 结果 |", "| :-- | :-- |"]
     for code, status in sanity_results.items():
         lines.append(f"| {code} | {status} |")
+    if fold_summary is not None:
+        lines += [
+            "",
+            "## 4. 各折参数与测试段（06 §8）",
+            "",
+            "| 折 | 测试月 | θ | 温度 T | 验证 PR-AUC | 测试信号条数 |",
+            "| :-- | :-- | :-- | :-- | :-- | :-- |",
+        ]
+        for fold in fold_summary:
+            months = "、".join(str(month) for month in fold.get("test_months") or [])
+            lines.append(
+                f"| {fold.get('fold_id')} | {months} | {float(fold.get('theta', 0.0)):.2f} "
+                f"| {float(fold.get('temperature', 0.0)):.3f} "
+                f"| {float(fold.get('val_pr_auc', 0.0)):.4f} "
+                f"| {int(fold.get('n_test_signals', 0))} |"
+            )
+    if risk:
+        lines += [
+            "",
+            "## 5. 风控触发（06 §6、§8）",
+            "",
+            "| 运行/情景 | 规则 | 日期 | 动作 |",
+            "| :-- | :-- | :-- | :-- |",
+        ]
+        for key, payload in risk.items():
+            events = payload.get("events") if isinstance(payload, dict) else None
+            for event in events or []:
+                lines.append(f"| {key} | {event['rule']} | {event['day']} | {event['action']} |")
+            counts = payload.get("skipped_by_reason") if isinstance(payload, dict) else None
+            if counts:
+                detail = "、".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
+                lines.append(f"| {key} | 因风控放弃 | — | {detail} |")
     return "\n".join(lines) + "\n"
 
 

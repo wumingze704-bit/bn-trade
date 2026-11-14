@@ -42,6 +42,7 @@ def _bars(n: int = 300, *, rise_after: int = 20) -> pd.DataFrame:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": 0,
             "hi_post_1s": high,
             "lo_post_1s": low,
             "p_3s": close,
@@ -70,6 +71,7 @@ def test_sizing_sweep_rows_and_files(tmp_path: Path) -> None:
             "p": [0.9],
             "m": [0.5],
             "is_sample": [1],
+            "theta": [0.5],
         }
     )
     backtest_cfg, exit_cfg, sizing_cfg, features_cfg, fees = _configs()
@@ -109,6 +111,7 @@ def test_sizing_sweep_max_positions_cap() -> None:
             "p": [0.9],
             "m": [0.0],
             "is_sample": [1],
+            "theta": [0.5],
         }
     )
     backtest_cfg, exit_cfg, sizing_cfg, features_cfg, fees = _configs()

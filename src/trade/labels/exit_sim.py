@@ -11,6 +11,8 @@ import pandas as pd
 
 from trade.common.anchors import anchor_series
 from trade.common.batch import batch_exit
+from trade.common.costs import net_return_after_fees
+from trade.common.entry import chase_exceeded_array, half_spread_array, stale_entry_mask
 from trade.common.exits import EXIT_TYPE_NAMES, ExitConfig, exit_anchor_spec
 from trade.common.funding import funding_rate_between, funding_settlements
 from trade.features.kline import rv_15, true_range, wilder_atr
@@ -77,6 +79,10 @@ def exit_sim(
     low = bars["low"].to_numpy(dtype="float64")
     open_ = bars["open"].to_numpy(dtype="float64")
     p_entry = bars[p_col].to_numpy(dtype="float64")
+    filled_col = "p_3s_filled" if entry_latency_ms == 3000 else "p_1s_filled"
+    if filled_col not in bars:
+        raise ValueError(f"bars 缺少列 {filled_col}（03 §2.2、06 §3.1）")
+    entry_filled = bars[filled_col].to_numpy(dtype="int64")
     hi_post = bars[hi_col].to_numpy(dtype="float64")
     lo_post = bars[lo_col].to_numpy(dtype="float64")
     missing_cols = [name for name in ("kline_missing", "aggtrades_missing") if name not in bars]
@@ -109,14 +115,27 @@ def exit_sim(
         usable = usable[segments[usable + H_max] == segments[usable]]
         p_raw_arr = p_entry[usable + 1]
         close_at = close[usable]
+        # 开仓条件与回测同一份实现（06 §3.1 条件 1、5；红线 4）：陈旧价放弃、按卖一近似判追价
         keep_mask = (
             (kline_missing[usable + 1] == 0)
+            & ~stale_entry_mask(entry_filled[usable + 1])
             & np.isfinite(p_raw_arr)
             & (p_raw_arr > 0.0)
-            & (p_raw_arr <= close_at * (1.0 + max_chase))
+            & np.isfinite(close_at)
+            & (close_at > 0.0)
             & np.isfinite(sigma_arr[usable])
             & np.isfinite(rv15_arr[usable])
         )
+        if keep_mask.any():
+            chase = chase_exceeded_array(
+                p_raw=p_raw_arr[keep_mask],
+                half_spread=half_spread_array(close_at[keep_mask], tick_size, half_spread_min),
+                close_t=close_at[keep_mask],
+                max_chase=max_chase,
+            )
+            subset = keep_mask[keep_mask]
+            subset[chase] = False
+            keep_mask[keep_mask] = subset
         usable = usable[keep_mask]
     if usable.size == 0:
         return _labels_frame(rows), np.empty(0, dtype="int64")
@@ -179,7 +198,12 @@ def exit_sim(
         fr_sum = funding_rate_between(
             fund_times, fund_rates, int(open_time[t + 1]), int(open_time[exit_idx])
         )
-        ret_net = exit_price / p_fill - 1.0 - fees_taker - exit_fee_rate - fr_sum
+        ret_net = net_return_after_fees(
+            gross_return=exit_price / p_fill - 1.0,
+            entry_fee_rate=fees_taker,
+            exit_fee_rate=exit_fee_rate,
+            funding_rate=fr_sum,
+        )
         r_net = ret_net / sl_t
         rows.append(
             {

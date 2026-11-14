@@ -483,6 +483,7 @@ def _write_s8_fixture(tmp_path):
             "open_time": np.array([start + 200 * 60_000], dtype="int64"),
             "p": [1.0],
             "m": [0.0],
+            "theta": [0.5],
         }
     )
     signals_path = tmp_path / "signals.parquet"

@@ -22,6 +22,7 @@ import numpy as np
 import numpy.typing as npt
 
 from trade.common._numba import njit
+from trade.common.entry import half_spread_for
 
 # 防除零（04 §1）
 _EPS = 1e-12
@@ -169,8 +170,7 @@ def anchor_at_py(
         (down, up, p_fill, sl, r_dist, min_move, slip, slip_stop, half_spread, loss_rate)。
     """
     sl_ = min(max(spec.k_sl * sigma, spec.sl_min), spec.sl_max)
-    tick_rel = tick_size / close_t
-    hs = max(0.5 * tick_rel, spec.half_spread_min)
+    hs = half_spread_for(close_t, tick_size, spec.half_spread_min)
     if math.isnan(spec.fixed_slip):
         slip_ = spec.slip_min + spec.Y * rv15 * math.sqrt(spec.notional_ref / (qv + _EPS))
     else:

@@ -22,7 +22,8 @@ from trade.common.anchors import (
     trade_anchors_py,
 )
 
-# 出场类型编码（06 §6：初始止损/保本/追踪/封顶止盈/无进展/超时；eod 为数据末尾实现约定）
+# 出场类型编码（06 §6：初始止损/保本/追踪/封顶止盈/无进展/超时；eod 为数据末尾实现约定，
+# risk_halt 为回测风控 R6/R8 强平）
 _EXIT_INITIAL_STOP = 0
 _EXIT_BREAKEVEN = 1
 _EXIT_TRAIL = 2
@@ -30,6 +31,7 @@ _EXIT_TP = 3
 _EXIT_STALL = 4
 _EXIT_TIMEOUT = 5
 _EXIT_EOD = 6
+EXIT_RISK_HALT = 7
 
 EXIT_TYPE_NAMES = {
     _EXIT_INITIAL_STOP: "initial_stop",
@@ -39,6 +41,7 @@ EXIT_TYPE_NAMES = {
     _EXIT_STALL: "stall",
     _EXIT_TIMEOUT: "timeout",
     _EXIT_EOD: "eod",
+    EXIT_RISK_HALT: "risk_halt",
 }
 
 # 出场模式编码（06 §3.3）

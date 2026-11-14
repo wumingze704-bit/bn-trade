@@ -60,6 +60,7 @@ def _fixture(seed: int):
                 "kline_missing": 0,
                 "aggtrades_missing": 0,
                 "p_1s": close,
+                "p_1s_filled": 0,
                 "hi_post_1s": high,
                 "lo_post_1s": low,
             }
@@ -74,6 +75,7 @@ def _fixture(seed: int):
                     "p": np.ones(int(mask.sum())),
                     "m": np.zeros(int(mask.sum())),
                     "is_sample": np.ones(int(mask.sum()), dtype="int64"),
+                    "theta": np.zeros(int(mask.sum()), dtype="float64"),
                 }
             )
         )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from trade.common import risk_rules
 from trade.common.sizing import SizingConfig, equity_floor_hit
 from trade.live.config import HealthConfig, RiskConfig
 
@@ -70,25 +71,35 @@ def check_chase(chase_ratio: float, max_chase: float) -> bool:
 
 
 def check_daily_loss(daily_pnl: float, day_start_equity: float, ratio: float) -> bool:
-    """R5 日亏损停止（07 §7.1）。"""
-    return daily_pnl > -day_start_equity * ratio
+    """R5 日亏损停止（07 §7.1）：未达阈值返回 True。
+
+    判定与回测共用 `trade.common.risk_rules.daily_loss_pnl`（06 §3.1 条件 4）。
+    """
+    return not risk_rules.daily_loss_pnl(daily_pnl, day_start_equity, ratio)
 
 
 def check_daily_halt(daily_pnl: float, day_start_equity: float, ratio: float) -> bool:
-    """R6 日亏损熔断（07 §7.1）。"""
-    return daily_pnl <= -day_start_equity * ratio
+    """R6 日亏损熔断（07 §7.1）：达到阈值返回 True。
+
+    判定与回测共用 `trade.common.risk_rules.daily_loss_pnl`（06 §3.1 条件 4）。
+    """
+    return risk_rules.daily_loss_pnl(daily_pnl, day_start_equity, ratio)
 
 
 def check_consecutive_losses(n: int, limit: int) -> bool:
-    """R7 连续止损（07 §7.1）。"""
-    return n < limit
+    """R7 连续止损（07 §7.1）：未达上限返回 True。
+
+    判定与回测共用 `trade.common.risk_rules.consecutive_losses_hit`。
+    """
+    return not risk_rules.consecutive_losses_hit(n, limit)
 
 
 def check_drawdown(equity: float, peak_equity: float, ratio: float) -> bool:
-    """R8 权益从峰值回撤（07 §7.1）。"""
-    if peak_equity <= 0:
-        return False
-    return (peak_equity - equity) / peak_equity >= ratio
+    """R8 权益从峰值回撤（07 §7.1）：达到阈值返回 True。
+
+    判定与回测共用 `trade.common.risk_rules.drawdown_hit`。
+    """
+    return risk_rules.drawdown_hit(equity, peak_equity, ratio)
 
 
 def check_spread(spread_bp: float, median_spread_bp: float, mult: float) -> bool:

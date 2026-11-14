@@ -121,7 +121,12 @@ def test_组合模拟扣资金费() -> None:
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.funding_fee == pytest.approx(trade.notional * 0.0003)
-    expected_net = trade.notional * (0.01 - 0.0005 - 0.0002) - trade.funding_fee
+    # 出场手续费按出场名义价值 notional × (1 + gross_return) 计（06 §4.1）
+    expected_net = (
+        trade.notional * (0.01 - 0.0005)
+        - trade.notional * (1.0 + 0.01) * 0.0002
+        - trade.funding_fee
+    )
     assert trade.net_pnl == pytest.approx(expected_net)
 
 
@@ -143,6 +148,7 @@ def test_precompute_trades记录资金费率() -> None:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": 0,
             "hi_post_1s": close * 1.001,
             "lo_post_1s": close * 0.999,
         }
@@ -152,7 +158,13 @@ def test_precompute_trades记录资金费率() -> None:
     bars["funding_time"] = [_T0 - 8 * 3_600_000] * 5 + [settle_ts] * (n - 5)
     bars["funding_rate"] = [0.0001] * 5 + [0.0002] * (n - 5)
     signals = pd.DataFrame(
-        {"open_time": [open_time[t_signal]], "p": [1.0], "m": [0.0], "is_sample": [1]}
+        {
+            "open_time": [open_time[t_signal]],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.5],
+        }
     )
     trades, _ = precompute_trades(
         bars,

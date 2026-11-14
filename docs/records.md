@@ -86,3 +86,15 @@
 - 提速：同一台本地机器、5 币 × 2025-07、`--suite full`，改动前 `artifacts/bench/baseline_5x1_v3` 合计 316.43 s（reference/base 预计算 16.50 s、sizing_sweep 77.08 s），改动后 `artifacts/bench/step7_5x1` 合计 41.47 s（reference/base 预计算 3.73 s、sizing_sweep 4.32 s）。两次运行都包含 jitted 编译时间。
 
 
+
+## 2026-11-13 第 13/15/16/18/19/20/22/23 步实测与接口核对
+
+- 入场口径（第 13 步）：`p_1s_filled`/`p_3s_filled` 由 `trade.data.aggregate` 在首秒无成交（沿用上一分钟收盘价）或整分钟缺逐笔时置 1；回测与 `exit_sim` 现在把这两种情况都视为陈旧价并放弃信号。追价判断改为卖一近似 `p_raw × (1 + half_spread)`，与 `trade.live.orders.compute_limit_price` 的 `min(ask × (1 + 2 tick_rel), c_t × (1 + max_chase))` 同口径。
+- 本地回归：`py -3.13 -m pytest -q` 全绿（见完成报告）；回测层 115 个测试、标签层 19 个测试。
+- 信号密度（第 22 步，真实运行，本地调参期 M1~M12，169 个币）：2024-10 因预热只覆盖部分月份，预过滤样本 13914（9.28/币/日）；2024-11~2025-09 每月 447866~534252 条（248.81~296.81/币/日），每月入选币数 50~60。明细见 `artifacts/reports/signal_density.md`。θ = 0.30/0.50/0.70 的日均信号数需 M0 信号，本地无信号文件，未运行。
+- 未运行（依赖服务器或重建后的数据集）：第 13 步 IOC 未成交率统计（需 M10~M12 原始逐笔）；第 15 步 pull-data 后的两端 SHA256 对比与数据集重建；第 19 步实测点差分位数（需 bookTicker 录制 ≥ 7 天）；第 20 步嵌套确认 6 组真实结果。
+- 风控停机模式（第 18 步）：`risk.halt_mode` 默认 `strict`（严格停机）；另一选项 `reset`（停 `halt_reset_days` 天后按当时权益继续）已实现，选哪一个与闸门口径需使用者确认（AGENTS.md §6 红线 5）。
+
+- 真实数据冒烟（2026-11-13，本地 C001、M1~M22 bars 1006560 行、146007 个 p=1 信号、θ=0）：`run_backtest` 用时 10.53 秒，成交 68 笔、跳过 145939 条；跳过原因含 `entry_price_stale` 12455、`halted` 132680、`chase` 23、`no_entry_price` 1；风控触发 R5（2025-01-11、2025-01-12）与 R8（2025-01-13）后按 `halt_mode=strict` 停止交易；期末权益 83.61（起始 100）。该次冒烟说明：单币、全部预过滤样本开仓时，R5/R8 会在两周内触发，回测剩余月份不再交易——闸门运行需要按真实仓位口径复核停机模式（见 `.clinerules` 与 06 §2）。
+- 数据质量：C001 的 M1~M22 bars 中有 34 个分钟 `p_1s` 与 `p_1s_filled` 同时为 NaN（`is_filled = 0`）。回测把这类分钟按 `no_entry_price` 放弃，不把 NaN 当作“非陈旧价”也不当作 1。
+

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,9 @@ class ThresholdChoice:
     best_theta: float
     best_profit_factor: float
     n_candidates: int
+    # 验证集 θ 网格上的 PF 与笔数（05 §9 model_meta.json 的 threshold_selection 记录）
+    pf_by_theta: dict[float, float] = field(default_factory=dict)
+    n_trades_by_theta: dict[float, int] = field(default_factory=dict)
 
 
 def sigmoid(logits: np.ndarray) -> np.ndarray:
@@ -146,6 +149,14 @@ def select_threshold(
         best_theta=float(best_theta),
         best_profit_factor=best_pf,
         n_candidates=len(eligible),
+        pf_by_theta={
+            float(theta): float(metrics.get("profit_factor", 0.0))
+            for theta, metrics in sorted(metrics_by_theta.items())
+        },
+        n_trades_by_theta={
+            float(theta): int(metrics.get("n_trades", 0.0))
+            for theta, metrics in sorted(metrics_by_theta.items())
+        },
     )
 
 

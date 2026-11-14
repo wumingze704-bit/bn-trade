@@ -8,8 +8,16 @@ costs: # 成本模型（06 §4）
   half_spread_min: 0.0001 # 最小半价差 1bp（06 §3.2）
   slip_min: 0.0001 # 最小单边滑点 1bp（06 §4.2）
   Y: 1.0 # 平方根冲击模型系数（06 §4.2）
+  order_rtt_ms: 200 # 读价到订单到达的往返时延（06 §4.3 ioc_miss 判定）
+  spread_profile: null # 实测点差画像路径（artifacts/costs/spread_profile.parquet；spread_measured 情景用）
 
 scenarios: [base, stress, hell, breakeven] # 每次回测必须全部运行（06 §4.3）
+
+risk: # 风控与交易规则（06 §3.1、§3.4）
+  cooldown_bars: 15 # 该币止损后冷却根数
+  max_chase: 0.003 # 追价上限 0.3%（与实盘 risk.max_chase 同一配置项）
+  halt_mode: strict # R6/R8 触发后：strict=停止交易至运行结束，reset=停 halt_reset_days 天后继续（06 §2）
+  halt_reset_days: 1 # reset 模式的停机自然日数
 
 sizing_sweep: # 比例敏感性扫描（06 §5.5）
   position_frac: [0.1, 0.15, 0.2, 0.3]

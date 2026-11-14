@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from trade.backtest.engine import BacktestConfig
 from trade.backtest.r0 import TrainConfig, r0_signals_for_symbol
 from trade.common.config import BaseConfig, load_config
 from trade.data.loader import (
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--features", type=Path, default=Path("configs/features.yaml"))
     parser.add_argument("--train", type=Path, default=Path("configs/train.yaml"))
+    parser.add_argument("--backtest", type=Path, default=Path("configs/backtest.yaml"))
     parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
     return parser
 
@@ -78,6 +80,10 @@ def main() -> None:
         frames.append(frame)
 
     signals = pd.concat(frames, ignore_index=True).sort_values(["open_time", "symbol"])
+    # signals.parquet 契约：R0 每行同用 backtest.yaml 的阈值，fold_id 标记为 R0（06 §8）
+    backtest_cfg = load_config(BacktestConfig, args.backtest)
+    signals["fold_id"] = "R0"
+    signals["theta"] = float(backtest_cfg.threshold)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     signals.to_parquet(args.out)
     n_signal = int((signals["p"] == 1).sum())

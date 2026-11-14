@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from trade.backtest.costs import FeeSchedule, scenario
+from trade.backtest.costs import FeeSchedule, scenario, spread_measured_scenario
 from trade.backtest.engine import (
     PRECOMPUTE_BAR_COLUMNS,
     BacktestConfig,
@@ -74,6 +74,7 @@ from trade.data.loader import (
 )
 from trade.data.universe import load_universe_config
 from trade.features.registry import FeaturesConfig
+from trade.models.walkforward import load_walk_forward_signals
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,6 +120,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="S3 特征平移结果 JSON（含 baseline_net / shifted_net / s1_std）",
     )
+    parser.add_argument(
+        "--walk-forward-summary",
+        type=Path,
+        default=None,
+        help="五折 walk_forward_summary.json：拼接各折测试段信号（按行 θ，06 §8）",
+    )
+    parser.add_argument(
+        "--dataset-manifest",
+        type=Path,
+        default=None,
+        help="数据集 manifest.json：报告首页注明段尾丢弃样本数（04 §8、06 §9）",
+    )
     return parser
 
 
@@ -139,6 +152,7 @@ def _run_scenario(
     new_entry_symbols: set[str] | None = None,
     scenario_override: object | None = None,
     p_floor: float | None = None,
+    theta_offset: float = 0.0,
 ):
     """运行单个成本情景的回测（06 §3.4）。"""
     result, _ = run_backtest(
@@ -160,12 +174,21 @@ def _run_scenario(
         new_entry_symbols=new_entry_symbols,
         scenario_override=scenario_override,  # type: ignore[arg-type]
         p_floor=p_floor,
+        theta_offset=theta_offset,
     )
     return result
 
 
-def _monthly_fold_net(result) -> tuple[list[float], list[float]]:
-    """按测试月与 5 折汇总净收益（06 §7 S5、03 §6）。"""
+def _monthly_fold_net(
+    result, fold_of_month: dict[str, int] | None = None
+) -> tuple[list[float], list[float]]:
+    """按测试月与 5 折汇总净收益（06 §7 S5、03 §6）。
+
+    Args:
+        result: 组合模拟结果。
+        fold_of_month: 测试月 → 折号（来自 `walk_forward_summary.json`）；None 时按相邻
+            两月成折（F1 = M13~M14 … F5 = M21~M22）。
+    """
     monthly: dict[str, float] = {}
     for t in result.trades:
         month = _utc_month(t.signal_open_time)
@@ -174,7 +197,12 @@ def _monthly_fold_net(result) -> tuple[list[float], list[float]]:
     monthly_net = [monthly[m] for m in months]
     folds: dict[int, float] = {}
     for i, m in enumerate(months):
-        fold = i // 2 + 1  # 相邻两月成折（03 §6：F1=M13~14 … F5=M21~22）
+        if fold_of_month is not None:
+            fold = fold_of_month.get(m)
+            if fold is None:
+                raise ValueError(f"测试月 {m} 不在 walk_forward_summary 的任一分折内（06 §8）")
+        else:
+            fold = i // 2 + 1
         folds[fold] = folds.get(fold, 0.0) + monthly[m]
     fold_net = [folds[f] for f in sorted(folds)]
     return monthly_net, fold_net
@@ -211,6 +239,57 @@ def s8_status(path: Path, run_id: str) -> str:
     return s8_status_from_payload(payload)
 
 
+def _tick_relative_note(
+    prepared: Mapping[str, PreparedSymbol], rules: Mapping[str, TradeRule]
+) -> str:
+    """当前交易规则套用到历史价格的口径注记（06 §9 A14、T0 报告首页要求）。
+
+    统计每币 `tick_size / 历史月收盘价中位数` 的最大值，列出超过 20bp 的币（06 §9）。
+    """
+    worst = 0.0
+    offenders: list[tuple[str, float]] = []
+    for symbol, item in sorted(prepared.items()):
+        rule = rules.get(symbol)
+        if rule is None or item.close.shape[0] == 0:
+            continue
+        months = item.open_time.astype("datetime64[ms]").astype("datetime64[M]")
+        ratios: list[float] = []
+        for month in np.unique(months):
+            prices = item.close[months == month]
+            median = float(np.median(prices))
+            if median > 0.0:
+                ratios.append(rule.tick_size / median)
+        if not ratios:
+            continue
+        peak = max(ratios)
+        worst = max(worst, peak)
+        if peak > 0.002:
+            offenders.append((symbol, peak))
+    offenders.sort(key=lambda pair: pair[1], reverse=True)
+    detail = "、".join(f"{name} {value * 1e4:.1f}bp" for name, value in offenders)
+    return (
+        "交易规则口径：回测用当前 exchangeInfo 快照套用到历史价格（06 §9 A14）；"
+        f"tick_size / 历史月收盘价中位数 的最大值为 {worst * 1e4:.1f}bp，"
+        f"超过 20bp 的币 {len(offenders)} 个" + (f"（{detail}）" if detail else "")
+    )
+
+
+def _segment_tail_note(manifest_path: Path | None) -> str:
+    """数据段末尾丢弃的样本数注记（04 §8、06 §9）。"""
+    if manifest_path is None:
+        return "段尾丢弃样本数：未提供 --dataset-manifest，未读取"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    dropped = payload.get("label_dropped") or {}
+    segment_tail = dropped.get("segment_tail") or {}
+    total = segment_tail.get("total")
+    if total is None:
+        return f"段尾丢弃样本数：manifest 未记录（{manifest_path.name}）"
+    return (
+        f"段尾丢弃样本数：{int(total)} 条（因数据段末尾不足 H_max 或跨段，"
+        f"见 {manifest_path.name} 的 label_dropped.segment_tail）"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     base = load_config(BaseConfig, args.base)
@@ -235,7 +314,23 @@ def main(argv: list[str] | None = None) -> int:
 
     wb = window_bounds(base)
     run_end_ms = wb.end_ms if args.final else wb.holdout_start_ms
-    signals = pd.read_parquet(args.signals)
+    test_months = months[
+        base.data_window.tuning_months : len(months) - base.data_window.holdout_months
+    ]
+    fold_summary: list[dict[str, object]] | None = None
+    if args.walk_forward_summary is not None:
+        # 五折按行阈值拼接：每折用自己的 θ，禁止用某一折的 θ 交易其他折（06 §8）
+        signals, fold_summary = load_walk_forward_signals(
+            args.walk_forward_summary, expected_months=test_months
+        )
+    else:
+        signals = pd.read_parquet(args.signals)
+        if "theta" not in signals.columns:
+            # 单模型模式用模型元数据的 θ、R0 用 backtest.yaml 的阈值填充；已有 θ 不覆盖
+            fill_theta = float(backtest_cfg.threshold)
+            signals = signals.assign(theta=fill_theta)
+        if "fold_id" not in signals.columns:
+            signals = signals.assign(fold_id="R0" if args.model is None else str(model_id))
 
     rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
     rules: dict[str, TradeRule] = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
@@ -269,6 +364,16 @@ def main(argv: list[str] | None = None) -> int:
     new_entry_aliases = {coin.alias for coin in coins if coin.symbol in ne_symbols}
 
     fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
+    # 实测点差情景（06 §4.3）：只在配置启用时读取点差画像，缺失即报错（不静默回退 base）
+    spread_override = None
+    if "spread_measured" in backtest_cfg.scenarios:
+        from scripts.spread_profile import load_half_spread_overrides
+
+        spread_override = spread_measured_scenario(
+            load_half_spread_overrides(
+                Path(backtest_cfg.costs.spread_profile or ""), sorted(prepared)
+            )
+        )
     # reference 运行权益/口径来自配置（06 §5.1），user 运行按 sizing.yaml（06 §5.4）。
     reference_sizing = sizing_cfg.model_copy(
         update={
@@ -285,8 +390,10 @@ def main(argv: list[str] | None = None) -> int:
     run_results: dict[str, dict[str, object]] = {}
     normal_scenarios = [name for name in backtest_cfg.scenarios if name != "breakeven"]
     for run_name, (sizing, equity) in runs.items():
-        run_results[run_name] = {
-            scen: _run_scenario(
+        run_results[run_name] = {}
+        for scen in normal_scenarios:
+            scenario_override = spread_override if scen == "spread_measured" else None
+            run_results[run_name][scen] = _run_scenario(
                 prepared,
                 signals,
                 rules,
@@ -300,9 +407,8 @@ def main(argv: list[str] | None = None) -> int:
                 initial_equity=equity,
                 trade_masks=trade_masks,
                 new_entry_symbols=new_entry_aliases,
+                scenario_override=scenario_override,
             )
-            for scen in normal_scenarios
-        }
         if "breakeven" in backtest_cfg.scenarios:
 
             def _net(slip: float, sizing: object = sizing, equity: float = equity) -> float:
@@ -412,14 +518,13 @@ def main(argv: list[str] | None = None) -> int:
         seed=backtest_cfg.sanity.random_seed,
     )
 
-    # S4 阈值扰动（06 §7 S4）。两次扰动共用一次 p ≥ θ−Δ 的预计算（06 §3.4）。
+    # S4 阈值扰动（06 §7 S4）：对每行 θ 统一加减 Δ。两次扰动共用一次 p ≥ θ_min − Δ 的预计算。
     pfs: dict[str, float] = {}
-    s4_floor = backtest_cfg.threshold - backtest_cfg.sanity.threshold_perturb
+    s4_floor = float(signals["theta"].min()) - backtest_cfg.sanity.threshold_perturb
     for direction, delta in (
         ("below", -backtest_cfg.sanity.threshold_perturb),
         ("above", backtest_cfg.sanity.threshold_perturb),
     ):
-        perturbed = backtest_cfg.model_copy(update={"threshold": backtest_cfg.threshold + delta})
         presult = _run_scenario(
             prepared,
             signals,
@@ -427,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             groups,
             scen="base",
             fees=fees,
-            backtest_cfg=perturbed,
+            backtest_cfg=backtest_cfg,
             exit_cfg=exit_cfg,
             sizing_cfg=reference_sizing,
             features=features,
@@ -435,14 +540,22 @@ def main(argv: list[str] | None = None) -> int:
             trade_masks=trade_masks,
             new_entry_symbols=new_entry_aliases,
             p_floor=s4_floor,
+            theta_offset=delta,
         )
         pfs[direction] = compute_metrics(presult, backtest_cfg.reference.initial_equity)[
             "profit_factor"
         ]
     s4 = s4_threshold_perturb(pfs["below"], pfs["above"])
 
-    # S5 时间稳定性（06 §7 S5）。
-    monthly_net, fold_net = _monthly_fold_net(reference_result)
+    # S5 时间稳定性（06 §7 S5）。有 walk_forward_summary 时按真实折号汇总。
+    fold_of_month: dict[str, int] | None = None
+    if fold_summary is not None:
+        fold_of_month = {
+            str(month): index
+            for index, fold in enumerate(fold_summary, start=1)
+            for month in fold["test_months"]  # type: ignore[union-attr]
+        }
+    monthly_net, fold_net = _monthly_fold_net(reference_result, fold_of_month)
     s5 = s5_time_stability(
         monthly_net,
         fold_net,
@@ -594,6 +707,11 @@ def main(argv: list[str] | None = None) -> int:
         signals_kind=signals_kind,
         model_id=model_id,
         g2_user=g2_user,
+        fold_summary=fold_summary,
+        notes=[
+            _tick_relative_note(prepared, rules),
+            _segment_tail_note(args.dataset_manifest),
+        ],
     )
     if args.final:
         final_log = base.paths.artifact_root / "reports" / "FINAL_RUNS.log"

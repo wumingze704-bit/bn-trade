@@ -10,6 +10,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,27 @@ def _tick_relative_warnings(
         if ratio > _TICK_REL_WARN:
             out.append(f"{alias} M{int(month)} tick/收盘价中位数 = {ratio:.4f} 超过 0.002")
     return out
+
+
+def _segment_tail_dropped(sample_positions: np.ndarray, segments: np.ndarray, h_max: int) -> int:
+    """统计因“段尾不足 H_max / 跨数据段”被 `exit_sim` 丢弃的样本数（04 §8）。
+
+    Args:
+        sample_positions: 预过滤样本的 bars 行位置。
+        segments: 每根 K 线的数据段编号（03 §6）。
+        h_max: 该标签模式的最长持仓根数。
+
+    Returns:
+        被丢弃的样本数。
+    """
+    n = int(segments.shape[0])
+    positions = np.asarray(sample_positions, dtype="int64")
+    if positions.size == 0:
+        return 0
+    inside = positions + h_max < n
+    same_segment = np.zeros(positions.shape[0], dtype=bool)
+    same_segment[inside] = segments[positions[inside] + h_max] == segments[positions[inside]]
+    return int((~same_segment).sum())
 
 
 def _sha256_file(path: Path) -> str:
@@ -190,6 +212,12 @@ def build_dataset(
         features_df.to_parquet(features_path, index=False, compression="zstd")
 
         sample_positions = np.nonzero(sample)[0]
+        h_max_label = (
+            exits_cfg.H_max
+            if (exits_cfg is not None and features_cfg.label.mode == "exit_sim")
+            else features_cfg.label.H_label
+        )
+        segment_tail_dropped = _segment_tail_dropped(sample_positions, segments, int(h_max_label))
         if features_cfg.label.mode == "exit_sim":
             if exits_cfg is None:
                 raise ValueError(
@@ -290,6 +318,7 @@ def build_dataset(
                 "samples": n_samples,
                 "retention": retention,
                 "positive_rate": positive_rate,
+                "segment_tail_dropped": segment_tail_dropped,
                 "features_sha256": _sha256_file(features_path),
                 "labels_sha256": _sha256_file(labels_path),
             }
@@ -314,6 +343,15 @@ def build_dataset(
         "label": features_cfg.label.model_dump(),
         "universe_rule_hash": rule_hash(universe_cfg) if universe_cfg is not None else "",
         "exit_policy_hash": exit_policy_hash(exits_cfg) if exits_cfg is not None else "",
+        "notional_ref": notional_ref,
+        "rules_sha256": _sha256_file(rules_path) if rules_path is not None else "",
+        "created_at": datetime.now(UTC).isoformat(),
+        "label_dropped": {
+            "segment_tail": {
+                "total": int(sum(item["segment_tail_dropped"] for item in per_coin)),
+                "by_alias": {item["alias"]: item["segment_tail_dropped"] for item in per_coin},
+            }
+        },
         "coins": per_coin,
         "warnings": warnings,
     }

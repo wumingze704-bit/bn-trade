@@ -26,6 +26,37 @@ def effective_fee(rate: float, rebate_rate: float) -> float:
     return rate * (1.0 - rebate_rate)
 
 
+def exit_fee_rate_on_entry(exit_fee_rate: float, gross_return: float) -> float:
+    """出场手续费占入场名义价值的比例（06 §4.1）：`exit_fee_rate × (1 + gross_return)`。
+
+    出场手续费按出场时的名义价值计（`notional × (1 + gross_return)`），因此折算到
+    入场名义价值上要乘 `(1 + gross_return)`；未实现盈亏在组合模拟账本里都以入场
+    名义价值为基准，用本函数统一折算，回测、逐笔重放与 `exit_sim` 标签共用。
+    """
+    return exit_fee_rate * (1.0 + gross_return)
+
+
+def net_return_after_fees(
+    *,
+    gross_return: float,
+    entry_fee_rate: float,
+    exit_fee_rate: float,
+    funding_rate: float,
+) -> float:
+    """扣手续费与资金费后的单笔收益率（06 §4.1）。
+
+    `gross_return` 以入场价 `P_fill` 为基准，手续费与资金费都以入场名义价值
+    `notional` 折算：`gross_return − entry_fee_rate − exit_fee_rate × (1 + gross_return)
+    − funding_rate`。
+    """
+    return (
+        gross_return
+        - entry_fee_rate
+        - exit_fee_rate_on_entry(exit_fee_rate, gross_return)
+        - funding_rate
+    )
+
+
 def half_spread(tick_rel: float, half_spread_min: float) -> float:
     """半价差 = max(0.5 × tick_rel, half_spread_min)（06 §3.2）。"""
     return max(0.5 * tick_rel, half_spread_min)

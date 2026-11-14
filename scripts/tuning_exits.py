@@ -64,6 +64,7 @@ from trade.features.registry import feature_hash
 from trade.labels.exit_sim import exit_sim
 from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
+from trade.models.calibration import select_threshold
 from trade.models.lightgbm import tabular_features_matrix, train_lgbm
 
 # 6 组出场/止损参数（05 §6.1 第 1 步）。H_max/k_trail 固定 120/1.5，sl_max 固定 2.5%，
@@ -80,8 +81,8 @@ _EXIT_GRID: list[dict[str, float]] = [
 # 阈值网格（05 §7.2：0.30~0.80，步长 0.02）
 _THETA_GRID = [round(0.30 + 0.02 * i, 2) for i in range(26)]
 
-# 验证段阈值约束：日均交易 ≥ 3 笔 × 90 天 ≈ 270 笔（05 §6.1 第 1 步）
-_MIN_VAL_TRADES = 270
+# 验证段阈值约束：日均交易 ≥ 3 笔 × 90 天 ≈ 270 笔（05 §6.1 第 1 步）；阈值规则由
+# `trade.models.calibration.select_threshold` 提供，这里不再保留单独的下限常量。
 
 # 训练样本上限：超过则按固定种子下采样，控制内存（可复现；LightGBM 直方图对样本数不敏感）。
 _MAX_SAMPLES = 2_000_000
@@ -551,6 +552,7 @@ def _train_and_predict(
             "p": p_val,
             "m": np.zeros(n_val),
             "is_sample": np.ones(n_val, dtype="int64"),
+            "theta": np.zeros(n_val, dtype="float64"),
         }
     )
     return booster, val_signals, int(train_mask.sum()), n_val
@@ -642,20 +644,159 @@ def _scan_theta(
     skipped: list[SkippedSignal],
     initial_equity: float,
 ) -> dict[str, float]:
-    """在验证段按 05 §7.2 选阈值：日均 ≥ 3 笔约束下取 PF 最高的 θ。"""
-    best = {"theta": 0.5, "pf": 0.0, "net": float("-inf"), "n_trades": 0.0}
+    """在验证段按 05 §7.2 选阈值：调用 `trade.models.calibration.select_threshold`。
+
+    与模型训练侧的阈值选择共用同一份规则（日均 ≥ 3 笔约束下取 PF 最高的 θ*，再取使
+    PF ≥ 0.9 × PF(θ*) 的最小 θ），不再各写一份。
+    """
+    days = (data.val_end_ms - data.val_start_ms) / _MS_PER_DAY
+    metrics_by_theta: dict[float, dict[str, float]] = {}
     for theta in _THETA_GRID:
-        filtered = [t for t in trades if t.p >= theta]
-        result = _simulate(data, filtered, skipped, initial_equity)
+        result = _simulate(data, [t for t in trades if t.p >= theta], skipped, initial_equity)
         metrics = compute_metrics(result, initial_equity)
-        pf = float(metrics.get("profit_factor") or 0.0)
-        net = float(metrics.get("net_return_usdt") or 0.0)
-        n_trades = float(metrics.get("n_trades") or 0.0)
-        if n_trades < _MIN_VAL_TRADES:
+        metrics_by_theta[theta] = {
+            "net_return": float(metrics.get("net_return_usdt") or 0.0),
+            "profit_factor": float(metrics.get("profit_factor") or 0.0),
+            "n_trades": float(metrics.get("n_trades") or 0.0),
+        }
+    choice = select_threshold(metrics_by_theta, n_days=days)
+    return {
+        "theta": choice.theta,
+        "pf": choice.profit_factor,
+        "net": choice.net_return,
+        "n_trades": float(choice.n_trades),
+        "best_theta": choice.best_theta,
+        "best_pf": choice.best_profit_factor,
+    }
+
+
+def _nested_signals(
+    data: TuningData, samples: SampleSet, booster: lgb.Booster, month_mask: np.ndarray
+) -> pd.DataFrame:
+    """对指定月份掩码内的样本做预测，返回带 `theta = 0` 的 signals 表（05 §6.1）。"""
+    n = int(month_mask.sum())
+    p = booster.predict(samples.x[month_mask], num_iteration=booster.best_iteration)
+    return pd.DataFrame(
+        {
+            "symbol": samples.symbol[month_mask],
+            "open_time": samples.open_time[month_mask],
+            "p": p,
+            "m": np.zeros(n),
+            "is_sample": np.ones(n, dtype="int64"),
+            "theta": np.zeros(n, dtype="float64"),
+        }
+    )
+
+
+def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
+    """调参期内部嵌套确认：M10 早停、M11 选 θ、M12 只评估一次（05 §6.1）。
+
+    判定规则在运行前固定：组 N 在 M12 上 PF 排名前 2 且 PF > 1.05 → 保留冻结参数；
+    否则回报中位数对应组，由使用者决定是否写回配置。
+    """
+    tuning_months = data.base_cfg.data_window.tuning_months
+    month_stop = data.months[tuning_months - 3]  # M10（早停）
+    month_scan = data.months[tuning_months - 2]  # M11（选 θ）
+    month_eval = data.months[tuning_months - 1]  # M12（只评估）
+    start_stop = rebalance_ms_of(month_stop)
+    start_scan = rebalance_ms_of(month_scan)
+    start_eval = rebalance_ms_of(month_eval)
+    scan_days = (start_eval - start_scan) / _MS_PER_DAY
+    eval_days = (data.val_end_ms - start_eval) / _MS_PER_DAY
+    initial_equity = data.backtest_cfg.reference.initial_equity
+    results: list[dict[str, object]] = []
+    for gi in range(args.groups):
+        grid = _EXIT_GRID[gi]
+        exit_cfg = data.exits_cfg.model_copy(
+            update={"H_max": int(grid["H_max"]), "k_trail": grid["k_trail"]}
+        )
+        k_sl, sl_min, sl_max = grid["k_sl"], grid["sl_min"], grid["sl_max"]
+        samples = _build_samples(data, exit_cfg, k_sl, sl_min, sl_max)
+        if samples is None:
+            print(f"嵌套确认组 {gi + 1}：无样本", flush=True)
             continue
-        if pf > best["pf"]:
-            best = {"theta": theta, "pf": pf, "net": net, "n_trades": n_trades}
-    return best
+        train_mask = (samples.m >= 1) & (samples.m <= 9) & (samples.t_exit < start_stop)
+        stop_mask = samples.m == (tuning_months - 2)
+        if train_mask.sum() == 0 or stop_mask.sum() == 0:
+            raise ValueError(f"嵌套确认组 {gi + 1} 训练/早停样本为空（05 §6.1）")
+        booster = train_lgbm(
+            samples.x[train_mask],
+            samples.y[train_mask],
+            samples.w[train_mask],
+            samples.x[stop_mask],
+            samples.y[stop_mask],
+            samples.w[stop_mask],
+            seed=data.base_cfg.seed,
+        )
+        signals_scan = _nested_signals(data, samples, booster, samples.m == (tuning_months - 1))
+        trades_scan, skipped_scan = _precompute_all(
+            data, signals_scan, exit_cfg, k_sl, sl_min, sl_max, scenario("base"), _THETA_GRID[0]
+        )
+        choice = _scan_theta(data, trades_scan, skipped_scan, initial_equity)
+        signals_eval = _nested_signals(data, samples, booster, samples.m == tuning_months)
+        trades_eval, skipped_eval = _precompute_all(
+            data, signals_eval, exit_cfg, k_sl, sl_min, sl_max, scenario("base"), _THETA_GRID[0]
+        )
+        result = _simulate(
+            data,
+            [t for t in trades_eval if t.p >= choice["theta"]],
+            skipped_eval,
+            initial_equity,
+        )
+        row = {
+            "group": gi + 1,
+            **_scenario_row(result, initial_equity, eval_days),
+            "theta": choice["theta"],
+            "scan_days": scan_days,
+        }
+        results.append(row)
+        print(
+            f"嵌套确认组 {gi + 1}: θ={choice['theta']} M12 PF={row['profit_factor']:.3f} "
+            f"净收益={row['net_return_usdt']:.2f} 笔数={int(row['n_trades'])}",
+            flush=True,
+        )
+        if not args.no_log:
+            _log_trial(
+                data,
+                f"t4-3-s1-nested-g{gi + 1}_H{int(grid['H_max'])}_ksl{k_sl:g}"
+                f"_slmin{sl_min * 100:g}_th{choice['theta']:.2f}_evalM12",
+                _trial_payload(
+                    data,
+                    mode="nested",
+                    group=gi + 1,
+                    k_sl=k_sl,
+                    sl_min=sl_min,
+                    sl_max=sl_max,
+                    h_max=int(grid["H_max"]),
+                    k_trail=grid["k_trail"],
+                    theta=choice["theta"],
+                    split="M1-M9/M10-M12(nested: stop M10, scan M11, eval M12)",
+                ),
+                {
+                    "net_return_usdt": row["net_return_usdt"],
+                    "profit_factor": row["profit_factor"],
+                    "n_trades": row["n_trades"],
+                },
+            )
+    if not results:
+        raise ValueError("嵌套确认没有任何一组产出结果（05 §6.1）")
+    ranked = sorted(results, key=lambda row: float(row["profit_factor"]), reverse=True)
+    print("\n==== 嵌套确认汇总（按 M12 PF 降序）====")
+    for rank, row in enumerate(ranked, start=1):
+        print(
+            f"排名 {rank}: 组 {row['group']} θ={row['theta']} PF={float(row['profit_factor']):.3f} "
+            f"净收益={float(row['net_return_usdt']):.2f} 笔数={int(float(row['n_trades']))}"
+        )
+    frozen = results[0]
+    frozen_rank = next(
+        index for index, row in enumerate(ranked, start=1) if row["group"] == frozen["group"]
+    )
+    keep = frozen_rank <= 2 and float(frozen["profit_factor"]) > 1.05
+    print(
+        f"\n判定：组 1 在 M12 排名 {frozen_rank}，PF={float(frozen['profit_factor']):.3f} → "
+        + ("保留冻结参数" if keep else "需按中位数改选（由使用者决定，见 05 §6.1）")
+    )
+    return 0
 
 
 def _trial_run_id(trial: BackfillTrial) -> str:
@@ -1027,6 +1168,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkup-group", type=int, default=1, help="体检的组号（1 起）")
     parser.add_argument("--theta", type=float, default=0.34, help="体检使用的冻结阈值（05 §7.2）")
     parser.add_argument("--backfill-log", action="store_true", help="补登第 1 步历史组")
+    parser.add_argument(
+        "--nested-check",
+        action="store_true",
+        help="调参期内部嵌套确认（M10 早停、M11 选 θ、M12 评估，05 §6.1）",
+    )
     parser.add_argument("--no-log", action="store_true", help="不写 EXPERIMENTS.log（冒烟用）")
     return parser
 
@@ -1041,6 +1187,8 @@ def main(argv: list[str] | None = None) -> int:
     data = _prepare_data(root, args)
     if args.checkup:
         return _run_checkup(data, args)
+    if args.nested_check:
+        return _run_nested_check(data, args)
     return _run_search(data, args)
 
 

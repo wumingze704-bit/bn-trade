@@ -58,6 +58,7 @@ class SizingConfig(BaseModel):
     daily_loss_halt: float = Field(gt=0.0)
     max_drawdown_halt: float = Field(gt=0.0, le=1.0)
     max_consecutive_losses: int = Field(ge=1)
+    consecutive_loss_pause_min: int = Field(default=120, ge=1, le=1440)
     liq_cap: float = Field(gt=0.0)
     maint_margin_rate: float = Field(ge=0.0, lt=1.0)
 

@@ -22,6 +22,7 @@ import pandas as pd  # type: ignore[import-untyped]
 
 from trade.backtest.costs import FeeSchedule, Scenario
 from trade.backtest.engine import PrecomputedTrade
+from trade.common.costs import net_return_after_fees
 from trade.common.exits import (
     EXIT_TYPE_NAMES,
     ExitConfig,
@@ -365,8 +366,13 @@ def trade_net_return(
     exit_fee_rate: float,
     funding_rate_sum: float,
 ) -> float:
-    """单笔净收益率（比例）：毛收益 − 入场费 − 出场费 − 资金费（06 §4.1、§3.3）。"""
-    return gross_return - entry_fee_rate - exit_fee_rate - funding_rate_sum
+    """单笔净收益率（比例）：毛收益 − 入场费 − 出场费（按出场名义价值）− 资金费（06 §4.1）。"""
+    return net_return_after_fees(
+        gross_return=gross_return,
+        entry_fee_rate=entry_fee_rate,
+        exit_fee_rate=exit_fee_rate,
+        funding_rate=funding_rate_sum,
+    )
 
 
 def bar_level_net_return(trade: PrecomputedTrade, *, entry_fee_rate: float) -> float:

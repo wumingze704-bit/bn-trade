@@ -76,7 +76,13 @@ def test_exit_sim与回测逐笔一致() -> None:
 
     # 回测预计算
     signals = pd.DataFrame(
-        {"open_time": [bars.loc[t, "open_time"]], "p": [1.0], "m": [0.0], "is_sample": [1]}
+        {
+            "open_time": [bars.loc[t, "open_time"]],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.5],
+        }
     )
     trades, _ = precompute_trades(
         bars,
@@ -106,8 +112,10 @@ def test_exit_sim与回测逐笔一致() -> None:
     assert row["bars_held"] == tr.bars_held
     assert row["t_exit"] == tr.exit_open_time
     assert row["exit_type"] == tr.exit_type
-    # ret_net = gross_return - 开仓费率 - 出场费率 - 资金费率（本例无 funding）
-    expected_ret_net = tr.gross_return - _TAKER - tr.exit_fee_rate - tr.funding_rate_sum
+    # ret_net = gross_return − 开仓费率 − 出场费率 × (1 + gross_return) − 资金费率（06 §4.1）
+    expected_ret_net = (
+        tr.gross_return - _TAKER - tr.exit_fee_rate * (1.0 + tr.gross_return) - tr.funding_rate_sum
+    )
     assert row["ret_net"] == pytest.approx(expected_ret_net)
 
 
@@ -140,6 +148,60 @@ def test_y_min_r标签边界() -> None:
     assert (frame["y"].to_numpy() == (r_net >= 0.25).astype("int64")).all()
     # 至少有一个正样本和一个负样本，保证测试覆盖了边界两侧
     assert frame["y"].nunique() == 2
+
+
+def test_入场价陈旧时标签丢弃样本且与回测规则一致() -> None:
+    """p_1s_filled=1 的入场分钟放弃样本，与回测 skipped 的 entry_price_stale 同口径（06 §3.1）。"""
+    n = 300
+    t = 100
+    bars = make_bars(n, seed=7)
+    bars.loc[t + 1, "p_1s_filled"] = 1
+
+    frame, kept = exit_sim(bars, np.array([t]), **_kwargs())
+    assert kept.tolist() == []
+    assert frame.empty
+
+    signals = pd.DataFrame(
+        {
+            "open_time": [bars.loc[t, "open_time"]],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.5],
+        }
+    )
+    trades, skipped = precompute_trades(
+        bars,
+        signals,
+        symbol="A",
+        group="train",
+        rule=TradeRule(tick_size=0.01, step_size=0.01, min_notional=5.0),
+        scen=scenario("base"),
+        fees=FeeSchedule(maker=_MAKER, taker=_TAKER),
+        backtest_cfg=BacktestConfig(costs=CostConfig(), risk=RiskConfig(max_chase=0.003)),
+        exit_cfg=_EXIT_CFG,
+        sizing_cfg=_sizing(),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+    )
+    assert trades == []
+    assert [item.reason for item in skipped] == ["entry_price_stale"]
+
+
+def test_追价按卖一近似时标签丢弃样本() -> None:
+    """标签与回测用同一份卖一近似追价判断（06 §3.1 条件 5、红线 4）。"""
+    n = 300
+    t = 100
+    bars = make_bars(n, seed=9)
+    c_t = float(bars.loc[t, "close"])
+    hs = max(0.5 * 0.01 / c_t, 0.0001)
+    # 最近成交价未超 c_t × (1 + max_chase)，但乘 (1 + 半价差) 后超上限
+    bars.loc[t + 1, "p_1s"] = c_t * 1.003 * (1.0 - 0.5 * hs)
+    frame, kept = exit_sim(bars, np.array([t]), **_kwargs())
+    assert kept.tolist() == []
+    assert frame.empty
 
 
 def test_入场价与止损无未来函数() -> None:

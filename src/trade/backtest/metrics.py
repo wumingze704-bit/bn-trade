@@ -97,6 +97,7 @@ _EXIT_NAMES = (
     "stall",
     "timeout",
     "eod",
+    "risk_halt",
 )
 
 

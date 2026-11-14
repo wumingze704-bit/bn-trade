@@ -54,6 +54,7 @@ def _flat_bars(n: int) -> pd.DataFrame:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": 0,
             "hi_post_1s": close * 1.001,
             "lo_post_1s": close * 0.999,
         }
@@ -71,6 +72,7 @@ def test_不在交易范围的分钟不开仓() -> None:
             "p": [1.0, 1.0],
             "m": [0.0, 0.0],
             "is_sample": [1, 1],
+            "theta": [0.5, 0.5],
         }
     )
     trades, skipped = precompute_trades(

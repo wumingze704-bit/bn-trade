@@ -16,6 +16,7 @@ from trade.backtest.engine import (
     BacktestConfig,
     ExecutedTrade,
     PrecomputedTrade,
+    SkippedSignal,
     TradeRule,
     _close_arrays,
     _mark_to_market_curve,
@@ -31,6 +32,8 @@ from trade.common.sizing import SizingConfig
 
 _T0 = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
 _MIN = 60_000
+# 入场条件测试用的信号 K 线位置（ATR14 在 t ≥ 13 之后才有值，mean_60(qv) 需 t ≥ 59）
+_SIG_T = 70
 
 
 def _sizing(**kw) -> SizingConfig:
@@ -161,6 +164,7 @@ def _bars_with_chase() -> pd.DataFrame:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": p_1s,
+            "p_1s_filled": 0,
             "hi_post_1s": high,
             "lo_post_1s": low,
         }
@@ -170,7 +174,14 @@ def _bars_with_chase() -> pd.DataFrame:
 def test_追价保护被放弃():
     bars = _bars_with_chase()
     signals = pd.DataFrame(
-        {"symbol": ["A"], "open_time": [_T0 + 10 * _MIN], "p": [1.0], "m": [0.0], "is_sample": [1]}
+        {
+            "symbol": ["A"],
+            "open_time": [_T0 + 10 * _MIN],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.5],
+        }
     )
     trades, skipped = precompute_trades(
         bars,
@@ -209,6 +220,7 @@ def test_盯市权益曲线捕获持仓浮亏():
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": 0,
             "hi_post_1s": close * 1.001,
             "lo_post_1s": close * 0.999,
         }
@@ -368,6 +380,7 @@ def test_run_backtest端到端():
                 "kline_missing": 0,
                 "aggtrades_missing": 0,
                 "p_1s": close,
+                "p_1s_filled": 0,
                 "hi_post_1s": high,
                 "lo_post_1s": low,
             }
@@ -380,6 +393,7 @@ def test_run_backtest端到端():
                     "p": np.ones(n),
                     "m": np.zeros(n),
                     "is_sample": np.ones(n, dtype="int64"),
+                    "theta": np.zeros(n, dtype="float64"),
                 }
             )
         )
@@ -428,12 +442,20 @@ def test_出场分钟缺逐笔价时按收盘价出场且净盈亏有限():
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": p_1s,
+            "p_1s_filled": 0,
             "hi_post_1s": high,
             "lo_post_1s": low,
         }
     )
     signals = pd.DataFrame(
-        {"symbol": ["A"], "open_time": [open_time[60]], "p": [1.0], "m": [0.0], "is_sample": [1]}
+        {
+            "symbol": ["A"],
+            "open_time": [open_time[60]],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.5],
+        }
     )
     trades, _ = precompute_trades(
         bars,
@@ -480,6 +502,7 @@ def test_预计算一次与逐阈值回测结果一致():
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": 0,
             "hi_post_1s": high,
             "lo_post_1s": low,
         }
@@ -491,16 +514,20 @@ def test_预计算一次与逐阈值回测结果一致():
             "p": rng.uniform(0.3, 0.8, n),
             "m": np.zeros(n),
             "is_sample": np.ones(n, dtype="int64"),
+            "theta": np.zeros(n, dtype="float64"),
         }
     )
     rules = {"A": _rule()}
     groups = {"A": "train"}
 
     def run_old(theta: float):
-        cfg = _backtest(threshold=theta)
+        # 按行阈值：把每行 θ 设为 θ，等价于旧的“全局阈值”运行（06 §8）
+        theta_signals = signals.copy()
+        theta_signals["theta"] = theta
+        cfg = _backtest(threshold=0.0)
         result, _ = run_backtest(
             {"A": bars},
-            signals,
+            theta_signals,
             rules,
             groups,
             scen_name="base",
@@ -574,6 +601,7 @@ def _random_bars(
                 "kline_missing": 0,
                 "aggtrades_missing": 0,
                 "p_1s": close,
+                "p_1s_filled": 0,
                 "hi_post_1s": high,
                 "lo_post_1s": low,
             }
@@ -586,6 +614,7 @@ def _random_bars(
                     "p": np.ones(n),
                     "m": np.zeros(n),
                     "is_sample": np.ones(n, dtype="int64"),
+                    "theta": np.zeros(n),
                 }
             )
         )
@@ -625,7 +654,22 @@ def test_PreparedSymbol入口与DataFrame入口结果一致():
 
 
 def test_高阈值预计算等于低阈值结果按p过滤():
-    """p ≥ θ 的预计算结果等于 p ≥ 0 结果按 p 过滤后的子集（06 §3.4 缓存前提）。"""
+    """p ≥ 该行 θ 的预计算结果等于 p ≥ 0 结果按 p ≥ θ 过滤后的子集（06 §3.4 缓存前提）。
+
+    阈值按行取（06 §8）：低阈值一次用 theta = 0 预计算，高阈值运行把每行 theta 设为 θ，
+    两者除 `theta` 字段本身外逐字段相同。
+    """
+
+    def without_theta(trade: PrecomputedTrade) -> dict:
+        payload = asdict(trade)
+        payload.pop("theta")
+        return payload
+
+    def without_theta_item(item: SkippedSignal) -> dict:
+        payload = asdict(item)
+        payload.pop("theta")
+        return payload
+
     bars_by_symbol, signals = _random_bars()
     signals = signals.copy()
     signals["p"] = np.resize(np.array([0.3, 0.6, 0.9]), len(signals))
@@ -647,15 +691,119 @@ def test_高阈值预计算等于低阈值结果按p过滤():
     )
     assert len(low[0]) > 0
     for theta in (0.35, 0.65, 0.95):
+        high_signals = signals.copy()
+        high_signals["theta"] = theta
         high = precompute_trades_all(
-            prepared, signals, rules, groups, backtest_cfg=_backtest(threshold=theta), **common
+            prepared,
+            high_signals,
+            rules,
+            groups,
+            backtest_cfg=_backtest(threshold=0.0),
+            **common,
         )
-        assert [asdict(trade) for trade in high[0]] == [
-            asdict(trade) for trade in low[0] if trade.p >= theta
+        assert [without_theta(trade) for trade in high[0]] == [
+            without_theta(trade) for trade in low[0] if trade.p >= theta
         ]
-        assert [asdict(item) for item in high[1]] == [
-            asdict(item) for item in low[1] if item.p >= theta
+        assert [without_theta_item(item) for item in high[1]] == [
+            without_theta_item(item) for item in low[1] if item.p >= theta
         ]
+
+
+def _bars_for_entry(*, p_1s_value: float | None = None, p_1s_filled: int = 0) -> pd.DataFrame:
+    """构造 140 根 K 线，信号 t=70 的入场分钟为 t+1（06 §3.1、§3.2）。"""
+    n = 140
+    open_time = np.arange(n) * _MIN + _T0
+    close = np.full(n, 100.0)
+    high = np.full(n, 100.5)
+    low = np.full(n, 99.5)
+    p_1s = np.full(n, 100.0)
+    if p_1s_value is not None:
+        p_1s[_SIG_T + 1] = p_1s_value
+    filled = np.zeros(n, dtype="int64")
+    filled[_SIG_T + 1] = p_1s_filled
+    return pd.DataFrame(
+        {
+            "open_time": open_time,
+            "open": np.full(n, 100.0),
+            "high": high,
+            "low": low,
+            "close": close,
+            "quote_volume": np.full(n, 1e6),
+            "is_filled": np.zeros(n, dtype="int64"),
+            "kline_missing": 0,
+            "aggtrades_missing": 0,
+            "p_1s": p_1s,
+            "p_1s_filled": filled,
+            "hi_post_1s": high,
+            "lo_post_1s": low,
+        }
+    )
+
+
+def _precompute_one(bars: pd.DataFrame):
+    """对 t=20 的单一信号做逐笔预计算（06 §3.4 第 1 步）。"""
+    signals = pd.DataFrame(
+        {
+            "symbol": ["A"],
+            "open_time": [_T0 + _SIG_T * _MIN],
+            "p": [1.0],
+            "m": [0.0],
+            "is_sample": [1],
+            "theta": [0.0],
+        }
+    )
+    return precompute_trades(
+        bars,
+        signals,
+        symbol="A",
+        group="train",
+        rule=_rule(),
+        scen=scenario("base"),
+        fees=_fees(),
+        backtest_cfg=_backtest(),
+        exit_cfg=ExitConfig(type="trail"),
+        sizing_cfg=_sizing(),
+        k_sl=1.0,
+        sl_min=0.005,
+        sl_max=0.015,
+        H_label=60,
+    )
+
+
+def test_p1s陈旧时放弃信号():
+    """入场那一秒无成交（p_1s_filled=1）时放弃信号，原因 entry_price_stale（06 §3.1 条件 1）。"""
+    trades, skipped = _precompute_one(_bars_for_entry(p_1s_filled=1))
+    assert trades == []
+    assert [s.reason for s in skipped] == ["entry_price_stale"]
+
+
+def test_追价按卖一近似判断():
+    """追价保护用 p_1s × (1 + half_spread) 近似卖一价（06 §3.1 条件 5）。"""
+    from trade.common.entry import chase_exceeded_array, half_spread_for
+
+    c_t = 100.0
+    max_chase = 0.003
+    hs = half_spread_for(c_t, _rule().tick_size, 0.0001)
+    # 最近成交价未超上限，但加上半价差后超上限 → 按卖一近似应放弃
+    p_raw = c_t * (1.0 + max_chase) * (1.0 - 0.5 * hs)
+    assert p_raw <= c_t * (1.0 + max_chase)
+    trades, skipped = _precompute_one(_bars_for_entry(p_1s_value=p_raw))
+    assert trades == []
+    assert [s.reason for s in skipped] == ["chase"]
+
+    # 加半价差后仍未超上限 → 正常开仓
+    accepted_price = c_t * (1.0 + max_chase) / (1.0 + hs) * 0.999
+    assert not bool(
+        chase_exceeded_array(
+            p_raw=np.array([accepted_price]),
+            half_spread=np.array([hs]),
+            close_t=np.array([c_t]),
+            max_chase=max_chase,
+        )[0]
+    )
+    accepted, skipped2 = _precompute_one(_bars_for_entry(p_1s_value=accepted_price))
+    assert len(accepted) == 1
+    assert skipped2 == []
 
 
 def test_notional_ref不同时不共享缓存(monkeypatch):

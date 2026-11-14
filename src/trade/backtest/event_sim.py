@@ -16,16 +16,23 @@ from trade.backtest.costs import FeeSchedule, scenario
 from trade.backtest.engine import (
     BacktestConfig,
     ExecutedTrade,
+    PortfolioBook,
     PortfolioResult,
     PrecomputedTrade,
     PreparedSymbol,
     SkippedSignal,
     TradeRule,
     _close_arrays,
+    _entry_price_arrays,
+    _funding_arrays,
     _mark_to_market_curve,
+    _risk_limits,
+    _risk_timeline,
     precompute_trades,
 )
+from trade.common.costs import net_return_after_fees
 from trade.common.exits import ExitConfig
+from trade.common.risk_rules import RiskState
 from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
 
 
@@ -97,15 +104,32 @@ def _event_combine(
     initial_equity: float | None,
     bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame],
 ) -> PortfolioResult:
-    """按分钟时钟推进的组合模拟（独立于 engine.simulate_portfolio 的实现）。"""
+    """按分钟时钟推进的组合模拟（独立于 engine.simulate_portfolio 的调度实现）。
+
+    组合账本、风控判定（R5~R8）与引擎共用 `PortfolioBook` 与 `trade.common.risk_rules`
+    （AGENTS.md §6 红线 4）；本函数只保留事件驱动的时间推进顺序，供 S9 对拍。
+    """
     start_equity = sizing_cfg.initial_equity if initial_equity is None else initial_equity
-    equity = start_equity
-    positions: dict[str, ExecutedTrade] = {}
-    cooldown_until: dict[str, int] = {}
-    daily_realized: dict[str, float] = {}
     result = PortfolioResult(skipped=list(all_skipped))
     min_min_notional = min((t.min_notional for t in all_trades), default=1e18)
     close_arrays = _close_arrays(bars_by_symbol)
+    limits = _risk_limits(sizing_cfg, backtest_cfg)
+    book = PortfolioBook(
+        wallet=start_equity,
+        positions={},
+        cooldown_until={},
+        result=result,
+        close_arrays=close_arrays,
+        entry_arrays=_entry_price_arrays(bars_by_symbol),
+        funding_arrays=_funding_arrays(bars_by_symbol),
+        risk=RiskState(peak_equity=start_equity),
+        limits=limits,
+        cooldown_bars=backtest_cfg.risk.cooldown_bars,
+        fees=fees,
+    )
+    timeline = _risk_timeline(all_trades, close_arrays)
+    cursor = 0
+    positions = book.positions
 
     by_entry: dict[int, list[PrecomputedTrade]] = defaultdict(list)
     for tr in all_trades:
@@ -116,27 +140,18 @@ def _event_combine(
     times = sorted({t.entry_open_time for t in all_trades} | {t.exit_open_time for t in all_trades})
 
     for ts in times:
-        for sym in sorted(
-            (s for s, t in positions.items() if t.exit_open_time <= ts),
-            key=lambda s: positions[s].exit_open_time,
-        ):
-            trade = positions[sym]
-            equity += trade.net_pnl
-            day = _utc_day(trade.exit_open_time)
-            daily_realized[day] = daily_realized.get(day, 0.0) + trade.net_pnl
-            if trade.exit_type_code in (0, 1, 2):
-                cooldown_until[sym] = (
-                    trade.exit_open_time + backtest_cfg.risk.cooldown_bars * 60_000
-                )
-            del positions[sym]
+        cursor = book.advance(ts, timeline, cursor)
 
         for tr in by_entry.get(ts, []):
+            if book.risk.halted(tr.entry_open_time):
+                result.skipped.append(SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "halted"))
+                continue
             if tr.symbol in positions:
                 result.skipped.append(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "already_in_position")
                 )
                 continue
-            if tr.entry_open_time < cooldown_until.get(tr.symbol, 0):
+            if tr.entry_open_time < book.cooldown_until.get(tr.symbol, 0):
                 result.skipped.append(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "cooldown")
                 )
@@ -147,19 +162,24 @@ def _event_combine(
                 )
                 continue
             day = _utc_day(tr.entry_open_time)
-            if daily_realized.get(day, 0.0) < -sizing_cfg.daily_loss_stop * equity:
+            if book.risk.daily_stop(day):
                 result.skipped.append(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "daily_loss_stop")
                 )
                 continue
-            base = equity if sizing_cfg.base == "equity" else sizing_cfg.initial_equity
+            if book.risk.paused(tr.entry_open_time):
+                result.skipped.append(
+                    SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "consecutive_loss_pause")
+                )
+                continue
+            base = book.wallet if sizing_cfg.base == "equity" else sizing_cfg.initial_equity
             if equity_floor_hit(base, sizing_cfg, min_min_notional):
                 result.equity_floor_hit = True
                 result.skipped.append(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, "equity_floor")
                 )
                 continue
-            available_margin = equity - sum(t.margin for t in positions.values())
+            available_margin = book.wallet - sum(t.margin for t in positions.values())
             sz = calc_notional(
                 base=base,
                 sl=tr.sl,
@@ -177,9 +197,14 @@ def _event_combine(
                 )
                 continue
             funding_fee = sz.notional * tr.funding_rate_sum
-            net_pnl = sz.notional * (tr.gross_return - fees.taker - tr.exit_fee_rate) - funding_fee
+            net_pnl = sz.notional * net_return_after_fees(
+                gross_return=tr.gross_return,
+                entry_fee_rate=fees.taker,
+                exit_fee_rate=tr.exit_fee_rate,
+                funding_rate=tr.funding_rate_sum,
+            )
             entry_fee = sz.notional * fees.taker
-            exit_fee = sz.notional * tr.exit_fee_rate
+            exit_fee = sz.notional * (1.0 + tr.gross_return) * tr.exit_fee_rate
             trade = ExecutedTrade(
                 symbol=tr.symbol,
                 group=tr.group,
@@ -208,22 +233,23 @@ def _event_combine(
                 rebate=(entry_fee + exit_fee) * fees.rebate_rate,
                 capped_by=sz.capped_by,
                 new_entry=tr.new_entry,
+                half_spread=tr.half_spread,
+                slip_exit=tr.slip_exit,
             )
             positions[tr.symbol] = trade
             result.trades.append(trade)
 
-    for sym in sorted(positions, key=lambda s: positions[s].exit_open_time):
-        trade = positions[sym]
-        equity += trade.net_pnl
-    positions.clear()
+    if timeline.size:
+        # 走完剩余分钟：让风控在最后一批持仓上同样生效（06 §3.4）
+        book.advance(int(timeline[-1]), timeline, cursor)
+        book.release_due(int(timeline[-1]))
+    for sym in sorted(list(positions), key=lambda s: positions[s].exit_open_time):
+        book.realize(sym, positions[sym])
 
-    result.final_equity = equity
+    result.risk_events = list(book.risk.events)
+    result.final_equity = book.wallet
     result.equity_curve = _mark_to_market_curve(result.trades, close_arrays, start_equity)
-    if (
-        not result.equity_curve.empty
-        and float(result.equity_curve["drawdown"].max()) >= sizing_cfg.max_drawdown_halt
-    ):
-        result.max_drawdown_halt = True
+    result.max_drawdown_halt = any(event.rule == "R8" for event in book.risk.events)
     return result
 
 

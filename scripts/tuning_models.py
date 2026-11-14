@@ -337,9 +337,11 @@ def _threshold_metrics(
     min_theta = min(grid)
     scen = scenario("base")
     pre_cfg = backtest_cfg.model_copy(update={"threshold": min_theta})
+    # 本函数在最低 θ 上一次性预计算、再按各 θ 过滤；行内 θ 只用于通过按行契约（06 §8）
+    scan_signals = signals.assign(theta=0.0) if "theta" not in signals.columns else signals
     all_trades, all_skipped = precompute_trades_all(
         bars_by_symbol,
-        signals,
+        scan_signals,
         rules,
         groups,
         scen=scen,

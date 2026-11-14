@@ -228,6 +228,130 @@ def _month_key(ts_ms: int) -> str:
     return f"{moment.year:04d}-{moment.month:02d}"
 
 
+SIGNALS_COLUMNS: tuple[str, ...] = (
+    "symbol",
+    "open_time",
+    "p",
+    "m",
+    "is_sample",
+    "fold_id",
+    "theta",
+)
+
+# 校验五折一致性时比对的 model_meta.json 字段（05 §7.2、06 §8）
+_MODEL_META_CONSISTENT_FIELDS = (
+    "feature_hash",
+    "exit_policy",
+    "label",
+    "universe_rule_hash",
+    "market",
+)
+
+
+def load_walk_forward_signals(
+    summary_path: Path, *, expected_months: Sequence[str]
+) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+    """读取 `walk_forward_summary.json`，校验后把各折测试段信号拼成连续测试段（06 §8）。
+
+    拼接前逐折校验（任一不满足即报错并写明折号）：
+
+    - 各折 `test_months` 不重叠、首尾相接，合起来恰好等于 `expected_months`（M13~M22）；
+    - 各折 `model_meta.json` 的 `feature_hash`、`exit_policy`、`label`、`universe_rule_hash`、
+      `market` 完全一致；
+    - 信号文件存在且含 `symbol/open_time/p/m/is_sample/fold_id/theta`；
+    - 每行 `open_time` 落在本折 `test_months` 内；
+    - 不读取 `expected_months` 之外的月份（封存集 M23 及以后不加载）。
+
+    Args:
+        summary_path: `artifacts/models/{run_id}/walk_forward_summary.json`。
+        expected_months: 期望的测试段月份（升序，M13~M22）。
+
+    Returns:
+        (拼接后的 signals（按 open_time、symbol 排序）, 每折元数据列表)。
+
+    Raises:
+        ValueError: 折号缺失、月份不连续/重叠、模型元数据不一致、缺列或行越界。
+    """
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    folds = payload.get("folds")
+    if not isinstance(folds, list) or not folds:
+        raise ValueError(f"walk_forward_summary.json 没有 folds：{summary_path}")
+
+    expected = list(expected_months)
+    collected: list[str] = []
+    metas: list[dict[str, object]] = []
+    frames: list[pd.DataFrame] = []
+    reference: dict[str, object] | None = None
+    for entry in folds:
+        if not isinstance(entry, dict):
+            raise ValueError(f"walk_forward_summary.json 的折条目格式不合法：{summary_path}")
+        fold_id = str(entry.get("fold_id"))
+        test_months = [str(month) for month in entry.get("test_months") or []]
+        if not test_months:
+            raise ValueError(f"折 {fold_id} 没有 test_months：{summary_path}")
+        overlap = set(test_months) & set(collected)
+        if overlap:
+            raise ValueError(f"折 {fold_id} 的测试月与其他折重叠：{sorted(overlap)}")
+        if collected and test_months[0] <= collected[-1]:
+            raise ValueError(
+                f"折 {fold_id} 的测试月不连续："
+                f"上一折止于 {collected[-1]}，本折起于 {test_months[0]}"
+            )
+        collected.extend(test_months)
+
+        model_dir = Path(str(entry.get("model_dir")))
+        meta_path = model_dir / "model_meta.json"
+        if not meta_path.is_file():
+            raise ValueError(f"折 {fold_id} 缺少 model_meta.json：{meta_path}")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        signature = {name: meta.get(name) for name in _MODEL_META_CONSISTENT_FIELDS}
+        if reference is None:
+            reference = signature
+        elif signature != reference:
+            diff = [
+                name for name in _MODEL_META_CONSISTENT_FIELDS if signature[name] != reference[name]
+            ]
+            raise ValueError(f"折 {fold_id} 的 model_meta 与首折不一致：{diff}")
+
+        signals_path = Path(str(entry.get("signals")))
+        if not signals_path.is_file():
+            raise ValueError(f"折 {fold_id} 缺少 signals 文件：{signals_path}")
+        frame = pd.read_parquet(signals_path)
+        missing = [name for name in SIGNALS_COLUMNS if name not in frame.columns]
+        if missing:
+            raise ValueError(f"折 {fold_id} 的 signals 缺列：{missing}（06 §8）")
+        if not bool((frame["fold_id"].astype(str) == fold_id).all()):
+            raise ValueError(f"折 {fold_id} 的 signals 存在其他折的行（fold_id 不一致）")
+        months_of_row = {_month_key(int(ts)) for ts in frame["open_time"]}
+        outside = sorted(months_of_row - set(test_months))
+        if outside:
+            raise ValueError(f"折 {fold_id} 的信号落在本折测试月之外：{outside}")
+        frames.append(frame.loc[:, list(SIGNALS_COLUMNS)])
+
+        metas.append(
+            {
+                "fold_id": fold_id,
+                "test_months": test_months,
+                "theta": float(entry.get("threshold", meta.get("threshold", 0.0))),
+                "temperature": float(entry.get("temperature", meta.get("temperature", 0.0))),
+                "val_pr_auc": float(entry.get("val_pr_auc", 0.0)),
+                "n_test_signals": int(entry.get("n_test_signals", len(frame))),
+                "model_dir": str(model_dir),
+            }
+        )
+
+    if collected != expected:
+        raise ValueError(
+            f"五折测试月拼接后为 {collected}，与期望的测试段 {expected} 不一致（06 §8）"
+        )
+    signals = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["open_time", "symbol"])
+        .reset_index(drop=True)
+    )
+    return signals, metas
+
+
 def run_fold(
     fold: FoldSpec,
     *,
@@ -318,6 +442,9 @@ def run_fold(
         temperature=temperature,
         months=fold.test_months,
     )
+    # signals.parquet 契约：每行带本折 fold_id 与本折选定阈值 θ（06 §8）
+    test_signals["fold_id"] = fold.fold_id
+    test_signals["theta"] = float(choice.theta)
     signals_root.mkdir(parents=True, exist_ok=True)
     signals_path = signals_root / f"{run_id}_{fold.fold_id}.parquet"
     test_signals.to_parquet(signals_path, index=False)
@@ -349,6 +476,16 @@ def run_fold(
             "validation_pr_auc": result.val_pr_auc,
             "ece_before": calibration["ece_before"],
             "ece_after": calibration["ece_after"],
+            # 验证集笔数与 θ 网格上的 PF 曲线（05 §9）
+            "validation_n_trades": choice.n_trades,
+            "pf_curve": [
+                {
+                    "theta": theta,
+                    "profit_factor": pf,
+                    "n_trades": choice.n_trades_by_theta.get(theta, 0),
+                }
+                for theta, pf in sorted(choice.pf_by_theta.items())
+            ],
         },
     )
     return FoldResult(
@@ -490,6 +627,15 @@ def run_final(
             "n_trades": choice.n_trades,
             "n_days": n_days,
             "validation_pr_auc": result.val_pr_auc,
+            "validation_n_trades": choice.n_trades,
+            "pf_curve": [
+                {
+                    "theta": theta,
+                    "profit_factor": pf,
+                    "n_trades": choice.n_trades_by_theta.get(theta, 0),
+                }
+                for theta, pf in sorted(choice.pf_by_theta.items())
+            ],
         },
     )
     summary = {

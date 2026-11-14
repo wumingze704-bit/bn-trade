@@ -340,6 +340,8 @@ def compute_random_entry_candidates(
                 "open_time": sym_samples["open_time"].to_numpy(dtype="int64"),
                 "p": np.ones(len(sym_samples), dtype="float64"),
                 "m": np.zeros(len(sym_samples), dtype="float64"),
+                # S1 把所有预过滤样本视为候选：阈值 θ 取 0（06 §7 S1）
+                "theta": np.zeros(len(sym_samples), dtype="float64"),
             }
         )
         trades, _ = precompute_trades(
