@@ -22,7 +22,12 @@ from pathlib import Path
 import pandas as pd
 
 from trade.backtest.costs import FeeSchedule, scenario
-from trade.backtest.engine import BacktestConfig, PrecomputedTrade, TradeRule, precompute_trades
+from trade.backtest.engine import (
+    BacktestConfig,
+    PrecomputedTrade,
+    load_trade_rules,
+    precompute_trades,
+)
 from trade.backtest.replay import (
     BarsArrays,
     ReplayResult,
@@ -146,8 +151,7 @@ def main() -> int:
     if outside:
         raise ValueError(f"S8 币种不在 {args.month} 的 U(R) 快照内：{outside}（03 §4.2）")
 
-    rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
-    rules: dict[str, TradeRule] = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
+    rules = load_trade_rules(args.rules, data_root / "universe" / "aliases.json")
     signals = pd.read_parquet(args.signals)
     fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     scen = scenario("base")

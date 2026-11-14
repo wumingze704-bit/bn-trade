@@ -21,7 +21,12 @@ import numpy as np
 import pandas as pd
 
 from trade.backtest.costs import FeeSchedule, scenario
-from trade.backtest.engine import BacktestConfig, TradeRule, precompute_trades
+from trade.backtest.engine import (
+    BacktestConfig,
+    TradeRule,
+    load_trade_rules,
+    precompute_trades,
+)
 from trade.backtest.ioc import ioc_missed, window_taker_buy_high
 from trade.common.config import BaseConfig, load_config
 from trade.common.exits import ExitConfig
@@ -150,8 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     coins = {
         coin.alias: coin for coin in collect_universe_coins(base.paths.data_root, tuning_months)
     }
-    rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
-    rules = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
+    rules = load_trade_rules(args.rules, base.paths.data_root / "universe" / "aliases.json")
     signals = pd.read_parquet(args.signals)
     fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     lat_ms = scenario("base").latency_ms
@@ -166,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         bars = load_bars(
             base.paths.data_root,
             alias,
-            month_start,
+            month_start - 2 * 86_400_000,  # 预热 2 天，保证 ATR/mean_60(qv)/rv_15 在月初可用
             month_end,
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=False,

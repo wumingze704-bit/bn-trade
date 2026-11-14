@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -133,6 +135,34 @@ class BacktestConfig(BaseModel):
     reference: ReferenceConfig = Field(default_factory=ReferenceConfig)
 
 
+def load_trade_rules(rules_path: Path, aliases_path: Path) -> dict[str, TradeRule]:
+    """读 `rules.json` 与 `aliases.json`，返回 alias → `TradeRule`（03 §4.6、09 §3）。
+
+    `rules.json` 以 symbol 为键，回测与标签以 alias 为键（03 §1.1 第 7 条）；两者必须经
+    `aliases.json` 映射，不能假设键相同。缺字段的条目由 `TradeRule.from_snapshot` 报错。
+
+    Args:
+        rules_path: exchangeInfo 规则快照 `rules.json`。
+        aliases_path: `data/universe/aliases.json`（symbol → alias）。
+
+    Returns:
+        alias → TradeRule；`rules.json` 中没有的 symbol 不写入（由调用方按需报错）。
+    """
+    rules_raw: dict[str, dict[str, object]] = json.loads(rules_path.read_text(encoding="utf-8"))
+    symbol_to_alias: dict[str, str] = json.loads(aliases_path.read_text(encoding="utf-8"))
+    rules: dict[str, TradeRule] = {}
+    for symbol, alias in symbol_to_alias.items():
+        raw = rules_raw.get(symbol)
+        if raw is not None:
+            rules[alias] = TradeRule.from_snapshot(alias, raw)
+    # 兼容以 alias 为键的快照（fixture 与旧快照）；已由 symbol 映射的条目以 symbol 为准
+    known_aliases = set(symbol_to_alias.values())
+    for key, raw in rules_raw.items():
+        if key in known_aliases and key not in rules:
+            rules[key] = TradeRule.from_snapshot(key, raw)
+    return rules
+
+
 @dataclass(frozen=True)
 class TradeRule:
     """交易规则快照（exchangeInfo，09 §3）。"""
@@ -140,6 +170,32 @@ class TradeRule:
     tick_size: float
     step_size: float
     min_notional: float
+
+    @classmethod
+    def from_snapshot(cls, alias: str, raw: Mapping[str, object]) -> TradeRule:
+        """由 `rules.json` 的单个条目构造交易规则（03 §4.6）。
+
+        快照条目可能含 `base_asset`、`contract_type` 等扩展字段，这里只取回测需要的
+        三项；缺任一字段直接报错，不回退默认值（红线 13）。
+
+        Args:
+            alias: 币别名（用于报错上下文）。
+            raw: `rules.json` 中该 symbol 的原始字典。
+
+        Returns:
+            `TradeRule`。
+
+        Raises:
+            ValueError: 缺少 `tick_size`、`step_size` 或 `min_notional`。
+        """
+        missing = [name for name in ("tick_size", "step_size", "min_notional") if name not in raw]
+        if missing:
+            raise ValueError(f"交易规则缺少字段 {missing}：{alias}（03 §4.6、红线 13）")
+        return cls(
+            tick_size=float(raw["tick_size"]),  # type: ignore[arg-type]
+            step_size=float(raw["step_size"]),  # type: ignore[arg-type]
+            min_notional=float(raw["min_notional"]),  # type: ignore[arg-type]
+        )
 
 
 @dataclass

@@ -82,7 +82,8 @@ def exit_sim(
     filled_col = "p_3s_filled" if entry_latency_ms == 3000 else "p_1s_filled"
     if filled_col not in bars:
         raise ValueError(f"bars 缺少列 {filled_col}（03 §2.2、06 §3.1）")
-    entry_filled = bars[filled_col].to_numpy(dtype="int64")
+    # 逐笔整分钟缺失时该列可能为 NaN，按 float 读取（NaN 视为非陈旧价，交由入场价有限性检查丢弃）
+    entry_filled = bars[filled_col].to_numpy(dtype="float64")
     hi_post = bars[hi_col].to_numpy(dtype="float64")
     lo_post = bars[lo_col].to_numpy(dtype="float64")
     missing_cols = [name for name in ("kline_missing", "aggtrades_missing") if name not in bars]

@@ -150,6 +150,25 @@ def test_y_min_r标签边界() -> None:
     assert frame["y"].nunique() == 2
 
 
+def test_p_1s_filled为NaN时不崩溃且按无入场价丢弃() -> None:
+    """真实数据中 `p_1s` 与 `p_1s_filled` 同时为 NaN 的分钟不得让标签构建抛错（03 §2.2）。"""
+    n = 300
+    t = 100
+    bars = make_bars(n, seed=13)
+    bars["p_1s_filled"] = bars["p_1s_filled"].astype("float64")
+    bars.loc[t + 1, "p_1s"] = float("nan")
+    bars.loc[t + 1, "p_1s_filled"] = float("nan")
+
+    frame, kept = exit_sim(bars, np.array([t]), **_kwargs())
+    assert kept.tolist() == []
+    assert frame.empty
+
+    # 其他样本不受影响
+    frame2, kept2 = exit_sim(bars, np.array([t + 10]), **_kwargs())
+    assert kept2.tolist() == [t + 10]
+    assert np.isfinite(frame2.iloc[0]["ret_net"])
+
+
 def test_入场价陈旧时标签丢弃样本且与回测规则一致() -> None:
     """p_1s_filled=1 的入场分钟放弃样本，与回测 skipped 的 entry_price_stale 同口径（06 §3.1）。"""
     n = 300

@@ -839,3 +839,59 @@ def test_notional_ref不同时不共享缓存(monkeypatch):
     assert len(calls) == 1  # 第二次命中缓存
     run_backtest(prepared, signals, rules, groups, sizing_cfg=sizing_b, **common)
     assert len(calls) == 2  # notional_ref 不同 → 重新预计算
+
+
+def test_交易规则从快照构造时忽略扩展字段():
+    """`rules.json` 条目含 base_asset 等扩展字段时只取三项；缺字段直接报错（03 §4.6）。"""
+    rule = TradeRule.from_snapshot(
+        "C001",
+        {
+            "base_asset": "XRP",
+            "contract_type": "PERPETUAL",
+            "tick_size": 0.0001,
+            "step_size": 0.1,
+            "min_notional": 5.0,
+            "max_leverage": None,
+        },
+    )
+    assert rule.tick_size == 0.0001
+    assert rule.step_size == 0.1
+    assert rule.min_notional == 5.0
+    with pytest.raises(ValueError, match="min_notional"):
+        TradeRule.from_snapshot("C002", {"tick_size": 0.01, "step_size": 1.0})
+
+
+def test_交易规则按别名映射(tmp_path):
+    """`rules.json` 以 symbol 为键、回测以 alias 为键，必须经 aliases.json 映射（03 §4.6）。"""
+    import json
+
+    from trade.backtest.engine import load_trade_rules
+
+    rules_path = tmp_path / "rules.json"
+    aliases_path = tmp_path / "aliases.json"
+    rules_path.write_text(
+        json.dumps(
+            {
+                "XRPUSDT": {
+                    "tick_size": 0.0001,
+                    "step_size": 0.1,
+                    "min_notional": 5.0,
+                    "base_asset": "XRP",
+                },
+                "OTHERUSDT": {"tick_size": 0.01, "step_size": 1.0, "min_notional": 5.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    aliases_path.write_text(json.dumps({"XRPUSDT": "C004"}), encoding="utf-8")
+    rules = load_trade_rules(rules_path, aliases_path)
+    assert set(rules) == {"C004"}  # 未在 aliases.json 中的 symbol 不写入
+    assert rules["C004"].tick_size == 0.0001
+
+    # 兼容以 alias 为键的快照（fixture 与旧快照）
+    rules_path.write_text(
+        json.dumps({"C004": {"tick_size": 0.0002, "step_size": 0.1, "min_notional": 5.0}}),
+        encoding="utf-8",
+    )
+    alias_keyed = load_trade_rules(rules_path, aliases_path)
+    assert alias_keyed["C004"].tick_size == 0.0002

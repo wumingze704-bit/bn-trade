@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -91,38 +93,53 @@ def load_half_spread_overrides(path: Path, aliases: Sequence[str]) -> dict[str, 
 
 
 def _book_files(book_root: Path, alias: str) -> list[Path]:
-    """某币的 bookTicker 录制文件（按日）。"""
+    """某币的 bookTicker 录制文件（按日分段，文件名 `{YYYYMMDD}[-{HHMMSS}].parquet`）。"""
     return sorted((book_root / alias).glob("*.parquet"))
 
 
-def _load_book(book_root: Path, alias: str) -> pd.DataFrame:
-    """读取某币全部录制的 bookTicker（E/bid/ask；按事件时间排序去重）。"""
-    files = _book_files(book_root, alias)
+def _load_book(book_root: Path, dir_names: Sequence[str]) -> pd.DataFrame:
+    """读取若干录制目录下全部可读的 bookTicker（E/bid/ask；按事件时间排序去重）。
+
+    录制进程可能正在写某个分段文件；无法解析的文件跳过并在 stderr 提示，不静默丢失。
+    """
+    files: list[Path] = []
+    for name in dir_names:
+        files.extend(sorted((book_root / name).glob("*.parquet")))
     if not files:
-        raise ValueError(f"没有 bookTicker 录制：{book_root / alias}")
-    frames = [pd.read_parquet(path, columns=["E", "bid", "ask"]) for path in files]
+        raise ValueError(f"没有 bookTicker 录制：{book_root / dir_names[0]}")
+    frames: list[pd.DataFrame] = []
+    skipped: list[str] = []
+    for path in files:
+        try:
+            frames.append(pd.read_parquet(path, columns=["E", "bid", "ask"]))
+        except (OSError, ValueError):  # pyarrow 对未完成文件抛 ArrowInvalid(ValueError)
+            skipped.append(path.name)
+    if skipped:
+        print(f"[跳过未完成的录制文件] {dir_names[0]} {len(skipped)} 个", file=sys.stderr)
+    if not frames:
+        raise ValueError(f"bookTicker 录制文件都不可读：{book_root / dir_names[0]}")
     frame = pd.concat(frames, ignore_index=True)
     return frame.sort_values("E").drop_duplicates("E").reset_index(drop=True)
 
 
 def build_profile(
     book_root: Path,
-    aliases: Sequence[str],
+    groups: Mapping[str, Sequence[str]],
     signal_minutes: Mapping[str, np.ndarray],
 ) -> pd.DataFrame:
-    """统计每币全部分钟与信号分钟的相对点差分位（06 §4.3）。
+    """统计每别名全部分钟与信号分钟的相对点差分位（06 §4.3）。
 
     Args:
         book_root: `artifacts/live/book/`。
-        aliases: 交易范围币别名。
+        groups: alias → 该别名的录制目录名列表（录制目录可能是 symbol，也可能是 alias）。
         signal_minutes: alias → 该币信号分钟的毫秒时间戳数组（预过滤样本）。
 
     Returns:
-        每币一行：alias、minutes、all_p50/p75/p95、signal_n、signal_p50/p75/p95。
+        每别名一行：alias、minutes、all_p50/p75/p95、signal_n、signal_p50/p75/p95。
     """
     rows: list[dict[str, object]] = []
-    for alias in aliases:
-        book = _load_book(book_root, alias)
+    for alias, dir_names in groups.items():
+        book = _load_book(book_root, dir_names)
         spread = relative_spread(book["bid"].to_numpy(), book["ask"].to_numpy())
         all_q = spread_quantiles(spread)
         minute = (book["E"].to_numpy(dtype="int64") // 60_000) * 60_000
@@ -204,7 +221,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="信号文件（取 is_sample=1 的分钟作为“信号分钟”；缺省只统计全部分钟）",
     )
+    parser.add_argument(
+        "--aliases-file",
+        type=Path,
+        default=None,
+        help="data/universe/aliases.json；把 symbol 命名的录制目录归并到 alias（C001…）",
+    )
     return parser
+
+
+def _group_dirs(book_root: Path, aliases_path: Path | None) -> dict[str, list[str]]:
+    """把录制目录按别名归并（目录名可能是 symbol，也可能是 alias）。"""
+    dirs = sorted(path.name for path in book_root.iterdir() if path.is_dir())
+    if not dirs:
+        raise ValueError(f"bookTicker 录制目录为空：{book_root}")
+    if aliases_path is None:
+        return {name: [name] for name in dirs}
+    symbol_to_alias: dict[str, str] = json.loads(aliases_path.read_text(encoding="utf-8"))
+    known_aliases = set(symbol_to_alias.values())
+    groups: dict[str, list[str]] = {}
+    for name in dirs:
+        alias = name if name in known_aliases else symbol_to_alias.get(name, name)
+        groups.setdefault(alias, []).append(name)
+    return groups
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,14 +257,21 @@ def main(argv: list[str] | None = None) -> int:
     book_root = resolve(args.book_root)
     if not book_root.is_dir():
         raise ValueError(f"没有 bookTicker 录制目录：{book_root}")
-    aliases = sorted(path.name for path in book_root.iterdir() if path.is_dir())
-    if not aliases:
-        raise ValueError(f"bookTicker 录制目录为空：{book_root}")
+    groups = _group_dirs(
+        book_root, resolve(args.aliases_file) if args.aliases_file is not None else None
+    )
     signal_minutes = _signal_minutes_from_parquet(
         resolve(args.signals) if args.signals is not None else None
     )
-    profile = build_profile(book_root, aliases, signal_minutes)
-    days = sorted({path.stem for alias in aliases for path in _book_files(book_root, alias)})
+    profile = build_profile(book_root, groups, signal_minutes)
+    days = sorted(
+        {
+            path.stem.split("-")[0]
+            for dirs in groups.values()
+            for name in dirs
+            for path in _book_files(book_root, name)
+        }
+    )
     write_profile(profile, resolve(args.out), recorded_days=days)
     print(f"点差画像：{len(profile)} 个币 → {resolve(args.out)}")
     return 0

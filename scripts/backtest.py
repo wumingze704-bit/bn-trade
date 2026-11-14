@@ -23,6 +23,7 @@ from trade.backtest.engine import (
     BacktestConfig,
     PreparedSymbol,
     TradeRule,
+    load_trade_rules,
     prepare_symbols,
     run_backtest,
 )
@@ -332,8 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         if "fold_id" not in signals.columns:
             signals = signals.assign(fold_id="R0" if args.model is None else str(model_id))
 
-    rules_raw = json.loads(args.rules.read_text(encoding="utf-8"))
-    rules: dict[str, TradeRule] = {alias: TradeRule(**rules_raw[alias]) for alias in rules_raw}
+    rules = load_trade_rules(args.rules, base.paths.data_root / "universe" / "aliases.json")
     groups = {coin.alias: coin.role for coin in coins}
 
     months = universe_months(base)

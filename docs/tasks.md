@@ -469,6 +469,8 @@
 - [x] 2026-11-13 嵌套确认与阈值规则统一（第 20 步）：`tuning_exits._scan_theta` 改为调用 `trade.models.calibration.select_threshold`；新增 `--nested-check`（M10 早停、M11 选 θ、M12 评估，6 组）。真实 6 组结果未运行（需重建后的数据集）。
 - [x] 2026-11-13 信号密度只读分析（第 22 步）：新增 `scripts/analyze_signal_density.py`，已用本地调参期数据（169 个币）运行，结果见 `artifacts/reports/signal_density.md`；θ 相关日均信号数未运行（本地无 M0 信号）。
 - [x] 2026-11-13 待决项定案：`risk.halt_mode=strict`（闸门口径）、reference 与 G6 本金统一 100 USDT、段尾样本保留“丢弃”现状、验证月不拆分（另设 `--nested-check`）、`ioc_miss` 情景暂不加入、点差只做 `spread_measured` 只报告、`p_1s` 空值分钟改为 manifest 告警；代码默认值同步（`ReferenceConfig.initial_equity`、`sweep` 默认本金）。**数据集仍需按新标签重建**：先 `scripts/sync.ps1 pull-data`，再 `build_dataset --run-id <新id>`（约数小时）。
+- [x] 2026-11-14 服务器实测：数据集 `ds_20261114b` 已重建（237 币，样本 7,108,730，保留率 0.1348，manifest 含 notional_ref/rules_sha256/label_dropped；期间修复 `exit_sim` 读取 `p_*_filled` 遇 NaN 崩溃的 bug）；IOC 未成交率 8.64%（M12、XRP/ARB 共 301 条信号，两组净收益见 records.md）；bookTicker 已按 7 天重启录制并产出部分点差画像；第 20 步嵌套确认受内存限制（服务器 3.6GB、本机空闲 4GB，全量需约 15GB），仅完成 5 币冒烟，待 `tuning_exits` 流式化后再跑全量。修复 `rules.json` 以 symbol 为键导致的 `TradeRule(**raw)` 崩溃（新增 `load_trade_rules` 与 `TradeRule.from_snapshot`，回测/S8/IOC 脚本统一使用）。
+
 
 - [x] 2026-11-13 次要问题合集（第 23 步）：出场手续费改为按出场名义价值 `notional × (1 + gross_return) × exit_fee_rate`（回测/逐笔重放/`exit_sim` 共用 `net_return_after_fees`）；报告首页注记 tick/历史价格口径与段尾丢弃条数；manifest 新增 `label_dropped.segment_tail`；`model_meta.json` 的 `threshold_selection` 新增 `validation_n_trades` 与 `pf_curve`。
 
