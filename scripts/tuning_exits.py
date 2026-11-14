@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import lightgbm as lgb  # type: ignore[import-untyped]
@@ -32,6 +32,7 @@ from trade.backtest.engine import (
     PreparedSymbol,
     SkippedSignal,
     TradeRule,
+    precompute_trades,
     precompute_trades_all,
     prepare_symbols,
     simulate_portfolio,
@@ -165,14 +166,19 @@ def _load_rules_by_alias(rules_path: Path, aliases_path: Path) -> dict[str, Trad
 
 @dataclass
 class CoinData:
-    """单币的行情、特征与样本位置（与出场参数无关，一次运行只算一次）。"""
+    """单币的行情、特征与样本位置（与出场参数无关，一次运行只算一次）。
+
+    低内存模式（`--low-memory`）下 `bars`/`segments`/`x`/`open_time` 为 None，只保留
+    样本位置与特征文件路径，按需从磁盘重新读取。
+    """
 
     symbol: str
-    bars: pd.DataFrame
-    segments: np.ndarray
-    x: np.ndarray
-    open_time: np.ndarray
+    bars: pd.DataFrame | None
+    segments: np.ndarray | None
+    x: np.ndarray | None
+    open_time: np.ndarray | None
     sample_positions: np.ndarray
+    features_path: Path | None = None
 
 
 @dataclass
@@ -197,6 +203,13 @@ class TuningData:
     val_end_ms: int
     log_path: Path
     config_inputs: dict[str, Path]
+    # 低内存流式模式（05 §6.1）：按需从磁盘读 bars/特征，不再常驻内存
+    low_memory: bool = False
+    data_root: Path = field(default_factory=Path)
+    features_dir: Path | None = None
+    bars_start_ms: int = 0
+    bars_end_ms: int = 0
+    holdout_start_ms: int = 0
 
 
 @dataclass
@@ -212,30 +225,27 @@ class SampleSet:
     t_exit: np.ndarray
 
 
-def _load_disk_features(
+def _validate_features_manifest(
     features_dir: Path,
     features_cfg: FeaturesConfig,
     feature_names: list[str],
     aliases: list[str],
     start_ms: int,
     end_ms: int,
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """读取已构建数据集的特征 parquet，并校验 manifest（05 §6.1）。
+) -> None:
+    """只校验数据集 manifest 与文件存在性，不把所有特征读进内存（05 §6.1）。
 
     Args:
         features_dir: 数据集特征目录 `data/features/{run_id}`。
         features_cfg: 当前特征配置。
         feature_names: 当前启用特征名（有序）。
-        aliases: 本次需要的币别名（只读取这些文件）。
+        aliases: 本次需要的币别名。
         start_ms: 需要的起点（毫秒，含）。
         end_ms: 需要的终点（毫秒，不含）。
 
-    Returns:
-        alias -> (`open_time` int64 数组, 特征 float16 矩阵)，`open_time` 严格递增。
-
     Raises:
-        ValueError: manifest 缺失、`feature_hash`/特征列表与当前注册表不一致，
-            或数据集覆盖区间不包含所需区间（红线 13，不回退到现场计算）。
+        ValueError: manifest 缺失、`feature_hash`/特征列表与当前注册表不一致、
+            数据集覆盖区间不包含所需区间，或缺某币的特征文件（红线 13）。
     """
     manifest_path = features_dir / "manifest.json"
     if not manifest_path.is_file():
@@ -257,16 +267,87 @@ def _load_disk_features(
             f"数据集覆盖区间 [{window_start}, {window_end}) 不包含所需区间 "
             f"[{start_ms}, {end_ms})：{manifest_path}（05 §6.1）"
         )
-    frames: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for alias in aliases:
-        path = features_dir / f"{alias}.parquet"
-        if not path.is_file():
-            raise ValueError(f"数据集缺少币 {alias} 的特征文件：{path}（05 §6.1）")
-        frame = pd.read_parquet(path, columns=["open_time", *feature_names])
-        times = frame["open_time"].to_numpy(dtype="int64")
-        if times.size > 1 and not bool(np.all(np.diff(times) > 0)):
-            raise ValueError(f"数据集 open_time 非严格递增：{path}")
-        frames[alias] = (times, frame[feature_names].to_numpy(dtype="float16"))
+    missing = [alias for alias in aliases if not (features_dir / f"{alias}.parquet").is_file()]
+    if missing:
+        raise ValueError(
+            f"数据集缺少币 {len(missing)} 个的特征文件（前 5 个：{missing[:5]}）：{features_dir}"
+        )
+
+
+def _read_coin_features(
+    features_dir: Path, alias: str, feature_names: list[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    """读取单个币的特征 parquet（低内存流式模式按币读取）。
+
+    Returns:
+        (`open_time` int64 数组, 特征 float16 矩阵)，`open_time` 严格递增。
+    """
+    path = features_dir / f"{alias}.parquet"
+    if not path.is_file():
+        raise ValueError(f"数据集缺少币 {alias} 的特征文件：{path}（05 §6.1）")
+    frame = pd.read_parquet(path, columns=["open_time", *feature_names])
+    times = frame["open_time"].to_numpy(dtype="int64")
+    if times.size > 1 and not bool(np.all(np.diff(times) > 0)):
+        raise ValueError(f"数据集 open_time 非严格递增：{path}")
+    return times, frame[feature_names].to_numpy(dtype="float16")
+
+
+def _align_values(
+    dataset_time: np.ndarray, values: np.ndarray, open_time: np.ndarray, alias: str
+) -> np.ndarray:
+    """把落盘特征按 bars 的 `open_time` 对齐，返回 fp16 特征矩阵（05 §6.1）。
+
+    Raises:
+        ValueError: 数据集特征缺少 bars 的某些分钟，或存在非有限值。
+    """
+    pos = np.searchsorted(dataset_time, open_time)
+    matched = pos < dataset_time.size
+    if matched.any():
+        matched[matched] = dataset_time[pos[matched]] == open_time[matched]
+    if not bool(matched.all()):
+        raise ValueError(
+            f"数据集特征缺少 {alias} 的 {int((~matched).sum())} 个分钟（open_time 对不上），"
+            f"无法复用落盘特征（05 §6.1）"
+        )
+    aligned = values[pos]
+    if not np.isfinite(aligned.astype("float32")).all():
+        raise ValueError(f"落盘特征在调参期存在非有限值：{alias}（05 §6.1）")
+    return aligned
+
+
+def _load_disk_features(
+    features_dir: Path,
+    features_cfg: FeaturesConfig,
+    feature_names: list[str],
+    aliases: list[str],
+    start_ms: int,
+    end_ms: int,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """读取已构建数据集的特征 parquet，并校验 manifest（05 §6.1）。
+
+    内存版入口（`--low-memory` 请用 `_validate_features_manifest` + `_read_coin_features`）。
+
+    Args:
+        features_dir: 数据集特征目录 `data/features/{run_id}`。
+        features_cfg: 当前特征配置。
+        feature_names: 当前启用特征名（有序）。
+        aliases: 本次需要的币别名（只读取这些文件）。
+        start_ms: 需要的起点（毫秒，含）。
+        end_ms: 需要的终点（毫秒，不含）。
+
+    Returns:
+        alias -> (`open_time` int64 数组, 特征 float16 矩阵)，`open_time` 严格递增。
+
+    Raises:
+        ValueError: manifest 缺失、`feature_hash`/特征列表与当前注册表不一致，
+            或数据集覆盖区间不包含所需区间（红线 13，不回退到现场计算）。
+    """
+    _validate_features_manifest(
+        features_dir, features_cfg, feature_names, aliases, start_ms, end_ms
+    )
+    frames: dict[str, tuple[np.ndarray, np.ndarray]] = {
+        alias: _read_coin_features(features_dir, alias, feature_names) for alias in aliases
+    }
     if not frames:
         raise ValueError(f"数据集目录内没有特征 parquet：{features_dir}")
     return frames
@@ -282,19 +363,7 @@ def _align_disk_features(
     if entry is None:
         raise ValueError(f"数据集缺少币 {alias} 的特征 parquet，无法复用落盘特征（05 §6.1）")
     dataset_time, values = entry
-    pos = np.searchsorted(dataset_time, open_time)
-    matched = pos < dataset_time.size
-    if matched.any():
-        matched[matched] = dataset_time[pos[matched]] == open_time[matched]
-    if not bool(matched.all()):
-        raise ValueError(
-            f"数据集特征缺少 {alias} 的 {int((~matched).sum())} 个分钟（open_time 对不上），"
-            f"无法复用落盘特征（05 §6.1）"
-        )
-    aligned = values[pos]
-    if not np.isfinite(aligned.astype("float32")).all():
-        raise ValueError(f"落盘特征在调参期存在非有限值：{alias}（05 §6.1）")
-    return aligned
+    return _align_values(dataset_time, values, open_time, alias)
 
 
 def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
@@ -322,20 +391,35 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     delay = universe_cfg.rule.new_entry_delay_days
     features = enabled_features(features_cfg)
     feature_names = [f.name for f in features]
+    features_dir = _resolve(root, str(args.features_dir)) if args.features_dir is not None else None
+    low_memory = bool(getattr(args, "low_memory", False))
+    if low_memory and features_dir is None:
+        raise ValueError("--low-memory 需要 --features-dir（流式模式按币读取落盘特征，05 §6.1）")
     disk_features: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
-    if args.features_dir is not None:
-        disk_features = _load_disk_features(
-            _resolve(root, str(args.features_dir)),
-            features_cfg,
-            feature_names,
-            [coin.alias for coin in coins],
-            wb.start_ms,
-            tuning_end_ms,
-        )
+    if features_dir is not None:
+        if low_memory:
+            # 流式模式只校验 manifest 与文件存在性，不把所有特征读进内存
+            _validate_features_manifest(
+                features_dir,
+                features_cfg,
+                feature_names,
+                [coin.alias for coin in coins],
+                wb.start_ms,
+                tuning_end_ms,
+            )
+        else:
+            disk_features = _load_disk_features(
+                features_dir,
+                features_cfg,
+                feature_names,
+                [coin.alias for coin in coins],
+                wb.start_ms,
+                tuning_end_ms,
+            )
     # 复用落盘特征时不需要 BTC 上下文（只用于 compute_features）。
     btc_bars = (
         None
-        if disk_features is not None
+        if features_dir is not None
         else load_bars(
             data_root,
             universe_cfg.btc_context,
@@ -360,7 +444,10 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
         )
         seg = segment_ids(bars["open_time"].to_numpy(dtype="int64"))
         times = bars["open_time"].to_numpy(dtype="int64")
-        if disk_features is not None:
+        x: np.ndarray | None = None
+        if low_memory:
+            x = None
+        elif disk_features is not None:
             x = _align_disk_features(disk_features, alias, times)
         else:
             if btc_bars is None:  # pragma: no cover - 防御性检查（红线 13）
@@ -379,11 +466,14 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
         sample = sample & trade_mask
         per_coin[alias] = CoinData(
             symbol=coin.symbol,
-            bars=bars,
-            segments=seg,
+            bars=None if low_memory else bars,
+            segments=None if low_memory else seg,
             x=x,
-            open_time=times,
+            open_time=None if low_memory else times,
             sample_positions=np.nonzero(sample)[0],
+            features_path=(features_dir / f"{alias}.parquet")
+            if low_memory and features_dir
+            else None,
         )
         # 盯市权益曲线只需要验证段窗口的开盘时间与收盘价（06 §5.1）：预先切片，
         # 避免每次组合模拟都为全量 M1~M12 bars 重建 close 查找表。
@@ -391,6 +481,8 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
         bars_mtm[alias] = pd.DataFrame(
             {"open_time": times[in_val], "close": bars["close"].to_numpy(dtype="float64")[in_val]}
         )
+        if low_memory:
+            del bars, seg, times
 
     artifact_root = _resolve(root, str(base_cfg.paths.artifact_root))
     rules_path = artifact_root / "exchange_info" / "rules.json"
@@ -404,7 +496,14 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
     groups = {coin.alias: coin.role for coin in coins}
     fees = FeeSchedule(base_cfg.fees.maker, base_cfg.fees.taker, base_cfg.fees.rebate_rate)
     # 每币 numpy 数组只准备一次（06 §3.4），各轮出场参数与 θ 复用同一份数组。
-    prepared = prepare_symbols({alias: info.bars for alias, info in per_coin.items()})
+    # 流式模式不常驻这些数组，`_precompute_all` 按币加载验证窗口后再准备。
+    prepared = (
+        {}
+        if low_memory
+        else prepare_symbols(
+            {alias: info.bars for alias, info in per_coin.items() if info.bars is not None}
+        )
+    )
     return TuningData(
         base_cfg=base_cfg,
         features_cfg=features_cfg,
@@ -427,7 +526,122 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             "exchange_rules_snapshot": rules_path,
             "coin_aliases": data_root / "universe" / "aliases.json",
         },
+        low_memory=low_memory,
+        data_root=data_root,
+        features_dir=features_dir,
+        bars_start_ms=wb.start_ms,
+        bars_end_ms=tuning_end_ms,
+        holdout_start_ms=wb.holdout_start_ms,
     )
+
+
+def _load_bars_for(data: TuningData, alias: str) -> pd.DataFrame:
+    """重新读取单币调参期 bars（流式模式用；起止与 holdout 守卫与 `_prepare_data` 一致）。"""
+    return load_bars(
+        data.data_root,
+        alias,
+        data.bars_start_ms,
+        data.bars_end_ms,
+        holdout_start_ms=data.holdout_start_ms,
+        allow_holdout=False,
+    )
+
+
+def _bar_times_for(data: TuningData, alias: str, info: CoinData) -> np.ndarray:
+    """取单币 bars 的 `open_time` 数组（流式模式只读一列）。"""
+    if info.open_time is not None:
+        return info.open_time
+    if info.bars is not None:
+        return info.bars["open_time"].to_numpy(dtype="int64")
+    bars = load_bars(
+        data.data_root,
+        alias,
+        data.bars_start_ms,
+        data.bars_end_ms,
+        holdout_start_ms=data.holdout_start_ms,
+        allow_holdout=False,
+        columns=["open_time"],
+    )
+    return bars["open_time"].to_numpy(dtype="int64")
+
+
+def _coin_labels(
+    data: TuningData,
+    alias: str,
+    info: CoinData,
+    *,
+    exit_cfg: ExitConfig,
+    k_sl: float,
+    sl_min: float,
+    sl_max: float,
+    notional_ref: float,
+) -> dict[str, object] | None:
+    """单币重建 `exit_sim` 标签并算独特性权重，返回紧凑数组（不保留特征）。
+
+    Args:
+        data: 运行配置与逐币元数据。
+        alias: 币别名。
+        info: 该币条目（流式模式下 `bars`/`segments` 为 None，按需从磁盘读取）。
+        exit_cfg/k_sl/sl_min/sl_max: 该组出场与止损参数。
+        notional_ref: 参考名义价值（滑点模型用）。
+
+    Returns:
+        含 `alias/kept/y/w/m/ot/tx` 的字典；该币无样本时返回 None。
+    """
+    label_cfg = data.features_cfg.label
+    bars = info.bars if info.bars is not None else _load_bars_for(data, alias)
+    segments = (
+        info.segments
+        if info.segments is not None
+        else segment_ids(bars["open_time"].to_numpy(dtype="int64"))
+    )
+    labels_df, kept = exit_sim(
+        bars,
+        info.sample_positions,
+        k_sl=k_sl,
+        sl_min=sl_min,
+        sl_max=sl_max,
+        H_label=label_cfg.H_label,
+        entry_latency_ms=label_cfg.entry_latency_ms,
+        y_min_r=label_cfg.y_min_r,
+        exit_cfg=exit_cfg,
+        fees_taker=data.base_cfg.fees.taker,
+        fees_maker=data.base_cfg.fees.maker,
+        half_spread_min=data.backtest_cfg.costs.half_spread_min,
+        slip_min=data.backtest_cfg.costs.slip_min,
+        Y=data.backtest_cfg.costs.Y,
+        notional_ref=notional_ref,
+        max_chase=data.backtest_cfg.risk.max_chase,
+        tick_size=data.rules[alias].tick_size,
+        segments=segments,
+    )
+    if kept.size == 0:
+        return None
+    weights = uniqueness_weights(kept, labels_df["bars_held"].to_numpy(dtype="int64"))
+    open_time = labels_df["open_time"].to_numpy(dtype="int64")
+    return {
+        "alias": alias,
+        "kept": kept.astype("int64"),
+        "y": labels_df["y"].to_numpy(dtype="int64"),
+        "w": weights,
+        "m": month_index_array(open_time, data.base_cfg.data_window.end_month, len(data.months)),
+        "ot": open_time,
+        "tx": labels_df["t_exit"].to_numpy(dtype="int64"),
+    }
+
+
+def _feature_block(data: TuningData, alias: str, info: CoinData, kept: np.ndarray) -> np.ndarray:
+    """单币按需读取特征并构造 4F 表格化矩阵（流式模式）。
+
+    与 `tabular_features_matrix(info.x, kept)` 结果逐元素一致：先按 bars 的 `open_time`
+    对齐特征，再取 [X[t], X[t]−X[t−1], X[t]−X[t−5], X[t]−X[t−15]]。
+    """
+    if data.features_dir is None:  # pragma: no cover - 由 `_prepare_data` 保证
+        raise ValueError("流式模式缺少 --features-dir（05 §6.1）")
+    dataset_time, values = _read_coin_features(data.features_dir, alias, data.feature_names)
+    times = _bar_times_for(data, alias, info)
+    aligned = _align_values(dataset_time, values, times, alias)
+    return tabular_features_matrix(aligned, kept)
 
 
 def _build_samples(
@@ -441,84 +655,106 @@ def _build_samples(
     notional_ref = (
         data.sizing_cfg.initial_equity * data.sizing_cfg.position_frac * data.sizing_cfg.leverage
     )
-    x_parts: list[np.ndarray] = []
-    y_parts: list[np.ndarray] = []
-    w_parts: list[np.ndarray] = []
-    m_parts: list[np.ndarray] = []
-    ot_parts: list[np.ndarray] = []
-    tx_parts: list[np.ndarray] = []
-    sym_parts: list[np.ndarray] = []
-    label_cfg = data.features_cfg.label
+    entries: list[dict[str, object]] = []
     for alias, info in data.per_coin.items():
-        labels_df, kept = exit_sim(
-            info.bars,
-            info.sample_positions,
+        entry = _coin_labels(
+            data,
+            alias,
+            info,
+            exit_cfg=exit_cfg,
             k_sl=k_sl,
             sl_min=sl_min,
             sl_max=sl_max,
-            H_label=label_cfg.H_label,
-            entry_latency_ms=label_cfg.entry_latency_ms,
-            y_min_r=label_cfg.y_min_r,
-            exit_cfg=exit_cfg,
-            fees_taker=data.base_cfg.fees.taker,
-            fees_maker=data.base_cfg.fees.maker,
-            half_spread_min=data.backtest_cfg.costs.half_spread_min,
-            slip_min=data.backtest_cfg.costs.slip_min,
-            Y=data.backtest_cfg.costs.Y,
             notional_ref=notional_ref,
-            max_chase=data.backtest_cfg.risk.max_chase,
-            tick_size=data.rules[alias].tick_size,
-            segments=info.segments,
         )
-        n = kept.size
-        if n == 0:
-            continue
-        weights = uniqueness_weights(kept, labels_df["bars_held"].to_numpy(dtype="int64"))
-        row_idx = kept.astype("int64")
-        x_parts.append(tabular_features_matrix(info.x, row_idx))
-        y_parts.append(labels_df["y"].to_numpy(dtype="int64"))
-        w_parts.append(weights)
-        ot = labels_df["open_time"].to_numpy(dtype="int64")
-        ot_parts.append(ot)
-        tx_parts.append(labels_df["t_exit"].to_numpy(dtype="int64"))
-        m_parts.append(month_index_array(ot, data.base_cfg.data_window.end_month, len(data.months)))
-        sym_parts.append(np.full(n, alias, dtype=object))
-    if not x_parts:
+        if entry is not None:
+            entries.append(entry)
+    if not entries:
         return None
 
     # 内存保护：样本过多时先按固定种子下采样，再拼接（避免峰值内存超限）。
-    n_total = sum(len(p) for p in y_parts)
+    n_total = sum(int(np.asarray(entry["y"]).size) for entry in entries)
     rng = np.random.default_rng(data.base_cfg.seed)
     keep = (
         np.sort(rng.choice(n_total, _MAX_SAMPLES, replace=False))
         if n_total > _MAX_SAMPLES
         else None
     )
-    xl, yl, wl, ml, ol, sl2, txl = [], [], [], [], [], [], []
-    offset = 0
-    for xp, yp, wp, mp, otp, sp, txp in zip(
-        x_parts, y_parts, w_parts, m_parts, ot_parts, sym_parts, tx_parts, strict=True
-    ):
-        n = len(yp)
-        local = (
-            np.arange(n) if keep is None else keep[(keep >= offset) & (keep < offset + n)] - offset
+    n_out = _MAX_SAMPLES if keep is not None else n_total
+
+    def local_rows(n: int, offset: int) -> np.ndarray:
+        """该币在本次下采样中保留的局部行号（与内存模式同一套索引）。"""
+        if keep is None:
+            return np.arange(n)
+        return keep[(keep >= offset) & (keep < offset + n)] - offset
+
+    if not data.low_memory:
+        x_parts: list[np.ndarray] = []
+        y_parts: list[np.ndarray] = []
+        w_parts: list[np.ndarray] = []
+        m_parts: list[np.ndarray] = []
+        ot_parts: list[np.ndarray] = []
+        tx_parts: list[np.ndarray] = []
+        sym_parts: list[np.ndarray] = []
+        offset = 0
+        for entry in entries:
+            alias = str(entry["alias"])
+            kept = np.asarray(entry["kept"], dtype="int64")
+            local = local_rows(kept.size, offset)
+            info = data.per_coin[alias]
+            if info.x is None:  # pragma: no cover - 内存模式下必有特征矩阵
+                raise ValueError(f"内存模式缺少币 {alias} 的特征矩阵（红线 13）")
+            x_parts.append(tabular_features_matrix(info.x, kept[local]))
+            y_parts.append(np.asarray(entry["y"])[local])
+            w_parts.append(np.asarray(entry["w"])[local])
+            m_parts.append(np.asarray(entry["m"])[local])
+            ot_parts.append(np.asarray(entry["ot"])[local])
+            tx_parts.append(np.asarray(entry["tx"])[local])
+            sym_parts.append(np.full(local.size, alias, dtype=object))
+            offset += kept.size
+        return SampleSet(
+            x=np.concatenate(x_parts),
+            y=np.concatenate(y_parts),
+            w=np.concatenate(w_parts),
+            m=np.concatenate(m_parts),
+            open_time=np.concatenate(ot_parts),
+            symbol=np.concatenate(sym_parts),
+            t_exit=np.concatenate(tx_parts),
         )
-        xl.append(xp[local])
-        yl.append(yp[local])
-        wl.append(wp[local])
-        ml.append(mp[local])
-        ol.append(otp[local])
-        sl2.append(sp[local])
-        txl.append(txp[local])
-        offset += n
+
+    # 流式模式（--low-memory）：预分配输出，逐币读取落盘特征后立即释放
+    x_out = np.empty((n_out, len(data.feature_names) * 4), dtype=np.float32)
+    y_out = np.empty(n_out, dtype=np.int64)
+    w_out = np.empty(n_out, dtype=np.float64)
+    m_out = np.empty(n_out, dtype=np.int64)
+    ot_out = np.empty(n_out, dtype=np.int64)
+    tx_out = np.empty(n_out, dtype=np.int64)
+    sym_out = np.empty(n_out, dtype=object)
+    offset = 0
+    pos = 0
+    for entry in entries:
+        alias = str(entry["alias"])
+        kept = np.asarray(entry["kept"], dtype="int64")
+        local = local_rows(kept.size, offset)
+        if local.size:
+            block = _feature_block(data, alias, data.per_coin[alias], kept[local])
+            x_out[pos : pos + local.size] = block
+            y_out[pos : pos + local.size] = np.asarray(entry["y"])[local]
+            w_out[pos : pos + local.size] = np.asarray(entry["w"])[local]
+            m_out[pos : pos + local.size] = np.asarray(entry["m"])[local]
+            ot_out[pos : pos + local.size] = np.asarray(entry["ot"])[local]
+            tx_out[pos : pos + local.size] = np.asarray(entry["tx"])[local]
+            sym_out[pos : pos + local.size] = alias
+            pos += local.size
+        offset += kept.size
     return SampleSet(
-        x=np.concatenate(xl),
-        y=np.concatenate(yl),
-        w=np.concatenate(wl),
-        m=np.concatenate(ml),
-        open_time=np.concatenate(ol),
-        symbol=np.concatenate(sl2),
-        t_exit=np.concatenate(txl),
+        x=x_out[:pos],
+        y=y_out[:pos],
+        w=w_out[:pos],
+        m=m_out[:pos],
+        open_time=ot_out[:pos],
+        symbol=sym_out[:pos],
+        t_exit=tx_out[:pos],
     )
 
 
@@ -596,11 +832,91 @@ def _precompute_all(
     cached = _TUNING_PRECOMPUTE_CACHE.get(key)
     if cached is None:
         cfg = data.backtest_cfg.model_copy(update={"threshold": floor})
-        cached = precompute_trades_all(
-            data.prepared,
-            signals,
-            data.rules,
-            data.groups,
+        if data.low_memory:
+            cached = _precompute_streaming(
+                data,
+                signals,
+                cfg,
+                exit_cfg,
+                k_sl,
+                sl_min,
+                sl_max,
+                scen,
+                floor,
+            )
+        else:
+            cached = precompute_trades_all(
+                data.prepared,
+                signals,
+                data.rules,
+                data.groups,
+                scen=scen,
+                fees=data.fees,
+                backtest_cfg=cfg,
+                exit_cfg=exit_cfg,
+                sizing_cfg=data.sizing_cfg,
+                k_sl=k_sl,
+                sl_min=sl_min,
+                sl_max=sl_max,
+                H_label=data.features_cfg.label.H_label,
+                p_min=floor,
+            )
+        _TUNING_PRECOMPUTE_CACHE[key] = cached
+    trades = [trade for trade in cached[0] if trade.p >= threshold]
+    skipped = [item for item in cached[1] if item.p >= threshold]
+    return trades, skipped
+
+
+def _precompute_streaming(
+    data: TuningData,
+    signals: pd.DataFrame,
+    cfg: BacktestConfig,
+    exit_cfg: ExitConfig,
+    k_sl: float,
+    sl_min: float,
+    sl_max: float,
+    scen: Scenario,
+    floor: float,
+) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
+    """流式逐笔预计算：按币加载验证窗口 bars 后立即释放（05 §6.1、06 §3.4）。
+
+    与 `precompute_trades_all(data.prepared, ...)` 结果一致：币的遍历顺序与
+    `data.per_coin` 相同，`trade_mask`/`new_entry` 与内存模式一样不启用。
+
+    Args:
+        data: 运行配置与逐币元数据（低内存模式）。
+        signals: 验证段信号（含 `theta` 列）。
+        cfg: 预计算用的回测配置（`threshold = floor`）。
+        exit_cfg/k_sl/sl_min/sl_max: 该组出场与止损参数。
+        scen: 成本情景。
+        floor: 预计算的 p 下限（各 θ 的最小值）。
+
+    Returns:
+        (逐笔预计算结果, 被放弃的候选)，顺序与内存模式一致。
+    """
+    by_symbol = {str(symbol): frame for symbol, frame in signals.groupby("symbol", sort=False)}
+    trades: list[PrecomputedTrade] = []
+    skipped: list[SkippedSignal] = []
+    for alias in data.per_coin:
+        frame = by_symbol.get(alias)
+        if frame is None or frame.empty:
+            continue
+        # 验证窗口 + 2 天预热：ATR/mean_60(qv)/rv_15 在窗口起点即可用（06 §3.4）
+        bars = load_bars(
+            data.data_root,
+            alias,
+            data.val_start_ms - 2 * 86_400_000,
+            data.bars_end_ms,
+            holdout_start_ms=data.holdout_start_ms,
+            allow_holdout=False,
+        )
+        prepared = prepare_symbols({alias: bars})[alias]
+        coin_trades, coin_skipped = precompute_trades(
+            prepared,
+            frame,
+            symbol=alias,
+            group=data.groups[alias],
+            rule=data.rules[alias],
             scen=scen,
             fees=data.fees,
             backtest_cfg=cfg,
@@ -612,9 +928,9 @@ def _precompute_all(
             H_label=data.features_cfg.label.H_label,
             p_min=floor,
         )
-        _TUNING_PRECOMPUTE_CACHE[key] = cached
-    trades = [trade for trade in cached[0] if trade.p >= threshold]
-    skipped = [item for item in cached[1] if item.p >= threshold]
+        trades.extend(coin_trades)
+        skipped.extend(coin_skipped)
+        del bars, prepared
     return trades, skipped
 
 
@@ -647,7 +963,8 @@ def _scan_theta(
     """在验证段按 05 §7.2 选阈值：调用 `trade.models.calibration.select_threshold`。
 
     与模型训练侧的阈值选择共用同一份规则（日均 ≥ 3 笔约束下取 PF 最高的 θ*，再取使
-    PF ≥ 0.9 × PF(θ*) 的最小 θ），不再各写一份。
+    PF ≥ 0.9 × PF(θ*) 的最小 θ），不再各写一份。没有任何 θ 满足笔数约束时抛出带
+    笔数分布的 ValueError（便于定位模型概率尺度问题）。
     """
     days = (data.val_end_ms - data.val_start_ms) / _MS_PER_DAY
     metrics_by_theta: dict[float, dict[str, float]] = {}
@@ -659,7 +976,17 @@ def _scan_theta(
             "profit_factor": float(metrics.get("profit_factor") or 0.0),
             "n_trades": float(metrics.get("n_trades") or 0.0),
         }
-    choice = select_threshold(metrics_by_theta, n_days=days)
+    daily_counts = {
+        f"{theta:.2f}": round(metrics["n_trades"] / days, 2)
+        for theta, metrics in metrics_by_theta.items()
+    }
+    try:
+        choice = select_threshold(metrics_by_theta, n_days=days)
+    except ValueError as error:
+        raise ValueError(
+            f"{error}；各 θ 的日均笔数：{daily_counts}"
+            f"（候选 {len(trades)} 笔，验证段 {days:.0f} 天）"
+        ) from error
     return {
         "theta": choice.theta,
         "pf": choice.profit_factor,
@@ -729,10 +1056,47 @@ def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
             seed=data.base_cfg.seed,
         )
         signals_scan = _nested_signals(data, samples, booster, samples.m == (tuning_months - 1))
+        p_scan = signals_scan["p"].to_numpy(dtype="float64")
+        print(
+            f"组 {gi + 1}: M11 信号 {p_scan.size} 条，p 分位 "
+            f"P50={np.quantile(p_scan, 0.50):.3f} P90={np.quantile(p_scan, 0.90):.3f} "
+            f"P99={np.quantile(p_scan, 0.99):.3f} max={p_scan.max():.3f}，"
+            f"p≥0.30 的条数 {int((p_scan >= 0.30).sum())}",
+            flush=True,
+        )
+        if args.dump_signals is not None and gi == 0:
+            # θ 未选出时用 0.0 占位（该文件只用于信号密度统计，05 §7.2）
+            _dump_validation_signals(
+                args.dump_signals,
+                samples,
+                booster,
+                0.0,
+                m_from=tuning_months - 2,
+                m_to=tuning_months,
+                label=f"M0-{month_stop}..{month_eval}",
+            )
         trades_scan, skipped_scan = _precompute_all(
             data, signals_scan, exit_cfg, k_sl, sl_min, sl_max, scenario("base"), _THETA_GRID[0]
         )
-        choice = _scan_theta(data, trades_scan, skipped_scan, initial_equity)
+        try:
+            choice = _scan_theta(data, trades_scan, skipped_scan, initial_equity)
+        except ValueError as error:
+            print(f"组 {gi + 1}: θ 选择失败（{error}）", flush=True)
+            results.append(
+                {
+                    "group": gi + 1,
+                    "net_return_usdt": float("nan"),
+                    "profit_factor": float("nan"),
+                    "n_trades": 0.0,
+                    "expectancy_bp": float("nan"),
+                    "max_drawdown": float("nan"),
+                    "trades_per_day": 0.0,
+                    "theta": None,
+                    "scan_days": scan_days,
+                    "failure": str(error),
+                }
+            )
+            continue
         signals_eval = _nested_signals(data, samples, booster, samples.m == tuning_months)
         trades_eval, skipped_eval = _precompute_all(
             data, signals_eval, exit_cfg, k_sl, sl_min, sl_max, scenario("base"), _THETA_GRID[0]
@@ -778,15 +1142,38 @@ def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
                     "n_trades": row["n_trades"],
                 },
             )
+        if args.dump_signals is not None and gi == 0:
+            _dump_validation_signals(
+                args.dump_signals,
+                samples,
+                booster,
+                choice["theta"],
+                m_from=tuning_months - 2,
+                m_to=tuning_months,
+                label=f"M0-{month_stop}..{month_eval}",
+            )
     if not results:
         raise ValueError("嵌套确认没有任何一组产出结果（05 §6.1）")
-    ranked = sorted(results, key=lambda row: float(row["profit_factor"]), reverse=True)
+    failed = [row for row in results if row.get("theta") is None]
     print("\n==== 嵌套确认汇总（按 M12 PF 降序）====")
+    ranked = sorted(
+        (row for row in results if row.get("theta") is not None),
+        key=lambda row: float(row["profit_factor"]),
+        reverse=True,
+    )
     for rank, row in enumerate(ranked, start=1):
         print(
             f"排名 {rank}: 组 {row['group']} θ={row['theta']} PF={float(row['profit_factor']):.3f} "
             f"净收益={float(row['net_return_usdt']):.2f} 笔数={int(float(row['n_trades']))}"
         )
+    for row in failed:
+        print(f"失败: 组 {row['group']} 无法选出 θ（无任何 θ 达到日均 3 笔），原因见上")
+    if failed:
+        print(
+            f"\n判定：{len(failed)}/{len(results)} 组无法选出 θ，嵌套确认无法执行；"
+            "按事先约定保留冻结参数（不修改 exits.yaml / features.yaml），原因写入完成报告。"
+        )
+        return 0
     frozen = results[0]
     frozen_rank = next(
         index for index, row in enumerate(ranked, start=1) if row["group"] == frozen["group"]
@@ -797,6 +1184,48 @@ def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
         + ("保留冻结参数" if keep else "需按中位数改选（由使用者决定，见 05 §6.1）")
     )
     return 0
+
+
+def _dump_validation_signals(
+    path: Path,
+    samples: SampleSet,
+    booster: lgb.Booster,
+    theta: float,
+    *,
+    m_from: int,
+    m_to: int,
+    label: str,
+) -> None:
+    """把验证段的 M0 预测概率写成 signals.parquet（05 §7.2）。
+
+    供 `scripts/analyze_signal_density.py --signals` 统计不同 θ 下的日均信号数；
+    `p` 为模型概率（本脚本只做密度统计，不做温度缩放）。
+
+    Args:
+        path: 输出路径。
+        samples: 该组样本数组。
+        booster: 已训练的 M0。
+        theta: 本组验证段选定的阈值（写入契约的 `theta` 列）。
+        m_from/m_to: 验证段的月序号范围（含两端，1 基）。
+        label: `fold_id` 取值（记录验证段月份）。
+    """
+    mask = (samples.m >= m_from) & (samples.m <= m_to)
+    count = int(mask.sum())
+    p = booster.predict(samples.x[mask], num_iteration=booster.best_iteration)
+    frame = pd.DataFrame(
+        {
+            "symbol": samples.symbol[mask],
+            "open_time": samples.open_time[mask],
+            "p": p,
+            "m": np.zeros(count, dtype="float64"),
+            "is_sample": np.ones(count, dtype="int64"),
+            "fold_id": label,
+            "theta": np.full(count, float(theta)),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+    print(f"验证段信号已导出：{path}（{count} 行）", flush=True)
 
 
 def _trial_run_id(trial: BackfillTrial) -> str:
@@ -1172,6 +1601,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--nested-check",
         action="store_true",
         help="调参期内部嵌套确认（M10 早停、M11 选 θ、M12 评估，05 §6.1）",
+    )
+    parser.add_argument(
+        "--low-memory",
+        action="store_true",
+        help=(
+            "流式低内存模式：按币从磁盘读 bars/特征，"
+            "峰值内存 ≈ 2,000,000 行样本（需 --features-dir）"
+        ),
+    )
+    parser.add_argument(
+        "--dump-signals",
+        type=Path,
+        default=None,
+        help="把嵌套确认第 1 组的验证段（M10~M12）预测概率写成 signals.parquet（05 §7.2）",
     )
     parser.add_argument("--no-log", action="store_true", help="不写 EXPERIMENTS.log（冒烟用）")
     return parser

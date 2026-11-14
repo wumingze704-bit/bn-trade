@@ -151,8 +151,16 @@ def main(argv: list[str] | None = None) -> int:
         signals = pd.read_parquet(args.signals)
         signals = signals.assign(month=_month_of(signals["open_time"].to_numpy(dtype="int64")))
         signals = signals[signals["month"].isin(tuning_months)]
-        days = 30.0 * len(tuning_months)
-        lines += ["", "| θ | 日均信号数（调参期） |", "| :-- | --: |"]
+        # 天数按信号文件实际覆盖的调参期月份计（M0 验证段只有 M10~M12 时不能除以 12 个月）
+        present = sorted(set(signals["month"]))
+        days = 30.0 * max(len(present), 1)
+        lines += [
+            "",
+            f"信号覆盖月份：{', '.join(present)}（{len(present)} 个月，按 30 天/月折算日均）",
+            "",
+            "| θ | 日均信号数（上述月份） |",
+            "| :-- | --: |",
+        ]
         for theta in _THETAS:
             count = int((signals["p"] >= theta).sum())
             lines.append(f"| {theta:.2f} | {count / days:.2f} |")

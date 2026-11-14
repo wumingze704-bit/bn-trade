@@ -470,6 +470,8 @@
 - [x] 2026-11-13 信号密度只读分析（第 22 步）：新增 `scripts/analyze_signal_density.py`，已用本地调参期数据（169 个币）运行，结果见 `artifacts/reports/signal_density.md`；θ 相关日均信号数未运行（本地无 M0 信号）。
 - [x] 2026-11-13 待决项定案：`risk.halt_mode=strict`（闸门口径）、reference 与 G6 本金统一 100 USDT、段尾样本保留“丢弃”现状、验证月不拆分（另设 `--nested-check`）、`ioc_miss` 情景暂不加入、点差只做 `spread_measured` 只报告、`p_1s` 空值分钟改为 manifest 告警；代码默认值同步（`ReferenceConfig.initial_equity`、`sweep` 默认本金）。**数据集仍需按新标签重建**：先 `scripts/sync.ps1 pull-data`，再 `build_dataset --run-id <新id>`（约数小时）。
 - [x] 2026-11-14 服务器实测：数据集 `ds_20261114b` 已重建（237 币，样本 7,108,730，保留率 0.1348，manifest 含 notional_ref/rules_sha256/label_dropped；期间修复 `exit_sim` 读取 `p_*_filled` 遇 NaN 崩溃的 bug）；IOC 未成交率 8.64%（M12、XRP/ARB 共 301 条信号，两组净收益见 records.md）；bookTicker 已按 7 天重启录制并产出部分点差画像；第 20 步嵌套确认受内存限制（服务器 3.6GB、本机空闲 4GB，全量需约 15GB），仅完成 5 币冒烟，待 `tuning_exits` 流式化后再跑全量。修复 `rules.json` 以 symbol 为键导致的 `TradeRule(**raw)` 崩溃（新增 `load_trade_rules` 与 `TradeRule.from_snapshot`，回测/S8/IOC 脚本统一使用）。
+- [x] 2026-11-14 `tuning_exits` 流式低内存改造：新增 `--low-memory`（需 `--features-dir`；两遍扫描：第一遍只留标签数组，第二遍按币读落盘特征写入预分配输出；组合层预计算按币加载验证窗口 bars 后释放）与 `--dump-signals`（导出验证段 M0 概率）；新增 `tests/test_tuning_exits_streaming.py` 逐字段比对内存模式与流式模式，样本数组完全一致。服务器全量（169 币）实测峰值 RSS 约 2.5 GB（原需约 15 GB）、6 组约 65 分钟。全量嵌套确认：6 组全部无法选出 θ（M0 P99 0.24~0.30，θ≥0.46 无候选，θ=0.30 日均成交最多 1.43 笔），按事先约定保留冻结参数；θ 日均信号数 1.69 / 0.00 / 0.00（θ=0.30/0.50/0.70）。**待使用者决定**：θ 网格 0.30~0.80 是否改为按分位数或按信号密度反推（05 §7.2 方法变更，须在看测试段结果前确定）。
+
 
 
 - [x] 2026-11-13 次要问题合集（第 23 步）：出场手续费改为按出场名义价值 `notional × (1 + gross_return) × exit_fee_rate`（回测/逐笔重放/`exit_sim` 共用 `net_return_after_fees`）；报告首页注记 tick/历史价格口径与段尾丢弃条数；manifest 新增 `label_dropped.segment_tail`；`model_meta.json` 的 `threshold_selection` 新增 `validation_n_trades` 与 `pf_curve`。
