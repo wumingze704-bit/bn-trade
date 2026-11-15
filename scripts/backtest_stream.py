@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--features", type=Path, default=Path("configs/features.yaml"))
     parser.add_argument("--universe", type=Path, default=Path("configs/universe.yaml"))
     parser.add_argument("--limit-coins", type=int, default=None)
+    parser.add_argument(
+        "--months",
+        type=str,
+        default=None,
+        help="评估月份 START:END（如 2025-01:2025-12）；缺省=测试段 M13~M22",
+    )
     parser.add_argument("--cache-dir", type=Path, default=Path("artifacts/cache/bt_slim"))
     return parser
 
@@ -343,6 +349,13 @@ def main(argv: list[str] | None = None) -> int:
     test_months = months[
         base.data_window.tuning_months : len(months) - base.data_window.holdout_months
     ]
+    eval_months = test_months
+    if args.months is not None:
+        start, _, end = args.months.partition(":")
+        end = end or start
+        eval_months = [month for month in months if start <= month <= end]
+        if not eval_months:
+            raise ValueError(f"--months {args.months} 不在数据窗口内（红线 13）")
     coins = collect_universe_coins(base.paths.data_root, dev_months)
     if args.limit_coins is not None:
         first_key = months[0].replace("-", "")
@@ -359,16 +372,16 @@ def main(argv: list[str] | None = None) -> int:
     signals = signals[signals["symbol"].isin(set(groups))].copy()
     if "theta" not in signals.columns:
         signals = signals.assign(theta=float(backtest_cfg.threshold))
-    test_start_ms = int(pd.Timestamp(test_months[0] + "-01", tz="UTC").timestamp() * 1000)
+    test_start_ms = int(pd.Timestamp(eval_months[0] + "-01", tz="UTC").timestamp() * 1000)
     test_end_ms = int(
-        (pd.Timestamp(test_months[-1] + "-01", tz="UTC") + pd.offsets.MonthBegin(1)).timestamp()
+        (pd.Timestamp(eval_months[-1] + "-01", tz="UTC") + pd.offsets.MonthBegin(1)).timestamp()
         * 1000
     )
     in_test = (signals["open_time"] >= test_start_ms) & (signals["open_time"] < test_end_ms)
     signals = signals[in_test].reset_index(drop=True)
     if signals.empty:
-        raise ValueError(f"信号在测试段 {test_months[0]}~{test_months[-1]} 内为空（红线 13）")
-    print(f"[stream] 币数={len(coins)} 测试段信号={len(signals)}", flush=True)
+        raise ValueError(f"信号在评估段 {eval_months[0]}~{eval_months[-1]} 内为空（红线 13）")
+    print(f"[stream] 币数={len(coins)} 评估段信号={len(signals)}", flush=True)
 
     fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
     scen_names = [name for name in backtest_cfg.scenarios if name != "breakeven"]
@@ -452,7 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         metrics=metrics,
         user_stats=user_stats,
         n_coins=len(slim),
-        kind="model" if "fold_id" in signals.columns else "r0",
+        kind="model"
+        if ("fold_id" in signals.columns and (signals["fold_id"].astype(str) != "R0").any())
+        else "r0",
     )
     return 0
 

@@ -1,10 +1,7 @@
-feat(backtest): 新增全量流式回测脚本，237 币测试段跑通
+feat(backtest): R0 策略调参实验（仅调参期）+ 流式脚本支持 --months
 
-- scripts/backtest_stream.py：逐币 load_bars → prepare_symbols → precompute_trades
-  → slim_from_prepared 落盘 memmap → 释放；组合层仍调用 simulate_portfolio（红线 4）
-- engine：新增 SlimSymbol / slim_from_prepared，三个组合层取数函数接受精简结构
-- r0_signals：窗口内无数据的币逐币列出并跳过（不再中断整轮，红线 13 留痕）
-- 20 币等价性验证：流式与普通路径逐项相同（reference/base −18.3555、PF 0.499、206 笔）
-- 全量 R0 测试段结果写入 docs/records.md：net −18.3765 USDT、PF 0.762、476 笔，
-  G2-U 月收益中位 −7.65%、最大回撤 20.39%（不通过）；not_run 项已标注
-- walkforward 增加 M0（LightGBM）分支（_run_fold_lgbm），尚未验证
+- scripts/r0_signals.py：新增 --r0-tbr5 / --r0-volz（只在内存覆盖阈值，不改配置）
+- scripts/backtest_stream.py：新增 --months START:END；修正 kind 判定（fold_id 全为 R0 时不误标 model）
+- 调参期（M1~M12，全量）对比：现行 R0 net −19.0046 / PF 0.409；收紧到 tbr5 0.70+volz 3.0
+  后 net −20.2254 / PF 0.531，两者数日内触发 R8 停机 → R0 阈值保持原值，提升只能靠模型
+- 移除误提交的临时配置 tmp_train_lgbm.yaml；records/tasks 记录实验与全量回测结果

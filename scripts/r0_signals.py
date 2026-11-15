@@ -40,6 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="只处理前 N 个币（按 alias 升序）；小内存机器跑通流程用，正式运行不要给",
     )
+    parser.add_argument(
+        "--r0-tbr5",
+        type=float,
+        default=None,
+        help="覆盖 train.yaml 的 r0.tbr_5（只用于调参期对比实验，不改配置文件）",
+    )
+    parser.add_argument(
+        "--r0-volz",
+        type=float,
+        default=None,
+        help="覆盖 train.yaml 的 r0.vol_z_60（只用于调参期对比实验，不改配置文件）",
+    )
     return parser
 
 
@@ -49,6 +61,15 @@ def main() -> None:
     features = load_config(FeaturesConfig, args.features)
     train = load_config(TrainConfig, args.train)
     universe_cfg = load_universe_config(args.universe)
+    if args.r0_tbr5 is not None or args.r0_volz is not None:
+        # 调参期对比实验：只在内存里覆盖 R0 阈值，不改 configs/train.yaml（05 §2）
+        overrides: dict[str, float] = {}
+        if args.r0_tbr5 is not None:
+            overrides["tbr_5"] = float(args.r0_tbr5)
+        if args.r0_volz is not None:
+            overrides["vol_z_60"] = float(args.r0_volz)
+        train = train.model_copy(update={"r0": train.r0.model_copy(update=overrides)})
+        print(f"[exp] R0 阈值覆盖：{overrides}", flush=True)
 
     wb = window_bounds(base)
     # R0 信号只覆盖调参期 + 测试段，不碰封存集 M23~M24（03 §6、AGENTS.md §6 红线 2）

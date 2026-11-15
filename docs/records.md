@@ -1,3 +1,17 @@
+## 2026-11-15 R0 策略调参实验（只在调参期 M1~M12 上选）
+
+- 做法：`scripts/r0_signals.py` 新增 `--r0-tbr5/--r0-volz`（只在内存里覆盖阈值，不改 `configs/train.yaml`）；`scripts/backtest_stream.py` 新增 `--months START:END`，在调参期上做全量对比。测试段 M13~M22 不参与选择（红线 3）。
+- 调参期全量结果（`reference` / `base`，M1~M12）：
+
+| R0 阈值 | 净收益 USDT | PF | 笔数 | 胜率 | 最大回撤 |
+| :-- | --: | --: | --: | --: | --: |
+| tbr_5 0.60 / vol_z_60 2.0（现行） | −19.0046 | 0.409 | 162 | 33.3% | 20.22% |
+| tbr_5 0.70 / vol_z_60 3.0（收紧） | −20.2254 | 0.531 | 234 | 33.8% | 20.23% |
+
+- 结论：收紧预过滤能把 PF 从 0.409 提到 0.531，但净收益更差（−20.23 vs −19.00），两者都在数日内触发 R8（峰値回撤 20%）后按 `halt_mode=strict` 停机，笔数与月度指标被停机时点主导。**R0 阈值调整救不了负期望**，因此 `configs/train.yaml` 的 R0 保持原值（05 §2「事先固定」），R0 继续只作基线；提升只能来自模型（M0，`_run_fold_lgbm` 已实现待验证）。
+- 顺带修正 `backtest_stream` 的 `kind` 判定（`fold_id` 全为 `R0` 时不再误标为 model）。
+
+
 ## 2026-11-15 全量回测（237 币）跑通：流式预计算 + 精简数组
 
 - 新增 `scripts/backtest_stream.py`（全量回测专用编排）：逐币 `load_bars` → `prepare_symbols` → `precompute_trades`（每个成本情景一次）→ `slim_from_prepared` 落盘 `.npy` 后以 memmap 交给组合层 → 释放完整数组；组合模拟仍调用 `trade.backtest.engine.simulate_portfolio`（红线 4，同一份实现）。`trade.backtest.engine` 新增 `SlimSymbol` 与 `slim_from_prepared`，`_close_arrays`/`_entry_price_arrays`/`_funding_arrays` 接受精简结构。
