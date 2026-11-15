@@ -1,3 +1,34 @@
+## 2026-11-15 全量回测（237 币）跑通：流式预计算 + 精简数组
+
+- 新增 `scripts/backtest_stream.py`（全量回测专用编排）：逐币 `load_bars` → `prepare_symbols` → `precompute_trades`（每个成本情景一次）→ `slim_from_prepared` 落盘 `.npy` 后以 memmap 交给组合层 → 释放完整数组；组合模拟仍调用 `trade.backtest.engine.simulate_portfolio`（红线 4，同一份实现）。`trade.backtest.engine` 新增 `SlimSymbol` 与 `slim_from_prepared`，`_close_arrays`/`_entry_price_arrays`/`_funding_arrays` 接受精简结构。
+- 等价性：20 币流式运行与 `scripts/backtest.py` 普通路径逐项相同（reference/base −18.3555、PF 0.499、206 笔；stress/hell 与 user 运行亦相同）。
+- 内存：普通路径 20 币峰值 **3.08 GB**（`/usr/bin/time -v`），全量 237 币约需 30 GB；流式路径逐币预计算 + 精简数组 + 只预计算 `p ≥ min θ` 的候选，全程低于 2 GB。用 `sudo systemd-run --scope -p MemoryMax=2500M` 给重任务加了 cgroup 上限，避免再拖垮 sshd 与录制进程。
+- **全量 R0 回测（237 币；232 币在测试段有信号；测试段 M13~M22；`reference`/`user` × base/stress/hell）**：
+
+| 运行 | 情景 | 净收益 USDT | 收益率 | PF | 笔数 | 胜率 | 最大回撤 |
+| :-- | :-- | --: | --: | --: | --: | --: | --: |
+| reference | base | −18.3765 | −18.38% | 0.762 | 476 | 36.6% | 20.32% |
+| reference | stress | −18.9753 | −18.98% | 0.659 | 341 | 29.9% | 20.08% |
+| reference | hell | −20.1103 | −20.11% | 0.298 | 152 | 17.8% | 20.11% |
+| user | base | −15.3070 | −15.31% | 0.817 | 271 | 36.9% | 20.39% |
+| user | stress | −19.3642 | −19.36% | 0.648 | 178 | 29.2% | 20.21% |
+| user | hell | −20.4656 | −20.47% | 0.217 | 55 | 16.4% | 20.47% |
+
+  - G2-U（user/base）：月收益中位 **−7.65%**、最差月 −15.31%、亏损月 11、最大回撤 **20.39%**、stress −19.36 USDT → **不通过**。
+  - 全部情景最大回撤都≈20%：`halt_mode=strict` 下 R8（峰値回撤 ≥20%）触发后停止交易，因此笔数远少于候选数。
+  - 报告中标注为 not_run（流式模式）：`breakeven` 情景、`sizing_sweep`、S1 随机入场、S4 阈值扰动、S8 逐笔重放、S9 事件对拍（它们需要重复预计算或完整 bars）。
+- 数据缺口：`r0_signals` 现在会把"窗口内没有任何分钟数据"的币**逐币列出**（本轮 C247~C251 共 5 个，需补下载），不再中途中断整轮。
+- 两次全量尝试因内存被打断（选择器曾用 `groupby` 生成 232 个 DataFrame、且按 `p ≥ 0` 预计算全部候选，峰值超 3.6 GB）：改为 NumPy 分组切片 + `p ≥ min θ` 后峰值降到 2 GB 以内；期间录制进程两次被内核连带杀掉，均已重启（`book_recording4/5.log`）。
+
+
+## 2026-11-15 M0（LightGBM）walk-forward 分支
+
+- `trade.models.walkforward` 新增 `_tabular_arrays`、`_predict_signals_lgbm`、`_run_fold_lgbm`，并在 `run_fold` 顶部按 `cfg.arch == "lgbm"` 分派：折划分、purge/embargo、温度校准（`fit_temperature` via `calibration_metrics`）、`select_threshold` 与 `model_meta.json` 全部复用 PyTorch 路径的同一口径；表格特征用 `trade.models.lightgbm.tabular_features_matrix`（[X[t], X[t]−X[t−1], X[t]−X[t−5], X[t]−X[t−15]]），模型存 `lgbm.txt`，验证段 PR-AUC 用 `trade.models.train.average_precision`。
+- 首次服务器运行报 `pinned_cpu` 需要 CUDA（`tensor.pin_memory()` 不可用），已改为 `data_placement=cfg.data_placement`（无 CUDA 时自动用 CPU）。
+- **未验证**：修正后重跑命令已下发，但在等待结果期间本机终端故障（每条命令只返回首字符、退出码 1），五折训练结果与后续模型回测**均未观测**，不能当作已完成。恢复后需依次执行：`scripts/train_walkforward.py --limit-coins 20 --train tmp_train_lgbm.yaml`、核对每折 θ 与 `model_meta.json`、再用 `scripts/backtest.py --walk-forward-summary artifacts/signals/walkforward/walk_forward_summary.json` 跑测试段。
+- R0 策略调参（用户要求）：**未开始**。计划严格限定在调参期 M1~M12 上做 `r0.{brk_60,tbr_5,vol_z_60}` 三参数网格（先看信号数与调参期 PF，不碰 M13~M22），选定后再跑一次测试段；R0 参数属 05 §2 的“事先固定”项，若最终修改须同步 05 §2 与 `configs/train.yaml`。
+
+
 ## 2026-11-15 R0 回测跑通、θ 候选下限调整与服务器约束
 
 - **θ 候选下限（05 §7.2）**：候选集由 {0.30, 0.32, …, 0.80} 改为 {0.10, 0.12, …, 0.80}（36 个）。原因：M0 概率 P99 实测 0.24~0.30，原下限 0.30 在任何折都无法满足“验证段日均 ≥ 3 笔”，`select_threshold` 必然报错；下调下限只扩大候选集，PF 保留 0.9 与日均 3 笔的判定规则不变。`tests/models/test_calibration.py::test_threshold_grid_range` 同步改为断言 0.10/0.80/36 个（红线 12 要求记录：本次改测试是使用者授权的方法调整附带项）。

@@ -1,0 +1,10 @@
+feat(backtest): 新增全量流式回测脚本，237 币测试段跑通
+
+- scripts/backtest_stream.py：逐币 load_bars → prepare_symbols → precompute_trades
+  → slim_from_prepared 落盘 memmap → 释放；组合层仍调用 simulate_portfolio（红线 4）
+- engine：新增 SlimSymbol / slim_from_prepared，三个组合层取数函数接受精简结构
+- r0_signals：窗口内无数据的币逐币列出并跳过（不再中断整轮，红线 13 留痕）
+- 20 币等价性验证：流式与普通路径逐项相同（reference/base −18.3555、PF 0.499、206 笔）
+- 全量 R0 测试段结果写入 docs/records.md：net −18.3765 USDT、PF 0.762、476 笔，
+  G2-U 月收益中位 −7.65%、最大回撤 20.39%（不通过）；not_run 项已标注
+- walkforward 增加 M0（LightGBM）分支（_run_fold_lgbm），尚未验证

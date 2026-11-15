@@ -66,15 +66,23 @@ def main() -> None:
             if (base.paths.data_root / "bars" / entry.alias / f"{first_key}.parquet").is_file()
         ][: args.limit_coins]
     frames = []
+    missing: list[str] = []
     for entry in entries:
-        bars = load_bars(
-            base.paths.data_root,
-            entry.alias,
-            wb.start_ms,
-            end_ms,
-            holdout_start_ms=wb.holdout_start_ms,
-            allow_holdout=False,
-        )
+        try:
+            bars = load_bars(
+                base.paths.data_root,
+                entry.alias,
+                wb.start_ms,
+                end_ms,
+                holdout_start_ms=wb.holdout_start_ms,
+                allow_holdout=False,
+            )
+        except ValueError as exc:
+            # 数据窗口内没有任何分钟数据：逐币记录并汇总输出，不静默跳过（红线 13）
+            if "区间内无分钟数据" not in str(exc):
+                raise
+            missing.append(entry.alias)
+            continue
         trade_mask = universe_trade_mask(
             bars["open_time"].to_numpy(dtype="int64"),
             entry.symbol,
@@ -102,6 +110,10 @@ def main() -> None:
     signals.to_parquet(args.out)
     n_signal = int((signals["p"] == 1).sum())
     print(f"写入 {args.out}，共 {len(signals)} 行（其中 p=1 信号 {n_signal} 条）")
+    if missing:
+        print(
+            f"跳过 {len(missing)} 个在窗口内没有任何分钟数据的币（bars 缺失，需补下载）：{missing}"
+        )
 
 
 if __name__ == "__main__":

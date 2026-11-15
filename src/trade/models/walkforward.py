@@ -26,7 +26,8 @@ from trade.models.calibration import (
 )
 from trade.models.config import ModelConfig, WalkForwardConfig
 from trade.models.dataset import WindowDataset, month_end_ms, month_start_ms
-from trade.models.train import train_ensemble
+from trade.models.lightgbm import predict_proba, tabular_features_matrix, train_lgbm
+from trade.models.train import average_precision, train_ensemble
 
 ThresholdEvaluator = Callable[[pd.DataFrame, float], dict[float, dict[str, float]]]
 
@@ -39,6 +40,223 @@ class FoldSpec:
     train_months: list[str]
     val_month: str
     test_months: list[str]
+
+
+def _tabular_arrays(dataset: WindowDataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把 `WindowDataset` 的样本按原顺序拼成 M0 表格化特征与标签（05 §2）。
+
+    逐币构造 `tabular_features_matrix` 后按样本下标回填，避免额外常驻重排副本。
+
+    Args:
+        dataset: 窗口数据集（样本已按币种均衡）。
+
+    Returns:
+        (x float32 (n, 4F), y int64, w float64)，顺序与 `dataset.samples` 一致。
+
+    Raises:
+        ValueError: 数据集为空（红线 13）。
+    """
+    samples = dataset.samples
+    if not samples:
+        raise ValueError("数据集为空，无法构造 M0 表格特征（05 §2）")
+    by_symbol: dict[int, list[int]] = {}
+    for index, sample in enumerate(samples):
+        by_symbol.setdefault(sample.sym_id, []).append(index)
+    x_out: np.ndarray | None = None
+    for sym_id, indexes in by_symbol.items():
+        rows = np.asarray([samples[i].row_idx for i in indexes], dtype="int64")
+        x_symbol = np.asarray(dataset.xs[sym_id].numpy(), dtype="float16")
+        block = tabular_features_matrix(x_symbol, rows)
+        if x_out is None:
+            x_out = np.empty((len(samples), block.shape[1]), dtype="float32")
+        x_out[np.asarray(indexes, dtype="int64")] = block
+    if x_out is None:  # pragma: no cover - 上面已排除空集
+        raise ValueError("数据集为空，无法构造 M0 表格特征（05 §2）")
+    y_out = np.asarray([sample.y for sample in samples], dtype="int64")
+    w_out = np.asarray([sample.w for sample in samples], dtype="float64")
+    return x_out, y_out, w_out
+
+
+def _predict_signals_lgbm(
+    dataset: WindowDataset,
+    booster: object,
+    *,
+    temperature: float,
+    months: Sequence[str],
+) -> pd.DataFrame:
+    """M0（LightGBM）批量推理，返回与 `predict_signals` 同结构的 signals 表（05 §2）。"""
+    x, _, _ = _tabular_arrays(dataset)
+    p = np.asarray(predict_proba(booster, x), dtype="float64")  # type: ignore[arg-type]
+    p = np.clip(p, 1e-12, 1.0 - 1e-12)
+    logit = np.log(p / (1.0 - p))
+    p_cal = 1.0 / (1.0 + np.exp(-logit / temperature))
+    wanted = set(months)
+    selected = [
+        index
+        for index, sample in enumerate(dataset.samples)
+        if _month_key(sample.open_time) in wanted
+    ]
+    frame = pd.DataFrame(
+        {
+            "symbol": [dataset.symbols[dataset.samples[index].sym_id] for index in selected],
+            "open_time": [dataset.samples[index].open_time for index in selected],
+            "p": p_cal[selected],
+            "m": np.zeros(len(selected), dtype="float64"),
+            "is_sample": 1,
+        }
+    )
+    return frame.sort_values(["open_time", "symbol"]).reset_index(drop=True)
+
+
+def _run_fold_lgbm(
+    fold: FoldSpec,
+    *,
+    run_id: str,
+    features_dir: Path,
+    labels_dir: Path,
+    feature_names: Sequence[str],
+    train_symbols: Sequence[str],
+    all_symbols: Sequence[str],
+    cfg: ModelConfig,
+    walk_cfg: WalkForwardConfig,
+    threshold_evaluator: ThresholdEvaluator,
+    features_cfg: FeaturesConfig,
+    exit_cfg: ExitConfig,
+    universe_rule_hash: str,
+    market: str,
+    models_root: Path,
+    signals_root: Path,
+    manifest_path: Path,
+) -> FoldResult:
+    """M0（LightGBM 表格化）单折训练与信号产出（05 §2、§6、§7）。
+
+    与 PyTorch 路径共用折划分、purge/embargo、温度校准与阈值选择口径。
+    """
+    train_ds = WindowDataset(
+        features_dir,
+        labels_dir,
+        list(train_symbols),
+        list(feature_names),
+        window_L=cfg.window_L,
+        months=fold.train_months,
+        data_placement=cfg.data_placement,
+    )
+    val_ds = WindowDataset(
+        features_dir,
+        labels_dir,
+        list(train_symbols),
+        list(feature_names),
+        window_L=cfg.window_L,
+        months=[fold.val_month],
+        data_placement=cfg.data_placement,
+    )
+    require_purge_floor(
+        walk_cfg.purge_bars,
+        label_mode=features_cfg.label.mode,
+        h_max=int(exit_cfg.H_max),
+        h_label=int(features_cfg.label.H_label),
+    )
+    train_ds, val_ds = apply_purge_embargo(
+        train_ds,
+        val_ds,
+        boundary_ms=month_start_ms(fold.val_month),
+        purge_bars=walk_cfg.purge_bars,
+        embargo_days=walk_cfg.embargo_days,
+        next_boundary_ms=(month_start_ms(fold.test_months[0]) if fold.test_months else None),
+    )
+    x_train, y_train, w_train = _tabular_arrays(train_ds)
+    x_val, y_val, w_val = _tabular_arrays(val_ds)
+    short_hash = feature_hash(enabled_features(features_cfg))
+    model_id = f"{make_model_id(cfg.arch, short_hash)}_{fold.fold_id}"
+    model_dir = models_root / model_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    booster = train_lgbm(
+        x_train,
+        y_train,
+        w_train,
+        x_val,
+        y_val,
+        w_val,
+        num_boost_round=cfg.lgbm_num_boost_round,
+        early_stopping_rounds=cfg.lgbm_early_stopping_rounds,
+        seed=cfg.seeds[0],
+    )
+    booster.save_model(str(model_dir / "lgbm.txt"))
+    val_p = np.asarray(predict_proba(booster, x_val), dtype="float64")
+    val_pr_auc = float(average_precision(y_val, val_p))
+    val_logit = np.log(np.clip(val_p, 1e-12, 1.0 - 1e-12) / np.clip(1.0 - val_p, 1e-12, 1.0))
+    calibration = calibration_metrics(val_logit, y_val)
+    temperature = float(calibration["temperature"])
+    del x_train, x_val
+    val_signals = _predict_signals_lgbm(
+        val_ds, booster, temperature=temperature, months=[fold.val_month]
+    )
+    n_days = (month_end_ms(fold.val_month) - month_start_ms(fold.val_month)) / 86_400_000
+    choice = select_threshold(threshold_evaluator(val_signals, n_days), n_days=n_days)
+    test_ds = WindowDataset(
+        features_dir,
+        labels_dir,
+        list(all_symbols),
+        list(feature_names),
+        window_L=cfg.window_L,
+        months=fold.test_months,
+        data_placement=cfg.data_placement,
+    )
+    test_signals = _predict_signals_lgbm(
+        test_ds, booster, temperature=temperature, months=fold.test_months
+    )
+    test_signals["fold_id"] = fold.fold_id
+    test_signals["theta"] = float(choice.theta)
+    signals_root.mkdir(parents=True, exist_ok=True)
+    signals_path = signals_root / f"{run_id}_{fold.fold_id}.parquet"
+    test_signals.to_parquet(signals_path, index=False)
+    write_model_meta(
+        model_dir,
+        model_id=model_id,
+        arch=cfg.arch,
+        arch_params={"window_L": cfg.window_L},
+        window_L=cfg.window_L,
+        features_cfg=features_cfg,
+        exit_cfg=exit_cfg,
+        market=market,
+        universe_rule_hash=universe_rule_hash,
+        train_symbols=list(train_symbols),
+        train_range=(fold.train_months[0], fold.train_months[-1]),
+        val_range=(fold.val_month, fold.val_month),
+        ensemble_seeds=[cfg.seeds[0]],
+        temperature=temperature,
+        threshold=choice.theta,
+        dataset_manifest_sha256=sha256_file(manifest_path),
+        threshold_selection={
+            "theta": choice.theta,
+            "best_theta": choice.best_theta,
+            "best_profit_factor": choice.best_profit_factor,
+            "n_trades": choice.n_trades,
+            "n_days": n_days,
+            "n_candidates": choice.n_candidates,
+            "validation_pr_auc": val_pr_auc,
+            "ece_before": calibration["ece_before"],
+            "ece_after": calibration["ece_after"],
+            "validation_n_trades": choice.n_trades,
+            "pf_curve": [
+                {
+                    "theta": theta,
+                    "profit_factor": pf,
+                    "n_trades": choice.n_trades_by_theta.get(theta, 0),
+                }
+                for theta, pf in sorted(choice.pf_by_theta.items())
+            ],
+        },
+    )
+    return FoldResult(
+        fold=fold,
+        model_dir=model_dir,
+        threshold=choice.theta,
+        temperature=temperature,
+        val_pr_auc=val_pr_auc,
+        n_test_signals=int(len(test_signals)),
+        signals_path=signals_path,
+    )
 
 
 @dataclass
@@ -373,6 +591,27 @@ def run_fold(
     manifest_path: Path,
 ) -> FoldResult:
     """训练单折并产出测试段 signals.parquet（05 §6、§7）。"""
+    if cfg.arch == "lgbm":
+        # M0（LightGBM）走表格化分支：同一折划分、purge/embargo、温度校准与阈值口径（05 §2）
+        return _run_fold_lgbm(
+            fold,
+            run_id=run_id,
+            features_dir=features_dir,
+            labels_dir=labels_dir,
+            feature_names=feature_names,
+            train_symbols=train_symbols,
+            all_symbols=all_symbols,
+            cfg=cfg,
+            walk_cfg=walk_cfg,
+            threshold_evaluator=threshold_evaluator,
+            features_cfg=features_cfg,
+            exit_cfg=exit_cfg,
+            universe_rule_hash=universe_rule_hash,
+            market=market,
+            models_root=models_root,
+            signals_root=signals_root,
+            manifest_path=manifest_path,
+        )
     train_ds = WindowDataset(
         features_dir,
         labels_dir,

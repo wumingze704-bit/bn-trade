@@ -335,6 +335,56 @@ def _symbol_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 @dataclass(frozen=True)
+class SlimSymbol:
+    """流式回测用的精简币数据：只保留组合层需要的数组（06 §3.4）。
+
+    逐笔预计算阶段用完整的 `PreparedSymbol`，算完立即释放；组合层只需要
+    `open_time`/`close`（盯市）、`p_1s`（R6/R8 强平价）与资金费结算序列。
+    这些数组可由磁盘 memmap 提供，使全量 237 币的组合模拟不必常驻全量 bars。
+    """
+
+    symbol: str
+    open_time: np.ndarray
+    close: np.ndarray
+    p_1s: np.ndarray
+    funding_time: np.ndarray
+    funding_rate: np.ndarray
+
+
+def slim_from_prepared(
+    prepared: PreparedSymbol,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> SlimSymbol:
+    """把 `PreparedSymbol` 压成 `SlimSymbol`，并裁到 [start_ms, end_ms)（06 §3.4）。
+
+    Args:
+        prepared: 该币的完整数组。
+        start_ms/end_ms: 组合层需要的时间范围（毫秒，左闭右开）。
+
+    Returns:
+        只含 5 个数组的 `SlimSymbol`（数组为新分配的连续副本，调用方可释放原对象）。
+
+    Raises:
+        ValueError: bars 缺少 `p_1s`（红线 13；风控强平需要该列）。
+    """
+    times = prepared.open_time
+    lo = int(np.searchsorted(times, start_ms, side="left"))
+    hi = int(np.searchsorted(times, end_ms, side="left"))
+    if prepared.p_1s is None:
+        raise ValueError(f"bars 缺少 p_1s，无法做风控强平（{prepared.symbol}；06 §3.4）")
+    return SlimSymbol(
+        symbol=prepared.symbol,
+        open_time=np.array(times[lo:hi], dtype="int64", copy=True),
+        close=np.array(prepared.close[lo:hi], dtype="float64", copy=True),
+        p_1s=np.array(prepared.p_1s[lo:hi], dtype="float64", copy=True),
+        funding_time=np.array(prepared.funding_time, dtype="int64", copy=True),
+        funding_rate=np.array(prepared.funding_rate, dtype="float64", copy=True),
+    )
+
+
+@dataclass(frozen=True)
 class PreparedSymbol:
     """单个币的 numpy 数组与派生量（06 §3.4）：DataFrame → 数组只做一次，进程内复用。
 
@@ -487,7 +537,7 @@ def _close_arrays(
         return {}
     arrays: dict[str, CloseSeries] = {}
     for symbol, bars in bars_by_symbol.items():
-        if isinstance(bars, PreparedSymbol):
+        if isinstance(bars, (PreparedSymbol, SlimSymbol)):
             arrays[symbol] = CloseSeries(open_time=bars.open_time, close=bars.close)
             continue
         if "open_time" not in bars.columns or "close" not in bars.columns:
@@ -861,7 +911,7 @@ def _entry_price_arrays(
     if not bars_by_symbol:
         return arrays
     for symbol, bars in bars_by_symbol.items():
-        if isinstance(bars, PreparedSymbol):
+        if isinstance(bars, (PreparedSymbol, SlimSymbol)):
             if bars.p_1s is not None:
                 arrays[symbol] = CloseSeries(open_time=bars.open_time, close=bars.p_1s)
             continue
@@ -881,7 +931,7 @@ def _funding_arrays(
     if not bars_by_symbol:
         return arrays
     for symbol, bars in bars_by_symbol.items():
-        if isinstance(bars, PreparedSymbol):
+        if isinstance(bars, (PreparedSymbol, SlimSymbol)):
             arrays[symbol] = (bars.funding_time, bars.funding_rate)
         else:
             arrays[symbol] = funding_settlements(bars)
