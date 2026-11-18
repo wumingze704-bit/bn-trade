@@ -1,7 +1,0 @@
-feat(backtest): R0 策略调参实验（仅调参期）+ 流式脚本支持 --months
-
-- scripts/r0_signals.py：新增 --r0-tbr5 / --r0-volz（只在内存覆盖阈值，不改配置）
-- scripts/backtest_stream.py：新增 --months START:END；修正 kind 判定（fold_id 全为 R0 时不误标 model）
-- 调参期（M1~M12，全量）对比：现行 R0 net −19.0046 / PF 0.409；收紧到 tbr5 0.70+volz 3.0
-  后 net −20.2254 / PF 0.531，两者数日内触发 R8 停机 → R0 阈值保持原值，提升只能靠模型
-- 移除误提交的临时配置 tmp_train_lgbm.yaml；records/tasks 记录实验与全量回测结果

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from trade.features.kline import shift
+from trade.features.kline import r_15, shift
 
 
 def oi_chg_15(oi: np.ndarray) -> np.ndarray:
@@ -34,3 +34,9 @@ def futures_missing(oi: np.ndarray, funding_rate: np.ndarray) -> np.ndarray:
     oi_missing = ~np.isfinite(np.asarray(oi, dtype="float64"))
     fr_missing = ~np.isfinite(np.asarray(funding_rate, dtype="float64"))
     return np.where(oi_missing | fr_missing, 1.0, 0.0)
+
+
+def oi_price_div_15(close: np.ndarray, oi: np.ndarray) -> np.ndarray:
+    """#43 oi_price_div_15 = sign(r_15) × oi_chg_15，量价配合（>0）或背离（<0）（04 §4.6）。"""
+    direction = np.sign(r_15(np.asarray(close, dtype=np.float64)))
+    return direction * oi_chg_15(oi)

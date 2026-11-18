@@ -37,7 +37,7 @@ from trade.backtest.engine import (
     prepare_symbols,
     simulate_portfolio,
 )
-from trade.backtest.metrics import compute_metrics
+from trade.backtest.metrics import compute_metrics, monthly_return_stats
 from trade.backtest.report import (
     append_experiments_log,
     compute_experiment_hash,
@@ -65,7 +65,12 @@ from trade.features.registry import feature_hash
 from trade.labels.exit_sim import exit_sim
 from trade.labels.prefilter import is_sample_mask
 from trade.labels.triple_barrier import uniqueness_weights
-from trade.models.calibration import select_threshold
+from trade.models.calibration import (
+    calibration_metrics,
+    platt_sigmoid,
+    select_threshold,
+    threshold_grid,
+)
 from trade.models.lightgbm import tabular_features_matrix, train_lgbm
 
 # 6 组出场/止损参数（05 §6.1 第 1 步）。H_max/k_trail 固定 120/1.5，sl_max 固定 2.5%，
@@ -79,8 +84,9 @@ _EXIT_GRID: list[dict[str, float]] = [
     {"H_max": 120.0, "k_trail": 1.5, "k_sl": 3.0, "sl_min": 0.018, "sl_max": 0.025},
 ]
 
-# 阈值网格（05 §7.2：0.30~0.80，步长 0.02）
-_THETA_GRID = [round(0.30 + 0.02 * i, 2) for i in range(26)]
+# 阈值网格：与模型训练侧共用 `trade.models.calibration.threshold_grid()`（05 §7.2），
+# 不再在本脚本里单独写死 0.30~0.80。
+_THETA_GRID: list[float] = threshold_grid()
 
 # 验证段阈值约束：日均交易 ≥ 3 笔 × 90 天 ≈ 270 笔（05 §6.1 第 1 步）；阈值规则由
 # `trade.models.calibration.select_threshold` 提供，这里不再保留单独的下限常量。
@@ -179,6 +185,8 @@ class CoinData:
     open_time: np.ndarray | None
     sample_positions: np.ndarray
     features_path: Path | None = None
+    # 与 bars 行对齐的交易范围掩码（06 §3.1 条件 8）：预计算阶段再校验一次
+    trade_mask: np.ndarray | None = None
 
 
 @dataclass
@@ -210,6 +218,9 @@ class TuningData:
     bars_start_ms: int = 0
     bars_end_ms: int = 0
     holdout_start_ms: int = 0
+    # 交易范围（06 §3.1 条件 8）：流式模式重建掩码用
+    membership: dict[str, frozenset[str]] = field(default_factory=dict)
+    new_entry_delay_days: int = 0
 
 
 @dataclass
@@ -461,6 +472,7 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             features_cfg.prefilter.brk_60,
             features_cfg.warmup_bars,
             seg,
+            direction=features_cfg.prefilter.direction,
         )
         trade_mask = universe_trade_mask(times, coin.symbol, membership, delay)
         sample = sample & trade_mask
@@ -474,6 +486,7 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
             features_path=(features_dir / f"{alias}.parquet")
             if low_memory and features_dir
             else None,
+            trade_mask=None if low_memory else trade_mask,
         )
         # 盯市权益曲线只需要验证段窗口的开盘时间与收盘价（06 §5.1）：预先切片，
         # 避免每次组合模拟都为全量 M1~M12 bars 重建 close 查找表。
@@ -532,6 +545,8 @@ def _prepare_data(root: Path, args: argparse.Namespace) -> TuningData:
         bars_start_ms=wb.start_ms,
         bars_end_ms=tuning_end_ms,
         holdout_start_ms=wb.holdout_start_ms,
+        membership=membership,
+        new_entry_delay_days=delay,
     )
 
 
@@ -779,8 +794,12 @@ def _train_and_predict(
         samples.w[val_mask],
         seed=data.base_cfg.seed,
     )
-    p_val = booster.predict(samples.x[val_mask], num_iteration=booster.best_iteration)
+    p_val_raw = booster.predict(samples.x[val_mask], num_iteration=booster.best_iteration)
     n_val = int(val_mask.sum())
+    # 校准（R0-3）：在验证集 logit 上拟合 Platt（a,b），与 tuning_models / 五折同口径
+    logit_val = np.log(np.clip(p_val_raw, 1e-12, 1 - 1e-12) / np.clip(1 - p_val_raw, 1e-12, 1.0))
+    calibration = calibration_metrics(logit_val, samples.y[val_mask])
+    p_val = platt_sigmoid(logit_val, calibration["platt_a"], calibration["platt_b"])
     val_signals = pd.DataFrame(
         {
             "symbol": samples.symbol[val_mask],
@@ -860,6 +879,12 @@ def _precompute_all(
                 sl_max=sl_max,
                 H_label=data.features_cfg.label.H_label,
                 p_min=floor,
+                trade_masks={
+                    alias: info.trade_mask
+                    for alias, info in data.per_coin.items()
+                    if info.trade_mask is not None
+                }
+                or None,
             )
         _TUNING_PRECOMPUTE_CACHE[key] = cached
     trades = [trade for trade in cached[0] if trade.p >= threshold]
@@ -911,6 +936,12 @@ def _precompute_streaming(
             allow_holdout=False,
         )
         prepared = prepare_symbols({alias: bars})[alias]
+        coin_mask = universe_trade_mask(
+            bars["open_time"].to_numpy(dtype="int64"),
+            data.per_coin[alias].symbol,
+            data.membership,
+            data.new_entry_delay_days,
+        )
         coin_trades, coin_skipped = precompute_trades(
             prepared,
             frame,
@@ -927,6 +958,7 @@ def _precompute_streaming(
             sl_max=sl_max,
             H_label=data.features_cfg.label.H_label,
             p_min=floor,
+            trade_mask=coin_mask,
         )
         trades.extend(coin_trades)
         skipped.extend(coin_skipped)
@@ -939,18 +971,35 @@ def _simulate(
     trades: list[PrecomputedTrade],
     skipped: list[SkippedSignal],
     initial_equity: float,
+    sizing: SizingConfig | None = None,
 ) -> PortfolioResult:
-    """组合模拟（06 §3.4 第 2 步），盯市曲线只用持仓可能触及的验证段 bars。"""
+    """组合模拟（06 §3.4 第 2 步），盯市曲线只用持仓可能触及的验证段 bars。
+
+    `sizing` 为 None 时用关闭 R6/R8/R7 停机的 user 仓位（调参评估口径，R0-2）。
+    """
     symbols = {t.symbol for t in trades}
     bars = {alias: data.bars_mtm[alias] for alias in symbols if alias in data.bars_mtm}
     return simulate_portfolio(
         trades,
         skipped,
-        sizing_cfg=data.sizing_cfg,
+        sizing_cfg=sizing if sizing is not None else _no_halt_sizing(data.sizing_cfg),
         backtest_cfg=data.backtest_cfg,
         fees=data.fees,
         initial_equity=initial_equity,
         bars_by_symbol=bars,
+        entry_maker=data.backtest_cfg.entry_mode == "maker",
+    )
+
+
+def _no_halt_sizing(cfg: SizingConfig) -> SizingConfig:
+    """调参评估用仓位：关闭 R6/R8/R7 停机（05 §7.2，正式回测仍用原配置）。"""
+    return cfg.model_copy(
+        update={
+            "daily_loss_stop": 0.99,
+            "daily_loss_halt": 0.995,
+            "max_drawdown_halt": 0.999,
+            "max_consecutive_losses": 1_000_000,
+        }
     )
 
 
@@ -962,19 +1011,47 @@ def _scan_theta(
 ) -> dict[str, float]:
     """在验证段按 05 §7.2 选阈值：调用 `trade.models.calibration.select_threshold`。
 
-    与模型训练侧的阈值选择共用同一份规则（日均 ≥ 3 笔约束下取 PF 最高的 θ*，再取使
-    PF ≥ 0.9 × PF(θ*) 的最小 θ），不再各写一份。没有任何 θ 满足笔数约束时抛出带
-    笔数分布的 ValueError（便于定位模型概率尺度问题）。
+    选 θ 用 reference 仓位（与 backtest.py / G2 同口径）算 PF 与净收益，同时算
+    user 仓位的月收益与回撤（R0-2）；两套都关闭 R6/R8 停机。
     """
     days = (data.val_end_ms - data.val_start_ms) / _MS_PER_DAY
+    months = _month_keys(data.val_start_ms, data.val_end_ms)
+    reference_sizing = _no_halt_sizing(
+        data.sizing_cfg.model_copy(
+            update={
+                "initial_equity": data.backtest_cfg.reference.initial_equity,
+                "mode": data.backtest_cfg.reference.mode,
+                "risk_per_trade": data.backtest_cfg.reference.risk_per_trade,
+                "base": data.backtest_cfg.reference.base,
+            }
+        )
+    )
+    user_sizing = _no_halt_sizing(data.sizing_cfg)
     metrics_by_theta: dict[float, dict[str, float]] = {}
     for theta in _THETA_GRID:
-        result = _simulate(data, [t for t in trades if t.p >= theta], skipped, initial_equity)
-        metrics = compute_metrics(result, initial_equity)
+        selected = [t for t in trades if t.p >= theta]
+        reference_result = _simulate(
+            data, selected, skipped, data.backtest_cfg.reference.initial_equity, reference_sizing
+        )
+        reference_row = compute_metrics(
+            reference_result, data.backtest_cfg.reference.initial_equity, months=months
+        )
+        user_result = _simulate(data, selected, skipped, user_sizing.initial_equity, user_sizing)
+        user_stats = monthly_return_stats(
+            user_result.equity_curve, user_sizing.initial_equity, months=months
+        )
+        user_dd = (
+            float(user_result.equity_curve["drawdown"].max())
+            if not user_result.equity_curve.empty
+            else 0.0
+        )
         metrics_by_theta[theta] = {
-            "net_return": float(metrics.get("net_return_usdt") or 0.0),
-            "profit_factor": float(metrics.get("profit_factor") or 0.0),
-            "n_trades": float(metrics.get("n_trades") or 0.0),
+            "net_return": float(reference_row.get("net_return_usdt") or 0.0),
+            "profit_factor": float(reference_row.get("profit_factor") or 0.0),
+            "n_trades": float(reference_row.get("n_trades") or 0.0),
+            "user_median_monthly_return": float(user_stats["median_monthly_return"]),
+            "user_worst_monthly_return": float(user_stats["worst_monthly_return"]),
+            "user_max_drawdown": user_dd,
         }
     daily_counts = {
         f"{theta:.2f}": round(metrics["n_trades"] / days, 2)
@@ -987,6 +1064,7 @@ def _scan_theta(
             f"{error}；各 θ 的日均笔数：{daily_counts}"
             f"（候选 {len(trades)} 笔，验证段 {days:.0f} 天）"
         ) from error
+    chosen = metrics_by_theta.get(choice.theta, {})
     return {
         "theta": choice.theta,
         "pf": choice.profit_factor,
@@ -994,15 +1072,48 @@ def _scan_theta(
         "n_trades": float(choice.n_trades),
         "best_theta": choice.best_theta,
         "best_pf": choice.best_profit_factor,
+        "user_median_monthly_return": float(chosen.get("user_median_monthly_return") or 0.0),
+        "user_worst_monthly_return": float(chosen.get("user_worst_monthly_return") or 0.0),
+        "user_max_drawdown": float(chosen.get("user_max_drawdown") or 0.0),
     }
 
 
+def _month_keys(start_ms: int, end_ms: int) -> list[str]:
+    """[start_ms, end_ms) 覆盖的 UTC 月份列表（调参评估的月度补零网格）。"""
+    first = pd.Timestamp(start_ms, unit="ms", tz="UTC")
+    last = pd.Timestamp(end_ms - 1, unit="ms", tz="UTC")
+    return [
+        f"{moment.year:04d}-{moment.month:02d}"
+        for moment in pd.date_range(
+            first.normalize().replace(day=1), last.normalize().replace(day=1), freq="MS"
+        )
+    ]
+
+
 def _nested_signals(
-    data: TuningData, samples: SampleSet, booster: lgb.Booster, month_mask: np.ndarray
+    data: TuningData,
+    samples: SampleSet,
+    booster: lgb.Booster,
+    month_mask: np.ndarray,
+    *,
+    calib_mask: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """对指定月份掩码内的样本做预测，返回带 `theta = 0` 的 signals 表（05 §6.1）。"""
+    """对指定月份掩码内的样本做预测，返回带 `theta = 0` 的 signals 表（05 §6.1）。
+
+    概率先按 `calib_mask`（默认早停月 M10）的 logit 拟合 Platt 校准，再应用到
+    `month_mask`，避免用被评估月份自己拟合校准（R0-3、05 §7.1）。
+    """
     n = int(month_mask.sum())
-    p = booster.predict(samples.x[month_mask], num_iteration=booster.best_iteration)
+    p_raw = booster.predict(samples.x[month_mask], num_iteration=booster.best_iteration)
+    logit = np.log(np.clip(p_raw, 1e-12, 1 - 1e-12) / np.clip(1 - p_raw, 1e-12, 1.0))
+    platt_a, platt_b = 1.0, 0.0
+    if calib_mask is not None and int(calib_mask.sum()) > 0:
+        raw_cal = booster.predict(samples.x[calib_mask], num_iteration=booster.best_iteration)
+        logit_cal = np.log(np.clip(raw_cal, 1e-12, 1 - 1e-12) / np.clip(1 - raw_cal, 1e-12, 1.0))
+        calibration = calibration_metrics(logit_cal, samples.y[calib_mask])
+        platt_a = float(calibration["platt_a"])
+        platt_b = float(calibration["platt_b"])
+    p = platt_sigmoid(logit, platt_a, platt_b)
     return pd.DataFrame(
         {
             "symbol": samples.symbol[month_mask],
@@ -1055,7 +1166,9 @@ def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
             samples.w[stop_mask],
             seed=data.base_cfg.seed,
         )
-        signals_scan = _nested_signals(data, samples, booster, samples.m == (tuning_months - 1))
+        signals_scan = _nested_signals(
+            data, samples, booster, samples.m == (tuning_months - 1), calib_mask=stop_mask
+        )
         p_scan = signals_scan["p"].to_numpy(dtype="float64")
         print(
             f"组 {gi + 1}: M11 信号 {p_scan.size} 条，p 分位 "
@@ -1097,7 +1210,9 @@ def _run_nested_check(data: TuningData, args: argparse.Namespace) -> int:
                 }
             )
             continue
-        signals_eval = _nested_signals(data, samples, booster, samples.m == tuning_months)
+        signals_eval = _nested_signals(
+            data, samples, booster, samples.m == tuning_months, calib_mask=stop_mask
+        )
         trades_eval, skipped_eval = _precompute_all(
             data, signals_eval, exit_cfg, k_sl, sl_min, sl_max, scenario("base"), _THETA_GRID[0]
         )

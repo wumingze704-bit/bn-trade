@@ -51,6 +51,18 @@ def test_情景参数():
         scenario("nope")
 
 
+def test_maker情景入场费率用maker() -> None:
+    """`maker` 情景只用 maker 入场费率，其余情景用 taker（06 §4.3）。"""
+    from trade.backtest.costs import FeeSchedule
+    from trade.backtest.engine import entry_fee_rate_for
+
+    fees = FeeSchedule(maker=0.0002, taker=0.0005, rebate_rate=0.4)
+    assert scenario("base").entry_maker is False
+    assert scenario("maker").entry_maker is True
+    assert entry_fee_rate_for(scenario("base"), fees) == pytest.approx(0.0005)
+    assert entry_fee_rate_for(scenario("maker"), fees) == pytest.approx(0.0002)
+
+
 def test_实测点差情景按币覆盖半价差():
     """spread_measured 情景：有实测覆盖的币用实测半价差，其余用全局值（06 §4.3）。"""
     from trade.backtest.costs import spread_measured_scenario

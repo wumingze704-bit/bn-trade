@@ -386,23 +386,24 @@ def universe_trade_mask(
 
 
 def new_entry_symbols(
-    membership: Mapping[str, frozenset[str]], tuning_months: int
+    membership: Mapping[str, frozenset[str]], train_months: Sequence[str]
 ) -> frozenset[str]:
-    """返回「训练段从未入选、测试段才首次入选」的 symbol 集合（03 §4.5、06 §7 S10）。
+    """返回「训练段从未入选、评估段才首次入选」的 symbol 集合（03 §4.5、06 §7 S10）。
 
     Args:
         membership: month -> 入选 symbol 集合。
-        tuning_months: 调参期月数（前 tuning_months 个月视为训练段）。
+        train_months: 该折（或该次回测）的训练段月份；新进入按这一段判断，
+            不能用固定的前 12 个月，否则 F2~F5 的新进入组会被漏掉。
 
     Returns:
         新进入组的 symbol 集合。
     """
     months = sorted(membership)
-    tuning = set(months[:tuning_months])
+    train = set(train_months)
     symbols = {symbol for month in membership for symbol in membership[month]}
     new_entry: set[str] = set()
     for symbol in symbols:
         first = next((month for month in months if symbol in membership[month]), None)
-        if first is not None and first not in tuning:
+        if first is not None and first not in train:
             new_entry.add(symbol)
     return frozenset(new_entry)

@@ -19,6 +19,8 @@ class ModelConfig(BaseModel):
     blocks: int = Field(default=4, ge=1, le=12)
     kernel: int = Field(default=3, ge=2, le=9)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
+    # TCN 输入投影是否带 LayerNorm（R2-8 对照开关；默认开＝现状）
+    project_norm: bool = True
     loss: str = Field(default="bce", pattern=r"^(bce|focal)$")
     focal_gamma: float = Field(default=2.0, gt=0.0, le=10.0)
     lambda_reg: float = Field(default=0.3, ge=0.0, le=10.0)
@@ -58,3 +60,7 @@ class WalkForwardConfig(BaseModel):
     embargo_days: int = Field(default=1, ge=0, le=30)
     fold_train_start: str = "2024-10"
     max_folds: int = Field(default=5, ge=1, le=24)
+    # 验证集 PF 下限：低于它该折不交易（05 §7.2）
+    min_validation_pf: float = Field(default=1.0, ge=0.0)
+    # 验证集日均笔数下限（05 §7.2）
+    min_trades_per_day: float = Field(default=5.0, gt=0.0)

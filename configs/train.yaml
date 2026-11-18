@@ -41,4 +41,6 @@ walk_forward: # 03 §6、05 §6
   embargo_days: 1 # 边界 Embargo：再删下一段开头 1 天
   fold_train_start: "2024-10" # M1
   max_folds: 5
+  min_validation_pf: 1.0 # 验证集 PF 下限，低于它该折不交易（05 §7.2）
+  min_trades_per_day: 5.0
 

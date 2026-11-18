@@ -178,6 +178,8 @@ def exit_anchor_spec(
     fixed_slip: float | None,
     fee_taker: float,
     notional_ref: float,
+    entry_maker: bool = False,
+    fee_maker: float = 0.0,
 ) -> AnchorSpec:
     """由出场配置与成本参数构造锚点组配置（06 §3.3、§3.4）。
 
@@ -208,6 +210,8 @@ def exit_anchor_spec(
         fixed_slip=float("nan") if fixed_slip is None else fixed_slip,
         fee_taker=fee_taker,
         notional_ref=notional_ref,
+        entry_maker=entry_maker,
+        fee_maker=fee_maker,
     )
 
 

@@ -383,6 +383,27 @@ def test_select_coins_rule_hash_protection(tmp_path: Path) -> None:
         "seed: 42\n",
     )
 
+    rules_json = tmp_path / "rules.json"
+    rules_json.write_text(
+        json.dumps(
+            {
+                "SOLUSDT": {
+                    "base_asset": "SOL",
+                    "tick_size": 0.01,
+                    "step_size": 0.1,
+                    "min_notional": 5.0,
+                },
+                "SUIUSDT": {
+                    "base_asset": "SUI",
+                    "tick_size": 0.01,
+                    "step_size": 0.1,
+                    "min_notional": 5.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
     def run_with(top_n: int) -> None:
         universe_yaml = tmp_path / f"universe_{top_n}.yaml"
         _write_yaml(
@@ -407,6 +428,8 @@ def test_select_coins_rule_hash_protection(tmp_path: Path) -> None:
                 str(universe_yaml),
                 "--data-root",
                 str(data_root),
+                "--rules",
+                str(rules_json),
             ]
         )
 

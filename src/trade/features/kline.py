@@ -240,6 +240,94 @@ def avg_trade_ratio(quote_volume: np.ndarray, count: np.ndarray) -> np.ndarray:
     return np.log1p(per / (rolling_mean(per, 60) + EPS))
 
 
+def timeframe_atr(
+    open_time: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    timeframe_min: int,
+    length: int = 14,
+) -> np.ndarray:
+    """按 `timeframe_min` 分钟聚合后计算 ATR14，并映射回每分钟（只用已完成的时间桶）。
+
+    用途：决策周期放大到 5/15 分钟时，止损尺度必须按该周期的波动来定；用 1 分钟
+    ATR 会把止损压得过紧。为了避免未来函数，分钟 t 取的是**在 t 之前已经收盘的
+    最后一个时间桶**的 ATR（桶边界按 `open_time // (timeframe_min × 60000)` 对齐）。
+
+    Args:
+        open_time: 分钟开盘时间（毫秒，升序）。
+        high/low/close: 分钟最高/最低/收盘价。
+        timeframe_min: 聚合周期（分钟）；1 表示直接用 1 分钟 ATR。
+        length: ATR 的 Wilder 长度（默认 14）。
+
+    Returns:
+        与输入等长的 ATR 绝对值数组；时间桶不足 `length` 个的位置为 NaN。
+
+    Raises:
+        ValueError: `timeframe_min < 1`（红线 13）。
+    """
+    if timeframe_min < 1:
+        raise ValueError(f"timeframe_min 必须 ≥ 1，收到 {timeframe_min}")
+    close = np.asarray(close, dtype="float64")
+    if timeframe_min == 1:
+        return wilder_atr(true_range(high, low, close), length)
+
+    buckets = np.asarray(open_time, dtype="int64") // (timeframe_min * 60_000)
+    # 每个桶的高/低/收：用 numpy 分段归约（桶已按时间升序）
+    uniq, starts = np.unique(buckets, return_index=True)
+    counts = np.diff(np.append(starts, buckets.shape[0]))
+    seg_high = np.maximum.reduceat(np.asarray(high, dtype="float64"), starts)
+    seg_low = np.minimum.reduceat(np.asarray(low, dtype="float64"), starts)
+    seg_close = close[starts + counts - 1]
+    seg_atr = wilder_atr(true_range(seg_high, seg_low, seg_close), length)
+    # 分钟 t 用「上一个已完成桶」的 ATR：桶序号在 uniq 中的前一位
+    positions = np.searchsorted(uniq, buckets, side="left") - 1
+    out = np.full(close.shape[0], np.nan, dtype="float64")
+    ok = positions >= 0
+    out[ok] = seg_atr[positions[ok]]
+    return out
+
+
+def r_240(close: np.ndarray) -> np.ndarray:
+    """`r_240 = log(c_t / c_{t-240})`（4 小时动量）。"""
+    return _log_change_n(close, 240)
+
+
+def r_1440(close: np.ndarray) -> np.ndarray:
+    """`r_1440 = log(c_t / c_{t-1440})`（24 小时动量）。"""
+    return _log_change_n(close, 1440)
+
+
+def dist_24h_high(high: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """`dist_24h_high = c_t / max(high, 1440) − 1`（距 24 小时高点的距离，≤ 0）。"""
+    h = _as_float(high)
+    c = _as_float(close)
+    top = rolling_max(h, 1440)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return c / top - 1.0
+
+
+def log_qv_60(quote_volume: np.ndarray) -> np.ndarray:
+    """`log_qv_60 = log(1 + mean_60(quote_volume))`（60 分钟成交额水平）。"""
+    qv = _as_float(quote_volume)
+    return np.log1p(rolling_mean(qv, 60))
+
+
+def bars_since_brk_60(high: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """距上次 `brk_60 > 0` 的分钟数（无突破时为 1440，封顶避免无界）。"""
+    flag = (brk_60(high, close) > 0.0).astype("int64")
+    n = flag.shape[0]
+    out = np.full(n, 1440.0, dtype="float64")
+    last = -1
+    for index in range(n):
+        if flag[index]:
+            last = index
+        if last >= 0:
+            out[index] = float(min(index - last, 1440))
+    return out
+
+
 def rv_15(close: np.ndarray) -> np.ndarray:
     """#16 rv_15 = std_15(r)。"""
     return rolling_std(log_returns(close), 15)
@@ -275,3 +363,29 @@ def vwap_dev_60(quote_volume: np.ndarray, volume: np.ndarray, close: np.ndarray)
     """#22 vwap_dev_60 = (c_t - VWAP_60) / c_t，VWAP_60 = sum_60(qv)/(sum_60(v)+ε)。"""
     vwap = rolling_sum(quote_volume, 60) / (rolling_sum(volume, 60) + EPS)
     return (_as_float(close) - vwap) / _as_float(close)
+
+
+def wick_ratio_5(
+    high: np.ndarray, low: np.ndarray, open_: np.ndarray, close: np.ndarray
+) -> np.ndarray:
+    """#38 wick_ratio_5 = sum_5(上影线价格) / (sum_5(振幅价格) + ε)（04 §4.6）。"""
+    wick = _as_float(high) - np.maximum(_as_float(open_), _as_float(close))
+    span = _as_float(high) - _as_float(low)
+    return rolling_sum(wick, 5) / (rolling_sum(span, 5) + EPS)
+
+
+def close_pos_5(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """#39 close_pos_5 = mean_5((c − l) / (h − l + ε))，近 5 根收盘强度（04 §4.6）。"""
+    pos = (_as_float(close) - _as_float(low)) / (_as_float(high) - _as_float(low) + EPS)
+    return rolling_mean(pos, 5)
+
+
+def range_ratio_5(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """#40 range_ratio_5 = rng_t / (mean_5(rng) + ε)，振幅相对近 5 根均值（04 §4.6）。"""
+    rng_values = rng(high, low, close)
+    return rng_values / (rolling_mean(rng_values, 5) + EPS)
+
+
+def tbr_div(taker_buy_quote_volume: np.ndarray, quote_volume: np.ndarray) -> np.ndarray:
+    """#41 tbr_div = tbr_t − tbr_5_t，短周期与中周期主动买占比之差（04 §4.6）。"""
+    return tbr(taker_buy_quote_volume, quote_volume) - tbr_5(taker_buy_quote_volume, quote_volume)

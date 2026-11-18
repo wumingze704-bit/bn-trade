@@ -329,3 +329,42 @@ def test_缺失分钟语义下numba与Python参考逐字段一致():
         b.data_gaps,
     )
     assert a.exit_price == b.exit_price
+
+
+def test_挂单入场锚点与费率() -> None:
+    """entry_maker：p_fill = floor(c_t×(1−hs))、入场滑点 0、入场按 maker 费率（06 §3.2）。"""
+    from trade.common.anchors import anchor_series
+    from trade.common.exits import exit_anchor_spec
+
+    n = 5
+    close = np.full(n, 100.0)
+    p_entry = np.full(n, 100.0)
+    common = dict(
+        k_sl=2.5,
+        sl_min=0.01,
+        sl_max=0.025,
+        half_spread_min=0.0001,
+        slip_min=0.0001,
+        Y=1.0,
+        fixed_slip=None,
+        fee_taker=0.0005,
+        notional_ref=100.0,
+    )
+    kwargs = dict(
+        close=close,
+        p_entry=p_entry,
+        atr_pct=np.full(n, 0.01),
+        rv15=np.full(n, 0.001),
+        qv=np.full(n, 1e6),
+        tick_size=0.01,
+        use_numba=False,
+    )
+    maker_spec = exit_anchor_spec(_cfg(), **common, entry_maker=True, fee_maker=0.0002)  # type: ignore[arg-type]
+    taker_spec = exit_anchor_spec(_cfg(), **common)  # type: ignore[arg-type]
+    maker = anchor_series(spec=maker_spec, **kwargs)  # type: ignore[arg-type]
+    taker = anchor_series(spec=taker_spec, **kwargs)  # type: ignore[arg-type]
+    assert maker.p_fill[2] == pytest.approx(99.99)
+    assert maker.slip[2] == pytest.approx(0.0)
+    assert maker.loss_rate[2] == pytest.approx(0.025 + 0.0001 + 0.0002 + 0.0005, abs=_TOL)
+    # 吃单价含点差与滑点，严格高于挂单买一价
+    assert taker.p_fill[2] > maker.p_fill[2]

@@ -16,8 +16,8 @@ import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from trade.backtest.costs import FeeSchedule, Scenario, scenario
-from trade.common.anchors import anchor_series
-from trade.common.batch import batch_exit
+from trade.common.anchors import anchor_series, plan_limit_entry
+from trade.common.batch import batch_exit, batch_exit_plan
 from trade.common.costs import net_return_after_fees
 from trade.common.entry import half_spread_for
 from trade.common.exits import (
@@ -36,7 +36,7 @@ from trade.common.risk_rules import (
     risk_step,
 )
 from trade.common.sizing import SizingConfig, calc_notional, equity_floor_hit
-from trade.features.kline import rolling_mean, rv_15, true_range, wilder_atr
+from trade.features.kline import rolling_mean, rv_15, timeframe_atr, true_range, wilder_atr
 
 # precompute_trades 与盯市只读取这些列（06 §3.4）；供 `load_bars(columns=...)` 使用
 PRECOMPUTE_BAR_COLUMNS: tuple[str, ...] = (
@@ -82,6 +82,8 @@ class RiskConfig(BaseModel):
 
     cooldown_bars: int = Field(default=15, ge=0)
     max_chase: float = Field(default=0.003, gt=0.0)
+    # 冷却触发条件（06 §3.1）：loss_stop = 止损类出场且净亏损；any_stop = 任一止损类出场
+    cooldown_on: str = Field(default="loss_stop", pattern=r"^(loss_stop|any_stop)$")
     # R6/R8 触发后的处理：strict = 停止交易至运行结束；
     # reset = 停 halt_reset_days 个自然日后按当时权益继续
     halt_mode: str = Field(default="strict", pattern=r"^(strict|reset)$")
@@ -133,6 +135,13 @@ class BacktestConfig(BaseModel):
     sizing_sweep: SizingSweepConfig = Field(default_factory=SizingSweepConfig)
     sanity: SanityConfig = Field(default_factory=SanityConfig)
     reference: ReferenceConfig = Field(default_factory=ReferenceConfig)
+    # 入场方式（06 §3.2）：taker = 按 p_1s/p_3s 吃单成交；maker = 挂在买一，下一分钟最低价触及才成交
+    entry_mode: str = Field(default="taker", pattern=r"^(taker|maker|limit_pullback)$")
+    # 回踩挂单：挂单价 = c_t × (1 − offset_bp/1e4)，其后 expiry_bars 根内向下穿越 1 tick 才成交
+    entry_limit_offset_bp: float = Field(default=30.0, gt=0.0, le=200.0)
+    entry_limit_expiry_bars: int = Field(default=5, ge=1, le=30)
+    # 开仓排序分数（05 §7.2）：p = 分类概率；m = 回归净 R；ev = p × m（概率加权的期望净 R）
+    signal_rank_by: str = Field(default="p", pattern=r"^(p|m|ev)$")
 
 
 def load_trade_rules(rules_path: Path, aliases_path: Path) -> dict[str, TradeRule]:
@@ -287,6 +296,15 @@ class ExecutedTrade:
     half_spread: float = 0.0
     slip_exit: float = 0.0
 
+    @property
+    def exited_with_loss(self) -> bool:
+        """止损类出场（初始止损/保本/追踪）且净亏损（06 §3.1 冷却条件）。"""
+        return self.exit_type_code in (0, 1, 2) and self.net_pnl < 0.0
+
+
+# 一分钟的毫秒数（持仓在 exit_open_time 这根 K 线内离场，下一分钟才释放名额）
+_MS_PER_MINUTE = 60_000
+
 
 @dataclass
 class PortfolioResult:
@@ -319,13 +337,26 @@ def _utc_day(ts_ms: int) -> str:
     return f"{day.year:04d}-{day.month:02d}-{day.day:02d}"
 
 
-def _symbol_arrays(bars: pd.DataFrame) -> dict[str, np.ndarray]:
-    """预计算每币所需数组（ATR、已实现波动、滚动成交额）。"""
+def _symbol_arrays(bars: pd.DataFrame, atr_timeframe_min: int = 1) -> dict[str, np.ndarray]:
+    """预计算每币所需数组（ATR、已实现波动、滚动成交额）。
+
+    `atr_timeframe_min > 1` 时 ATR 先聚合到该周期再算（分钟 t 用上一个已完成桶，
+    `trade.features.kline.timeframe_atr`），用于 5/15 分钟决策周期。
+    """
     close = bars["close"].to_numpy(dtype="float64")
     high = bars["high"].to_numpy(dtype="float64")
     low = bars["low"].to_numpy(dtype="float64")
     qv = bars["quote_volume"].to_numpy(dtype="float64")
-    atr_abs = wilder_atr(true_range(high, low, close), 14)
+    if atr_timeframe_min > 1:
+        atr_abs = timeframe_atr(
+            bars["open_time"].to_numpy(dtype="int64"),
+            high,
+            low,
+            close,
+            timeframe_min=atr_timeframe_min,
+        )
+    else:
+        atr_abs = wilder_atr(true_range(high, low, close), 14)
     return {
         "atr_abs": atr_abs,
         "atr_pct": atr_abs / close,
@@ -462,11 +493,14 @@ def _bar_column(bars: pd.DataFrame, name: str, dtype: str) -> np.ndarray:
     return np.asarray(bars[name].to_numpy(dtype=dtype), dtype=dtype)
 
 
-def prepare_symbols(bars_by_symbol: Mapping[str, pd.DataFrame]) -> dict[str, PreparedSymbol]:
+def prepare_symbols(
+    bars_by_symbol: Mapping[str, pd.DataFrame], *, atr_timeframe_min: int = 1
+) -> dict[str, PreparedSymbol]:
     """把每币 bars 一次性转成 numpy 数组与派生指标（06 §3.4）。
 
     Args:
         bars_by_symbol: 币种 → 分钟 bars（含 03 §2.3 的执行类原子量）。
+        atr_timeframe_min: 止损 ATR 的聚合周期（分钟，1 = 1 分钟 ATR）。
 
     Returns:
         币种 → PreparedSymbol；同一份输入多次调用结果相同。
@@ -476,7 +510,7 @@ def prepare_symbols(bars_by_symbol: Mapping[str, pd.DataFrame]) -> dict[str, Pre
     """
     prepared: dict[str, PreparedSymbol] = {}
     for symbol, bars in bars_by_symbol.items():
-        arrays = _symbol_arrays(bars)
+        arrays = _symbol_arrays(bars, atr_timeframe_min)
         funding_time, funding_rate = funding_settlements(bars)
         prepared[symbol] = PreparedSymbol(
             symbol=symbol,
@@ -570,11 +604,12 @@ def _mark_to_market_curve(
         initial_equity: 初始权益，USDT。
 
     Returns:
-        DataFrame，列 = [ts_ms（int64）, equity（float64）, drawdown（float64）]；首行为
-        (0, initial_equity, 0.0)，无交易时只返回该行。
+        DataFrame，列 = [ts_ms（int64）, equity（float64）, drawdown（float64）]；只在
+        持仓 K 线收盘与离场时刻采样，不写 `ts_ms = 0` 的初始权益标记行（06 §5.1）。
+        无交易时返回空表（`daily_returns`/`monthly_returns` 按自然日与自然月补齐）。
     """
     if not trades:
-        return pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
+        return pd.DataFrame({"ts_ms": pd.Series(dtype="int64"), "equity": [], "drawdown": []})
 
     exit_times = np.fromiter(
         (trade.exit_open_time for trade in trades), dtype="int64", count=len(trades)
@@ -619,11 +654,15 @@ def _mark_to_market_curve(
     equity = initial_equity + realized + unrealized
     peak = np.maximum.accumulate(np.concatenate(([initial_equity], equity)))[1:]
     drawdown = np.where(peak > 0.0, (peak - equity) / peak, 0.0)
-    frame = pd.DataFrame({"ts_ms": sample_ts, "equity": equity, "drawdown": drawdown})
-    if int(frame["ts_ms"].iloc[0]) != 0:
-        head = pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
-        frame = pd.concat([head, frame], ignore_index=True)
-    return frame
+    return pd.DataFrame({"ts_ms": sample_ts, "equity": equity, "drawdown": drawdown})
+
+
+def entry_fee_rate_for(scen: Scenario, fees: FeeSchedule) -> float:
+    """入场费率（06 §4.3）：`maker` 情景按 maker 费率，其余情景按 taker 费率。
+
+    这是只改费率的成本对照，不模拟挂单未成交与排队风险，因此结果偏乐观。
+    """
+    return fees.maker if scen.entry_maker else fees.taker
 
 
 def reference_trade_net_pnl(
@@ -647,8 +686,9 @@ def reference_trade_net_pnl(
     )
     if not sz.accepted:
         return 0.0
-    # 出场手续费按出场名义价值 notional × (1 + gross_return) 计（06 §4.1）
-    return sz.notional * net_return_after_fees(
+    # 实际名义价值按取整后的数量计：qty × P_fill（06 §5.3）
+    notional = sz.qty * tr.p_fill
+    return notional * net_return_after_fees(
         gross_return=tr.gross_return,
         entry_fee_rate=fees.taker,
         exit_fee_rate=tr.exit_fee_rate,
@@ -675,6 +715,7 @@ def precompute_trades(
     trade_mask: np.ndarray | None = None,
     new_entry: bool = False,
     p_min: float | None = None,
+    atr_timeframe_min: int = 1,
 ) -> tuple[list[PrecomputedTrade], list[SkippedSignal]]:
     """逐笔预计算（06 §3.4 第 1 步）：为每个候选信号算 P_fill 与出场结果。
 
@@ -694,7 +735,11 @@ def precompute_trades(
     Raises:
         ValueError: bars 缺列或不支持的执行延迟（红线 13）。
     """
-    prepared = bars if isinstance(bars, PreparedSymbol) else prepare_symbols({symbol: bars})[symbol]
+    prepared = (
+        bars
+        if isinstance(bars, PreparedSymbol)
+        else prepare_symbols({symbol: bars}, atr_timeframe_min=atr_timeframe_min)[symbol]
+    )
     n = int(prepared.open_time.shape[0])
     if n == 0:
         return [], []
@@ -724,7 +769,23 @@ def precompute_trades(
     )
     slip_min = backtest_cfg.costs.slip_min * scen.slip_mult
     H_max = exit_cfg.H_max if exit_cfg.type != "fixed" else H_label
+    maker_entry = backtest_cfg.entry_mode == "maker"
+    limit_entry = backtest_cfg.entry_mode == "limit_pullback"
     # 锚点与入场成本按币算一次（06 §3.4）：逐笔只按下标取值，不在信号循环里重算
+    anchor_spec = exit_anchor_spec(
+        exit_cfg,
+        k_sl=k_sl,
+        sl_min=sl_min,
+        sl_max=sl_max,
+        half_spread_min=half_spread_min,
+        slip_min=slip_min,
+        Y=backtest_cfg.costs.Y,
+        fixed_slip=scen.fixed_slip,
+        fee_taker=fees.taker,
+        notional_ref=notional_ref,
+        entry_maker=maker_entry,
+        fee_maker=fees.maker,
+    )
     anchors = anchor_series(
         close=close,
         p_entry=p_entry_arr,
@@ -732,18 +793,21 @@ def precompute_trades(
         rv15=rv15_arr,
         qv=qv,
         tick_size=rule.tick_size,
-        spec=exit_anchor_spec(
-            exit_cfg,
-            k_sl=k_sl,
-            sl_min=sl_min,
-            sl_max=sl_max,
-            half_spread_min=half_spread_min,
-            slip_min=slip_min,
-            Y=backtest_cfg.costs.Y,
-            fixed_slip=scen.fixed_slip,
-            fee_taker=fees.taker,
-            notional_ref=notional_ref,
-        ),
+        spec=anchor_spec,
+    )
+    plan = (
+        plan_limit_entry(
+            close=close,
+            low=low,
+            kline_missing=kline_missing,
+            atr_pct=atr_pct_arr,
+            tick_size=rule.tick_size,
+            offset_bp=backtest_cfg.entry_limit_offset_bp,
+            expiry_bars=backtest_cfg.entry_limit_expiry_bars,
+            spec=anchor_spec,
+        )
+        if limit_entry
+        else None
     )
 
     skipped: list[SkippedSignal] = []
@@ -765,31 +829,33 @@ def precompute_trades(
                 SkippedSignal(symbol, int(row.open_time), p_signal, "not_in_universe", theta)
             )
             continue
-        if kline_missing[t + 1] == 1:
-            skipped.append(
-                SkippedSignal(symbol, int(row.open_time), p_signal, "entry_bar_filled", theta)
-            )
-            continue
-        if p_filled_arr[t + 1] == 1.0:
-            # 入场那一秒无成交、价格沿用上一分钟收盘价：实盘读到陈旧价，放弃（06 §3.1 条件 1）
-            skipped.append(
-                SkippedSignal(symbol, int(row.open_time), p_signal, "entry_price_stale", theta)
-            )
-            continue
-        p_raw = float(p_entry_arr[t + 1])
-        if not np.isfinite(p_raw) or p_raw <= 0:
-            skipped.append(
-                SkippedSignal(symbol, int(row.open_time), p_signal, "no_entry_price", theta)
-            )
-            continue
         c_t = float(close[t])
         if not np.isfinite(c_t) or c_t <= 0:
             skipped.append(SkippedSignal(symbol, int(row.open_time), p_signal, "no_atr", theta))
             continue
-        hs_t = half_spread_for(c_t, rule.tick_size, half_spread_min)
-        if p_raw * (1.0 + hs_t) > c_t * (1.0 + backtest_cfg.risk.max_chase):
-            skipped.append(SkippedSignal(symbol, int(row.open_time), p_signal, "chase", theta))
-            continue
+        if not limit_entry:
+            # 吃单/买一挂单：入场价取自 t+1 的逐笔价，需要 t+1 不缺失、非陈旧价、且不追价
+            if kline_missing[t + 1] == 1:
+                skipped.append(
+                    SkippedSignal(symbol, int(row.open_time), p_signal, "entry_bar_filled", theta)
+                )
+                continue
+            if p_filled_arr[t + 1] == 1.0:
+                # 入场那一秒无成交、价格沿用上一分钟收盘价：实盘读到陈旧价，放弃（06 §3.1 条件 1）
+                skipped.append(
+                    SkippedSignal(symbol, int(row.open_time), p_signal, "entry_price_stale", theta)
+                )
+                continue
+            p_raw = float(p_entry_arr[t + 1])
+            if not np.isfinite(p_raw) or p_raw <= 0:
+                skipped.append(
+                    SkippedSignal(symbol, int(row.open_time), p_signal, "no_entry_price", theta)
+                )
+                continue
+            hs_t = half_spread_for(c_t, rule.tick_size, half_spread_min)
+            if p_raw * (1.0 + hs_t) > c_t * (1.0 + backtest_cfg.risk.max_chase):
+                skipped.append(SkippedSignal(symbol, int(row.open_time), p_signal, "chase", theta))
+                continue
         sigma = float(atr_pct_arr[t])
         if not np.isfinite(sigma):
             skipped.append(SkippedSignal(symbol, int(row.open_time), p_signal, "no_atr", theta))
@@ -799,6 +865,23 @@ def precompute_trades(
                 SkippedSignal(symbol, int(row.open_time), p_signal, "no_lookback", theta)
             )
             continue
+        if maker_entry:
+            # 挂单入场：下一分钟最低价触及挂单价才算成交（06 §3.2）
+            limit = float(anchors.p_fill[t])
+            low_next = float(low[t + 1])
+            if not np.isfinite(limit) or not np.isfinite(low_next) or low_next > limit:
+                skipped.append(
+                    SkippedSignal(symbol, int(row.open_time), p_signal, "maker_no_fill", theta)
+                )
+                continue
+        if limit_entry:
+            assert plan is not None
+            # 回踩挂单：其后 N 根内向下穿越挂单价 1 tick 才算成交，否则该信号不产生交易
+            if int(plan.entry_bar[t]) < 0:
+                skipped.append(
+                    SkippedSignal(symbol, int(row.open_time), p_signal, "limit_no_fill", theta)
+                )
+                continue
         kept_t.append(t)
         kept_signal.append((int(row.open_time), p_signal, float(row.m), theta))
 
@@ -806,30 +889,61 @@ def precompute_trades(
         return [], skipped
 
     t_all = np.asarray(kept_t, dtype="int64")
-    batch = batch_exit(
-        open_=open_,
-        high=high,
-        low=low,
-        close=close,
-        p_entry=p_entry_arr,
-        hi_post=hi_post,
-        lo_post=lo_post,
-        kline_missing=kline_missing,
-        aggtrades_missing=aggtrades_missing,
-        anchors=anchors,
-        signal_bars=t_all,
-        atr_abs=atr_abs_arr,
-        h_max=H_max,
-        cfg=exit_cfg,
-        tick_size=rule.tick_size,
-        fee_taker=fees.taker,
-        fee_maker=fees.maker,
-    )
+    if limit_entry:
+        assert plan is not None
+        batch = batch_exit_plan(
+            open_=open_,
+            high=high,
+            low=low,
+            close=close,
+            p_entry=p_entry_arr,
+            hi_post=hi_post,
+            lo_post=lo_post,
+            kline_missing=kline_missing,
+            aggtrades_missing=aggtrades_missing,
+            anchors=anchors,
+            signal_bars=t_all,
+            plan=plan,
+            atr_abs=atr_abs_arr,
+            h_max=H_max,
+            cfg=exit_cfg,
+            tick_size=rule.tick_size,
+            fee_taker=fees.taker,
+            fee_maker=fees.maker,
+        )
+    else:
+        batch = batch_exit(
+            open_=open_,
+            high=high,
+            low=low,
+            close=close,
+            p_entry=p_entry_arr,
+            hi_post=hi_post,
+            lo_post=lo_post,
+            kline_missing=kline_missing,
+            aggtrades_missing=aggtrades_missing,
+            anchors=anchors,
+            signal_bars=t_all,
+            atr_abs=atr_abs_arr,
+            h_max=H_max,
+            cfg=exit_cfg,
+            tick_size=rule.tick_size,
+            fee_taker=fees.taker,
+            fee_maker=fees.maker,
+        )
 
     trades: list[PrecomputedTrade] = []
     for slot, t in enumerate(kept_t):
         signal_open_time, p_signal, m_signal, theta = kept_signal[slot]
-        p_fill = float(anchors.p_fill[t])
+        if limit_entry:
+            assert plan is not None
+            entry_bar = int(plan.entry_bar[t])
+            p_fill = float(plan.p_fill[t])
+            sl_value = float(plan.sl[t])
+        else:
+            entry_bar = t + 1
+            p_fill = float(anchors.p_fill[t])
+            sl_value = float(anchors.sl[t])
         hs = float(anchors.half_spread[t])
         slip_ = float(anchors.slip[t])
         exit_idx = int(batch.exit_idx[slot])
@@ -850,12 +964,16 @@ def precompute_trades(
                 symbol=symbol,
                 group=group,
                 signal_open_time=signal_open_time,
-                entry_open_time=int(open_time[t + 1]),
+                entry_open_time=int(open_time[entry_bar]),
                 p=p_signal,
                 m=m_signal,
                 p_fill=p_fill,
-                sl=float(anchors.sl[t]),
-                loss_rate=float(anchors.loss_rate[t]),
+                sl=sl_value,
+                loss_rate=(
+                    sl_value + float(anchors.slip_stop[t]) + hs + fees.maker + fees.taker
+                    if limit_entry
+                    else float(anchors.loss_rate[t])
+                ),
                 mean_qv_60=float(mean_qv_60_arr[t]),
                 exit_open_time=int(open_time[exit_idx]),
                 exit_price=exit_price,
@@ -871,7 +989,7 @@ def precompute_trades(
                 funding_rate_sum=funding_rate_between(
                     fund_times,
                     fund_rates,
-                    int(open_time[t + 1]),
+                    int(open_time[entry_bar]),
                     int(open_time[exit_idx]),
                 ),
                 tick_size=rule.tick_size,
@@ -946,6 +1064,13 @@ def _risk_timeline(
         return np.empty(0, dtype="int64")
     pieces: list[np.ndarray] = [
         np.fromiter((item.entry_open_time for item in trades), dtype="int64", count=len(trades)),
+        # 离场下一分钟（release_due 的释放时刻）也必须是采样点：否则该笔盈亏会被
+        # 拖到下一个候选信号的分钟才结算，跨日时会漏掉当日的 R6/R8 判定（06 §3.4）。
+        np.fromiter(
+            (item.exit_open_time + _MS_PER_MINUTE for item in trades),
+            dtype="int64",
+            count=len(trades),
+        ),
         np.fromiter((item.exit_open_time for item in trades), dtype="int64", count=len(trades)),
     ]
     for item in trades:
@@ -977,6 +1102,31 @@ def _unrealized_at(
     return total
 
 
+def _unrealized_before(
+    positions: Mapping[str, ExecutedTrade], close_arrays: Mapping[str, CloseSeries], ts_ms: int
+) -> float:
+    """持仓在 `ts_ms` 之前最后一根 K 线收盘价上的未实现盈亏（06 §3.4 风控门控）。
+
+    只使用严格早于 `ts_ms` 的收盘价：风控在 `ts` 分钟判定时不能看到该分钟的价格。
+    持仓入场那一分钟之前没有本币 K 线时按 `p_fill` 估值（贡献 0）。
+    """
+    total = 0.0
+    for trade in positions.values():
+        series = close_arrays.get(trade.symbol)
+        if series is None:
+            continue
+        pos = int(np.searchsorted(series.open_time, ts_ms, side="left")) - 1
+        if pos < 0:
+            continue
+        bar_ts = int(series.open_time[pos])
+        if bar_ts < trade.entry_open_time:
+            continue
+        price = float(series.close[pos])
+        if price > 0.0:
+            total += trade.notional * (price / trade.p_fill - 1.0)
+    return total
+
+
 @dataclass
 class PortfolioBook:
     """组合账本：钱包余额、持仓、冷却与风控状态（06 §3.4）。
@@ -996,18 +1146,32 @@ class PortfolioBook:
     limits: RiskLimits
     cooldown_bars: int
     fees: FeeSchedule
+    # 冷却触发条件（06 §3.1）：loss_stop = 仅初始止损/保本/追踪且净亏损；any_stop = 任一止损类出场
+    cooldown_on: str = "loss_stop"
 
     def equity_at(self, ts_ms: int) -> float:
         """`ts_ms` 的盯市权益 = 钱包余额 + 未实现盈亏（06 §5.1）。"""
         return self.wallet + _unrealized_at(self.positions, self.close_arrays, ts_ms)
 
+    def equity_before(self, ts_ms: int) -> float:
+        """`ts_ms` 之前最后一根 K 线收盘价上的盯市权益（06 §3.4 风控门控用）。
+
+        风控 R5/R6/R8 在 `ts` 分钟只能使用 `ts` 之前已知的价格，因此用每个持仓在
+        `ts` 之前最后一根 K 线的收盘价估值，不得使用 `ts` 分钟自身（含未来信息）的价格。
+        """
+        return self.wallet + _unrealized_before(self.positions, self.close_arrays, ts_ms)
+
     def release_due(self, ts_ms: int) -> None:
-        """结算 `exit_open_time ≤ ts_ms` 的持仓（06 §3.4 第 2 步）。"""
+        """结算盘中在 `exit_open_time` 离场的持仓（06 §3.4 第 2 步）。
+
+        离场发生在 `exit_open_time` 这根 K 线内，名额与保证金要到下一分钟
+        （`exit_open_time + 60s`）才能释放，避免同一分钟重复占用。
+        """
         due = sorted(
             (
                 (sym, trade)
                 for sym, trade in self.positions.items()
-                if trade.exit_open_time <= ts_ms
+                if trade.exit_open_time + _MS_PER_MINUTE <= ts_ms
             ),
             key=lambda kv: kv[1].exit_open_time,
         )
@@ -1024,7 +1188,11 @@ class PortfolioBook:
             hit_stop_type=trade.exit_type_code in (0, 1, 2),
         )
         register_pause_if_needed(self.risk, ts_ms=trade.exit_open_time, limits=self.limits)
-        if trade.exit_type_code in (0, 1, 2):
+        if self.cooldown_on == "any_stop":
+            cooled = trade.exit_type_code in (0, 1, 2)
+        else:
+            cooled = trade.exited_with_loss
+        if cooled:
             self.cooldown_until[symbol] = trade.exit_open_time + self.cooldown_bars * 60_000
         self.positions.pop(symbol, None)
 
@@ -1039,7 +1207,9 @@ class PortfolioBook:
         while cursor < n and int(timeline[cursor]) <= until_ms:
             ts = int(timeline[cursor])
             self.release_due(ts)
-            action = risk_step(self.risk, ts_ms=ts, equity=self.equity_at(ts), limits=self.limits)
+            action = risk_step(
+                self.risk, ts_ms=ts, equity=self.equity_before(ts), limits=self.limits
+            )
             if action == "flatten":
                 self.flatten_all(ts)
             cursor += 1
@@ -1088,6 +1258,15 @@ class PortfolioBook:
             self.realize(symbol, trade)
 
 
+def _rank_score(tr: PrecomputedTrade, cfg: BacktestConfig) -> float:
+    """开仓排序分数（05 §7.2）：p / m / ev（= p × m，概率加权的期望净 R）。"""
+    if cfg.signal_rank_by == "m":
+        return tr.m
+    if cfg.signal_rank_by == "ev":
+        return tr.p * tr.m
+    return tr.p
+
+
 def simulate_portfolio(
     trades: list[PrecomputedTrade],
     precompute_skipped: list[SkippedSignal],
@@ -1097,6 +1276,7 @@ def simulate_portfolio(
     fees: FeeSchedule,
     initial_equity: float | None = None,
     bars_by_symbol: Mapping[str, PreparedSymbol] | Mapping[str, pd.DataFrame] | None = None,
+    entry_maker: bool = False,
 ) -> PortfolioResult:
     """组合模拟（06 §3.4 第 2 步）：按时间推进，应用仓位与组合约束。
 
@@ -1121,12 +1301,16 @@ def simulate_portfolio(
         limits=limits,
         cooldown_bars=backtest_cfg.risk.cooldown_bars,
         fees=fees,
+        cooldown_on=backtest_cfg.risk.cooldown_on,
     )
     timeline = _risk_timeline(trades, close_arrays)
     cursor = 0
     positions = book.positions
 
-    ordered = sorted(trades, key=lambda tr: (tr.entry_open_time, -tr.p, -tr.m))
+    ordered = sorted(
+        trades,
+        key=lambda tr: (tr.entry_open_time, -_rank_score(tr, backtest_cfg), -tr.p, -tr.m),
+    )
 
     for tr in ordered:
         # 推进分钟时钟：结算到期离场并检查 R5~R8（06 §3.4 第 2 步）
@@ -1180,15 +1364,22 @@ def simulate_portfolio(
         if not sz.accepted:
             result.skipped.append(SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, sz.status))
             continue
-        funding_fee = sz.notional * tr.funding_rate_sum
-        net_pnl = sz.notional * net_return_after_fees(
+        # 实际名义价值与保证金按取整后的数量计（06 §5.3）：毛利、手续费、资金费、
+        # 保证金占用与盯市都用同一个 qty × P_fill，避免与取整前 notional 混用。
+        notional = sz.qty * tr.p_fill
+        margin = notional / float(sizing_cfg.leverage)
+        funding_fee = notional * tr.funding_rate_sum
+        entry_fee_rate = (
+            fees.maker if entry_maker or backtest_cfg.entry_mode == "limit_pullback" else fees.taker
+        )
+        net_pnl = notional * net_return_after_fees(
             gross_return=tr.gross_return,
-            entry_fee_rate=fees.taker,
+            entry_fee_rate=entry_fee_rate,
             exit_fee_rate=tr.exit_fee_rate,
             funding_rate=tr.funding_rate_sum,
         )
-        entry_fee = sz.notional * fees.taker
-        exit_fee = sz.notional * (1.0 + tr.gross_return) * tr.exit_fee_rate
+        entry_fee = notional * entry_fee_rate
+        exit_fee = notional * (1.0 + tr.gross_return) * tr.exit_fee_rate
         trade = ExecutedTrade(
             symbol=tr.symbol,
             group=tr.group,
@@ -1202,9 +1393,9 @@ def simulate_portfolio(
             exit_price=tr.exit_price,
             exit_type=tr.exit_type,
             exit_type_code=tr.exit_type_code,
-            notional=sz.notional,
+            notional=notional,
             qty=sz.qty,
-            margin=sz.margin,
+            margin=margin,
             bars_held=tr.bars_held,
             stop_updates=tr.stop_updates,
             mfe_r=tr.mfe_r,
@@ -1212,7 +1403,7 @@ def simulate_portfolio(
             entry_fee=entry_fee,
             exit_fee=exit_fee,
             funding_fee=funding_fee,
-            gross_pnl=sz.notional * tr.gross_return,
+            gross_pnl=notional * tr.gross_return,
             net_pnl=net_pnl,
             rebate=(entry_fee + exit_fee) * fees.rebate_rate,
             capped_by=sz.capped_by,
@@ -1359,6 +1550,9 @@ def _precompute_key(
     H_label: int,
     trade_masks: dict[str, np.ndarray] | None,
     new_entry_symbols: set[str] | None,
+    entry_mode: str = "taker",
+    entry_limit_offset_bp: float = 30.0,
+    entry_limit_expiry_bars: int = 5,
 ) -> tuple[object, ...]:
     """逐笔预计算缓存键（06 §3.4）：逐笔结果只由这些输入决定。"""
     mask_token: tuple[object, ...] = (
@@ -1387,6 +1581,10 @@ def _precompute_key(
         scen.tp_taker,
         scen.all_taker,
         scen.half_spread_by_symbol,
+        # 入场方式与回踩参数同样决定逐笔结果，必须进缓存键（06 §3.2、§3.4）
+        entry_mode,
+        entry_limit_offset_bp,
+        entry_limit_expiry_bars,
         exit_cfg.model_dump_json(),
         k_sl,
         sl_min,
@@ -1438,6 +1636,9 @@ def _cached_precompute(
             H_label=H_label,
             trade_masks=trade_masks,
             new_entry_symbols=new_entry_symbols,
+            entry_mode=backtest_cfg.entry_mode,
+            entry_limit_offset_bp=backtest_cfg.entry_limit_offset_bp,
+            entry_limit_expiry_bars=backtest_cfg.entry_limit_expiry_bars,
         ),
     )
     cached = _PRECOMPUTE_CACHE.get(key)
@@ -1547,5 +1748,6 @@ def run_backtest(
         fees=fees,
         initial_equity=initial_equity,
         bars_by_symbol=prepared,
+        entry_maker=scen.entry_maker or backtest_cfg.entry_mode == "maker",
     )
     return result, all_trades

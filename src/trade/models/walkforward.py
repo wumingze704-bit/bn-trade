@@ -65,7 +65,7 @@ def _tabular_arrays(dataset: WindowDataset) -> tuple[np.ndarray, np.ndarray, np.
     x_out: np.ndarray | None = None
     for sym_id, indexes in by_symbol.items():
         rows = np.asarray([samples[i].row_idx for i in indexes], dtype="int64")
-        x_symbol = np.asarray(dataset.xs[sym_id].numpy(), dtype="float16")
+        x_symbol = dataset.symbol_features(sym_id)
         block = tabular_features_matrix(x_symbol, rows)
         if x_out is None:
             x_out = np.empty((len(samples), block.shape[1]), dtype="float32")
@@ -83,13 +83,18 @@ def _predict_signals_lgbm(
     *,
     temperature: float,
     months: Sequence[str],
+    platt_b: float = 0.0,
 ) -> pd.DataFrame:
-    """M0（LightGBM）批量推理，返回与 `predict_signals` 同结构的 signals 表（05 §2）。"""
+    """M0（LightGBM）批量推理，返回与 `predict_signals` 同结构的 signals 表（05 §2）。
+
+    校准按 Platt 形式 `σ(a·z + b)`（`temperature` = a，`platt_b` = b），与训练侧的
+    `pos_weight` 造成的 logit 平移一致（05 §7.1）。
+    """
     x, _, _ = _tabular_arrays(dataset)
     p = np.asarray(predict_proba(booster, x), dtype="float64")  # type: ignore[arg-type]
     p = np.clip(p, 1e-12, 1.0 - 1e-12)
     logit = np.log(p / (1.0 - p))
-    p_cal = 1.0 / (1.0 + np.exp(-logit / temperature))
+    p_cal = 1.0 / (1.0 + np.exp(-(logit * temperature + platt_b)))
     wanted = set(months)
     selected = [
         index
@@ -140,6 +145,7 @@ def _run_fold_lgbm(
         window_L=cfg.window_L,
         months=fold.train_months,
         data_placement=cfg.data_placement,
+        feature_mode="lazy",
     )
     val_ds = WindowDataset(
         features_dir,
@@ -149,6 +155,7 @@ def _run_fold_lgbm(
         window_L=cfg.window_L,
         months=[fold.val_month],
         data_placement=cfg.data_placement,
+        feature_mode="lazy",
     )
     require_purge_floor(
         walk_cfg.purge_bars,
@@ -186,13 +193,19 @@ def _run_fold_lgbm(
     val_pr_auc = float(average_precision(y_val, val_p))
     val_logit = np.log(np.clip(val_p, 1e-12, 1.0 - 1e-12) / np.clip(1.0 - val_p, 1e-12, 1.0))
     calibration = calibration_metrics(val_logit, y_val)
-    temperature = float(calibration["temperature"])
+    temperature = float(calibration["platt_a"])
+    platt_b = float(calibration["platt_b"])
     del x_train, x_val
     val_signals = _predict_signals_lgbm(
-        val_ds, booster, temperature=temperature, months=[fold.val_month]
+        val_ds, booster, temperature=temperature, months=[fold.val_month], platt_b=platt_b
     )
     n_days = (month_end_ms(fold.val_month) - month_start_ms(fold.val_month)) / 86_400_000
-    choice = select_threshold(threshold_evaluator(val_signals, n_days), n_days=n_days)
+    choice = select_threshold(
+        threshold_evaluator(val_signals, n_days),
+        n_days=n_days,
+        min_trades_per_day=walk_cfg.min_trades_per_day,
+        min_profit_factor=walk_cfg.min_validation_pf,
+    )
     test_ds = WindowDataset(
         features_dir,
         labels_dir,
@@ -201,9 +214,10 @@ def _run_fold_lgbm(
         window_L=cfg.window_L,
         months=fold.test_months,
         data_placement=cfg.data_placement,
+        feature_mode="lazy",
     )
     test_signals = _predict_signals_lgbm(
-        test_ds, booster, temperature=temperature, months=fold.test_months
+        test_ds, booster, temperature=temperature, months=fold.test_months, platt_b=platt_b
     )
     test_signals["fold_id"] = fold.fold_id
     test_signals["theta"] = float(choice.theta)
@@ -225,6 +239,7 @@ def _run_fold_lgbm(
         val_range=(fold.val_month, fold.val_month),
         ensemble_seeds=[cfg.seeds[0]],
         temperature=temperature,
+        platt_b=platt_b,
         threshold=choice.theta,
         dataset_manifest_sha256=sha256_file(manifest_path),
         threshold_selection={
@@ -396,8 +411,12 @@ def predict_signals(
     temperature: float,
     months: Sequence[str],
     batch_size: int = 2048,
+    platt_b: float = 0.0,
 ) -> pd.DataFrame:
-    """对数据集中指定月份的全部样本批量推理，返回 signals.parquet 结构。"""
+    """对数据集中指定月份的全部样本批量推理，返回 signals.parquet 结构。
+
+    概率按 Platt 校准 `p = σ(a·z + b)`（`temperature` = a，`platt_b` = b，05 §7.1）。
+    """
     import torch  # 局部导入，保持模块导入轻量
 
     from trade.models.train import build_model, predict_dataset
@@ -421,7 +440,7 @@ def predict_signals(
         logits.append(logit)
         regs.append(m)
     mean_logit = np.mean(np.stack(logits, axis=0), axis=0)
-    p = 1.0 / (1.0 + np.exp(-mean_logit / temperature))
+    p = 1.0 / (1.0 + np.exp(-(mean_logit * temperature + platt_b)))
     m = np.mean(np.stack(regs, axis=0), axis=0)
     wanted = set(months)
     selected = [
@@ -651,7 +670,8 @@ def run_fold(
     # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1），与推理口径一致。
     ensemble_logit = np.mean(np.stack([np.asarray(item) for item in result.val_logits]), axis=0)
     calibration = calibration_metrics(ensemble_logit, np.asarray(result.val_y))
-    temperature = float(calibration["temperature"])
+    temperature = float(calibration["platt_a"])
+    platt_b = float(calibration["platt_b"])
 
     val_signals = predict_signals(
         val_ds,
@@ -660,9 +680,15 @@ def run_fold(
         arch_params=result.arch_params,
         temperature=temperature,
         months=[fold.val_month],
+        platt_b=platt_b,
     )
     n_days = (month_end_ms(fold.val_month) - month_start_ms(fold.val_month)) / 86_400_000
-    choice = select_threshold(threshold_evaluator(val_signals, n_days), n_days=n_days)
+    choice = select_threshold(
+        threshold_evaluator(val_signals, n_days),
+        n_days=n_days,
+        min_trades_per_day=walk_cfg.min_trades_per_day,
+        min_profit_factor=walk_cfg.min_validation_pf,
+    )
 
     test_ds = WindowDataset(
         features_dir,
@@ -680,6 +706,7 @@ def run_fold(
         arch_params=result.arch_params,
         temperature=temperature,
         months=fold.test_months,
+        platt_b=platt_b,
     )
     # signals.parquet 契约：每行带本折 fold_id 与本折选定阈值 θ（06 §8）
     test_signals["fold_id"] = fold.fold_id
@@ -703,6 +730,7 @@ def run_fold(
         val_range=(fold.val_month, fold.val_month),
         ensemble_seeds=cfg.seeds,
         temperature=temperature,
+        platt_b=platt_b,
         threshold=choice.theta,
         dataset_manifest_sha256=sha256_file(manifest_path),
         threshold_selection={
@@ -831,7 +859,8 @@ def run_final(
     # 温度缩放在 5 种子集成后的平均 logit 上拟合（05 §6 第 4 条、§7.1），与推理口径一致。
     ensemble_logit = np.mean(np.stack([np.asarray(item) for item in result.val_logits]), axis=0)
     calibration = calibration_metrics(ensemble_logit, np.asarray(result.val_y))
-    temperature = float(calibration["temperature"])
+    temperature = float(calibration["platt_a"])
+    platt_b = float(calibration["platt_b"])
     val_signals = predict_signals(
         val_ds,
         state_dicts=result.state_dicts,
@@ -839,9 +868,15 @@ def run_final(
         arch_params=result.arch_params,
         temperature=temperature,
         months=[val_month],
+        platt_b=platt_b,
     )
     n_days = (month_end_ms(val_month) - month_start_ms(val_month)) / 86_400_000
-    choice = select_threshold(threshold_evaluator(val_signals, n_days), n_days=n_days)
+    choice = select_threshold(
+        threshold_evaluator(val_signals, n_days),
+        n_days=n_days,
+        min_trades_per_day=walk_cfg.min_trades_per_day,
+        min_profit_factor=walk_cfg.min_validation_pf,
+    )
     write_model_meta(
         model_dir,
         model_id=model_id,
@@ -857,6 +892,7 @@ def run_final(
         val_range=(val_month, val_month),
         ensemble_seeds=cfg.seeds,
         temperature=temperature,
+        platt_b=platt_b,
         threshold=choice.theta,
         dataset_manifest_sha256=sha256_file(manifest_path),
         threshold_selection={

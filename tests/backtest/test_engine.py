@@ -104,8 +104,9 @@ def _trade(symbol="A", entry=0, exit=10, p=1.0, m=0.0, exit_code=3, **kw) -> Pre
 
 
 def test_冷却期内不开仓():
+    # 止损出场且净亏损才触发冷却（06 §3.1 cooldown_on=loss_stop）
     trades = [
-        _trade(symbol="A", entry=_T0, exit=_T0 + 5 * _MIN, exit_code=0),
+        _trade(symbol="A", entry=_T0, exit=_T0 + 5 * _MIN, exit_code=0, gross_return=-0.02),
         _trade(symbol="A", entry=_T0 + 10 * _MIN, exit=_T0 + 20 * _MIN, exit_code=3),
     ]
     result = simulate_portfolio(
@@ -336,15 +337,14 @@ def test_单笔交易盯市曲线手算样例():
     )
     curve = _mark_to_market_curve([trade], _close_arrays({"A": bars}), 10000.0)
 
-    expected_ts = [0, int(open_time[1]), int(open_time[2]), int(open_time[3]), int(open_time[4])]
+    expected_ts = [int(open_time[1]), int(open_time[2]), int(open_time[3]), int(open_time[4])]
     at_101 = 10000.0 + 1000.0 * (101.0 / 100.5 - 1.0)
     at_102 = 10000.0 + 1000.0 * (102.0 / 100.5 - 1.0)
     at_99 = 10000.0 + 1000.0 * (99.0 / 100.5 - 1.0)
     at_exit = 10000.0 + 12.5
-    expected_equity = [10000.0, at_101, at_102, at_99, at_exit]
-    peak = at_102  # 前 3 个采样点的权益高点
+    expected_equity = [at_101, at_102, at_99, at_exit]
+    peak = at_102  # 采样点的权益高点
     expected_drawdown = [
-        0.0,
         0.0,
         0.0,
         (peak - at_99) / peak,

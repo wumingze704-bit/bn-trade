@@ -76,7 +76,9 @@ def test_当日亏损达熔断阈值时全平持仓():
     assert [event.rule for event in result.risk_events] == ["R6"]
     b_trade = next(item for item in result.trades if item.symbol == "B")
     assert b_trade.exit_type == "risk_halt"
-    assert b_trade.exit_open_time == _T0 + 3 * _MIN  # 触发后下一分钟平仓
+    # 新口径：离场在 exit+1 分钟结算，R6 用结算分钟的上一分钟收盘价判定，
+    # 强平顺延到下一分钟 → T0+4（06 §3.4）
+    assert b_trade.exit_open_time == _T0 + 4 * _MIN
     assert result.max_drawdown_halt is False
 
 

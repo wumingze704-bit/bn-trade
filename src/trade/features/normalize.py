@@ -22,14 +22,18 @@ _SQUARE_POWER = 2.0
 
 @dataclass(frozen=True)
 class EwmState:
-    """EWM 递推状态（μ 与 σ²）。
+    """EWM 递推状态（μ、σ² 与累计权重和 W）。
 
-    NOTE(设计决策)：初始状态取 μ=0、σ²=1，为中性初始值。预热期内统计量收敛，
-    不产出样本（04 §5），初始值对产出样本的影响可忽略（30 天预热 ≈ 10 个半衰期）。
+    累计权重和 `weight = Σ α(1−α)^i = 1 − (1−α)^n`（n 为已更新次数）用于偏差修正：
+    递推得到的 μ、σ² 是 `W × 真值` 的未归一化估计，段首 W 很小，直接标准化会把
+    小量纲特征的 z 值压到 0 附近（04 §5）。标准化时用 `μ/W`、`σ²/W`。
     """
 
     mean: float
     var: float
+    weight: float = 0.0
+    # (1−α)^n：初始先验（μ=0、σ²=1）在累计统计里所占权重，标准化时扣除
+    decay: float = 1.0
 
 
 def alpha_from_halflife(halflife_bars: int) -> float:
@@ -40,15 +44,32 @@ def alpha_from_halflife(halflife_bars: int) -> float:
 def ewm_step(
     state: EwmState, x: float, alpha: float, clip: float, min_var: float
 ) -> tuple[float, EwmState]:
-    """单步 EWM：用 t-1 时刻统计量标准化 x_t，再更新统计量。
+    """单步 EWM：用 t-1 时刻的偏差修正统计量标准化 x_t，再更新统计量。
 
     规格：docs/04-特征与标签.md §5
     """
-    z = (x - state.mean) / (math.sqrt(state.var) + min_var)
-    z = min(max(z, -clip), clip)
+    z = _standardize(x, state, min_var, clip)
     new_mean = (1.0 - alpha) * state.mean + alpha * x
     new_var = (1.0 - alpha) * state.var + alpha * (x - state.mean) ** 2
-    return z, EwmState(new_mean, new_var)
+    # W' = α + (1−α)·W，与 1 − (1−α)^n 逐位等价但不引入幂运算
+    new_weight = alpha + (1.0 - alpha) * state.weight
+    return z, EwmState(new_mean, new_var, new_weight, (1.0 - alpha) * state.decay)
+
+
+def _standardize(x: float, state: EwmState, min_var: float, clip: float) -> float:
+    """用偏差修正后的均值与方差标准化并列裁剪（04 §5）。
+
+    递推得到的 μ、σ² 含初始先验（μ=0、σ²=1）的贡献：其权重为 `decay = (1−α)^n`，
+    扣除后再除以累计权重 `W = 1 − (1−α)^n`。累计权重为 0（还没有任何历史）时输出 0。
+    """
+    if state.weight <= 0.0:
+        return 0.0
+    mean = state.mean / state.weight
+    var = (state.var - state.decay) / state.weight
+    if var < 0.0:
+        var = 0.0
+    z = (x - mean) / (math.sqrt(var) + min_var)
+    return min(max(z, -clip), clip)
 
 
 @njit
@@ -57,22 +78,33 @@ def _ewm_standardize_kernel(
 ) -> np.ndarray:
     """EWM 标准化的 numba 批量内核（04 §5）。
 
-    算术顺序与 `ewm_step` 逐点相同：先用旧统计量标准化并裁剪，再更新 mean 与 var；
-    不开 fastmath。`square_power` 由调用方传入 2.0，使 libm pow 不被折叠成乘法。
+    算术顺序与 `ewm_step` 逐点相同：先用旧统计量标准化并裁剪，再更新 mean、var 与
+    累计权重；不开 fastmath。`square_power` 由调用方传入 2.0，使 libm pow 不被折叠成乘法。
     """
     out = np.empty(x.shape[0], dtype=np.float64)
     mean = 0.0
     var = 1.0
+    weight = 0.0
+    decay = 1.0
     for i in range(x.shape[0]):
-        z = (x[i] - mean) / (np.sqrt(var) + min_var)
-        if z > clip:
-            z = clip
-        elif z < -clip:
-            z = -clip
+        if weight > 0.0:
+            center = mean / weight
+            variance = (var - decay) / weight
+            if variance < 0.0:
+                variance = 0.0
+            z = (x[i] - center) / (np.sqrt(variance) + min_var)
+            if z > clip:
+                z = clip
+            elif z < -clip:
+                z = -clip
+        else:
+            z = 0.0
         out[i] = z
         new_mean = (1.0 - alpha) * mean + alpha * x[i]
         var = (1.0 - alpha) * var + alpha * math.pow(x[i] - mean, square_power)
         mean = new_mean
+        weight = alpha + (1.0 - alpha) * weight
+        decay = (1.0 - alpha) * decay
     return out
 
 

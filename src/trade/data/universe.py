@@ -305,7 +305,13 @@ def build_universe(
         if before.empty:
             continue
         excluded_counts["candidates"] += 1
-        meta = rules.get(symbol, SymbolMeta(symbol=symbol))
+        meta = rules.get(symbol)
+        if meta is None:
+            # 缺交易规则时不得用默认值继续（红线 13）：tick/step 缺失会让可交易性
+            # 判定与止损取整失去意义（03 §4.3）。
+            raise ValueError(
+                f"选币缺少 {symbol} 的交易规则快照（先跑 scripts/snapshot_rules.py；03 §4.3）"
+            )
         if _is_excluded(meta, cfg):
             excluded_counts["excluded"] += 1
             continue

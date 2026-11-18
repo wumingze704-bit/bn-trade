@@ -22,7 +22,7 @@ from trade.backtest.metrics import compute_metrics
 from trade.common.config import BaseConfig, load_config
 from trade.data.loader import rebalance_ms_of, universe_months
 from trade.features import FeaturesConfig, enabled_features, feature_hash
-from trade.models.calibration import select_threshold
+from trade.models.calibration import select_threshold, threshold_grid
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,6 +130,35 @@ def test_嵌套确认只读取调参期月份(tmp_path: Path, monkeypatch) -> No
     assert all(end_ms <= tuning_end for _, end_ms in calls)
 
 
+def _sizing_config():
+    """调参评估用的仓位配置（与 configs/sizing.yaml 同结构，06 §5.4）。"""
+    from trade.common.sizing import SizingConfig
+
+    return SizingConfig(
+        initial_equity=100.0,
+        mode="fixed_fraction",
+        position_frac=0.2,
+        leverage=5,
+        max_positions=3,
+        base="equity",
+        risk_per_trade=0.005,
+        max_risk_per_trade=0.025,
+        daily_loss_stop=0.05,
+        daily_loss_halt=0.08,
+        max_drawdown_halt=0.2,
+        max_consecutive_losses=6,
+        liq_cap=0.005,
+        maint_margin_rate=0.01,
+    )
+
+
+def _backtest_config():
+    """调参评估用的回测配置（reference 运行 100 USDT，06 §5.1）。"""
+    from trade.backtest.engine import BacktestConfig
+
+    return BacktestConfig(threshold=0.5)
+
+
 def _executed(p: float, net_pnl: float) -> ExecutedTrade:
     """构造一笔已成交流水（只用于阈值扫描的指标口径测试）。"""
     return ExecutedTrade(
@@ -167,7 +196,7 @@ def test_scan_theta与select_threshold结果一致(monkeypatch) -> None:
     net_by_p = {0.30 + 0.02 * i: (1.0 if i % 2 == 0 else -0.5) for i in range(26)}
     executed = [_executed(p, net) for p, net in net_by_p.items()]
 
-    def fake_simulate(data, trades, skipped, equity):  # noqa: ANN001, ANN202
+    def fake_simulate(data, trades, skipped, equity, sizing=None):  # noqa: ANN001, ANN202
         result = PortfolioResult()
         result.trades = [_executed(trade.p, net_by_p[trade.p]) for trade in trades]
         return result
@@ -198,11 +227,16 @@ def test_scan_theta与select_threshold结果一致(monkeypatch) -> None:
         )
         for p in net_by_p
     ]
-    data = argparse.Namespace(val_start_ms=0, val_end_ms=86_400_000)
+    data = argparse.Namespace(
+        val_start_ms=0,
+        val_end_ms=86_400_000,
+        sizing_cfg=_sizing_config(),
+        backtest_cfg=_backtest_config(),
+    )
     got = _scan_theta(data, trades, [], 100.0)  # type: ignore[arg-type]
 
     manual: dict[float, dict[str, float]] = {}
-    for theta in net_by_p:
+    for theta in threshold_grid():
         result = PortfolioResult()
         result.trades = [trade for trade in executed if trade.p >= theta]
         metrics = compute_metrics(result, 100.0)

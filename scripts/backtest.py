@@ -34,7 +34,7 @@ from trade.backtest.metrics import (
     daily_returns,
     kurtosis,
     monthly_return_stats,
-    sharpe,
+    sharpe_daily,
     skew,
 )
 from trade.backtest.r0 import TrainConfig
@@ -134,6 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="数据集 manifest.json：报告首页注明段尾丢弃样本数（04 §8、06 §9）",
     )
     parser.add_argument(
+        "--features-dir",
+        type=Path,
+        default=None,
+        help=(
+            "特征目录 data/features/{run_id}：S1 随机入场基准取 is_sample=1 的预过滤样本"
+            "（06 §7 S1）"
+        ),
+    )
+    parser.add_argument(
         "--limit-coins",
         type=int,
         default=None,
@@ -187,14 +196,15 @@ def _run_scenario(
 
 
 def _monthly_fold_net(
-    result, fold_of_month: dict[str, int] | None = None
+    result, fold_of_month: dict[str, int] | None = None, *, test_months: list[str] | None = None
 ) -> tuple[list[float], list[float]]:
     """按测试月与 5 折汇总净收益（06 §7 S5、03 §6）。
 
     Args:
         result: 组合模拟结果。
-        fold_of_month: 测试月 → 折号（来自 `walk_forward_summary.json`）；None 时按相邻
-            两月成折（F1 = M13~M14 … F5 = M21~M22）。
+        fold_of_month: 测试月 → 折号（来自 `walk_forward_summary.json`）；None 时按日历
+            月映射到折（第 1、2 个测试月为 F1 …），不按「有交易的月份序号」分组。
+        test_months: 测试段全部月份（`YYYY-MM`，升序）；用于没有交易月份的折映射。
     """
     monthly: dict[str, float] = {}
     for t in result.trades:
@@ -208,6 +218,10 @@ def _monthly_fold_net(
             fold = fold_of_month.get(m)
             if fold is None:
                 raise ValueError(f"测试月 {m} 不在 walk_forward_summary 的任一分折内（06 §8）")
+        elif test_months is not None:
+            if m not in test_months:
+                raise ValueError(f"交易月份 {m} 不在测试段月份列表内（06 §7 S5）")
+            fold = test_months.index(m) // 2 + 1
         else:
             fold = i // 2 + 1
         folds[fold] = folds.get(fold, 0.0) + monthly[m]
@@ -297,6 +311,69 @@ def _segment_tail_note(manifest_path: Path | None) -> str:
     )
 
 
+def _prefilter_sample_frame(
+    features_dir: Path,
+    prepared: Mapping[str, PreparedSymbol],
+    trade_masks: Mapping[str, np.ndarray],
+) -> pd.DataFrame:
+    """读取 `is_sample = 1` 的预过滤样本并应用交易范围掩码（06 §7 S1）。
+
+    S1 的随机入场基准必须从**预过滤样本**里抽样，而不是从策略自己的信号里抽样：
+    后者会继承模型的选币结果，随机基准失去意义。样本按 `open_time` 对齐到 bars
+    行位置后套用 `U(R)` 掩码，保证随机入场也只发生在可交易分钟。
+
+    Args:
+        features_dir: 数据集特征目录 `data/features/{run_id}`。
+        prepared: 币种 → 已准备的 numpy 数组（提供 open_time）。
+        trade_masks: 币种 → 与 bars 等长的 bool 交易范围掩码。
+
+    Returns:
+        含 `symbol`、`open_time` 两列的 DataFrame。
+
+    Raises:
+        FileNotFoundError: 任一币缺少特征文件（红线 13）。
+    """
+    frames: list[pd.DataFrame] = []
+    for alias, item in prepared.items():
+        path = features_dir / f"{alias}.parquet"
+        if not path.is_file():
+            raise FileNotFoundError(f"S1 需要特征文件但缺失：{path}（06 §7 S1）")
+        frame = pd.read_parquet(path, columns=["open_time", "is_sample"])
+        ts = frame["open_time"].to_numpy(dtype="int64")
+        keep = frame["is_sample"].to_numpy(dtype="int64") == 1
+        mask = trade_masks.get(alias)
+        if mask is not None:
+            bars_ts = item.open_time
+            pos = np.searchsorted(bars_ts, ts)
+            inside = pos < bars_ts.shape[0]
+            inside[inside] = bars_ts[pos[inside]] == ts[inside]
+            keep &= inside
+            keep[inside] &= mask[pos[inside]]
+        if keep.any():
+            frames.append(pd.DataFrame({"symbol": alias, "open_time": ts[keep]}))
+    if not frames:
+        return pd.DataFrame({"symbol": pd.Series(dtype="object"), "open_time": []})
+    return pd.concat(frames, ignore_index=True)
+
+
+def _distinct_trial_sharpes(rows: list[dict[str, object]]) -> list[float]:
+    """从 EXPERIMENTS.log 取每个 run_id 的日频夏普（06 §7 S11）。
+
+    同一 run_id 可能被多次追加（重跑、回填），试验数 N 只应计一次；`kind` 为
+    tuning/test 的行才是用于 S11 的独立试验，smoke/final 不计入。
+    """
+    seen: dict[str, float] = {}
+    for row in rows:
+        kind = str(row.get("kind") or "tuning")
+        if kind not in {"tuning", "test"}:
+            continue
+        sharpe_value = row.get("sharpe")
+        if sharpe_value is None:
+            continue
+        seen.setdefault(str(row.get("run_id")), float(sharpe_value))  # type: ignore[arg-type]
+    return list(seen.values())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     base = load_config(BaseConfig, args.base)
@@ -346,6 +423,31 @@ def main(argv: list[str] | None = None) -> int:
             signals = signals.assign(theta=fill_theta)
         if "fold_id" not in signals.columns:
             signals = signals.assign(fold_id="R0" if args.model is None else str(model_id))
+        # 非五折模式必须把信号裁剪到测试段 M13~M22：否则权益曲线从 M1 起算，调参期
+        # 的交易会混进测试段结果（06 §8、红线 3）。data_window 未划分测试段
+        # （tuning_months 覆盖全部月份，仅见于冒烟 fixture）时整窗即测试段，不裁剪。
+        if test_months:
+            window_start = int(pd.Timestamp(f"{test_months[0]}-01", tz="UTC").timestamp() * 1000)
+            window_end = int(
+                (
+                    pd.Timestamp(f"{test_months[-1]}-01", tz="UTC") + pd.DateOffset(months=1)
+                ).timestamp()
+                * 1000
+            )
+            before = len(signals)
+            signals = signals[
+                (signals["open_time"] >= window_start) & (signals["open_time"] < window_end)
+            ].reset_index(drop=True)
+            if signals.empty:
+                raise ValueError(
+                    f"信号文件 {args.signals} 在测试段 {test_months[0]}~{test_months[-1]} 内没有行"
+                    "（06 §8）"
+                )
+            print(
+                f"信号裁剪到测试段 {test_months[0]}~{test_months[-1]}：{before} → {len(signals)} 行"
+            )
+        else:
+            print("data_window 未划分测试段（tuning_months 覆盖全部月份），信号不裁剪")
 
     rules = load_trade_rules(args.rules, base.paths.data_root / "universe" / "aliases.json")
     groups = {coin.alias: coin.role for coin in coins}
@@ -372,9 +474,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # 每币 numpy 数组只准备一次（06 §3.4），预计算与盯市复用同一份数组。
-    prepared = prepare_symbols(bars_by_symbol)
+    prepared = prepare_symbols(bars_by_symbol, atr_timeframe_min=features.label.atr_timeframe_min)
 
-    ne_symbols = new_entry_symbols(membership, base.data_window.tuning_months)
+    ne_symbols = new_entry_symbols(membership, months[: base.data_window.tuning_months])
     new_entry_aliases = {coin.alias for coin in coins if coin.symbol in ne_symbols}
 
     fees = FeeSchedule(base.fees.maker, base.fees.taker, base.fees.rebate_rate)
@@ -463,11 +565,15 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     reference_result = run_results["reference"]["base"]
-    reference_metrics = compute_metrics(reference_result, backtest_cfg.reference.initial_equity)
+    reference_metrics = compute_metrics(
+        reference_result, backtest_cfg.reference.initial_equity, months=test_months
+    )
 
     # G2-U（08 §3）：user 运行（实际仓位）的月度收益与回撤口径，只判定与展示，不替代 G2。
     user_base = run_results["user"]["base"]
-    user_stats = monthly_return_stats(user_base.equity_curve, sizing_cfg.initial_equity)
+    user_stats = monthly_return_stats(
+        user_base.equity_curve, sizing_cfg.initial_equity, months=test_months
+    )
     user_dd = (
         float(user_base.equity_curve["drawdown"].max()) if not user_base.equity_curve.empty else 0.0
     )
@@ -511,20 +617,27 @@ def main(argv: list[str] | None = None) -> int:
         trade_masks=trade_masks,
     )
 
-    # S1 随机入场基准（06 §7 S1，固定种子可复现）。
-    candidates = compute_random_entry_candidates(
-        prepared,
-        signals,
-        rules,
-        fees,
-        backtest_cfg,
-        exit_cfg,
-        reference_sizing,
-        features.label.k_sl,
-        features.label.sl_min,
-        features.label.sl_max,
-        features.label.H_label,
-    )
+    # S1 随机入场基准（06 §7 S1，固定种子可复现）：候选来自 is_sample=1 的预过滤样本，
+    # 并套用交易范围掩码；不给 --features-dir 时 S1 记 not_run（不静默改用策略信号）。
+    if args.features_dir is None:
+        candidates: list[tuple[str, int, float]] = []
+        s1_status = "not_run（未提供 --features-dir，无法取预过滤样本）"
+    else:
+        candidates = compute_random_entry_candidates(
+            prepared,
+            _prefilter_sample_frame(args.features_dir, prepared, trade_masks),
+            rules,
+            fees,
+            backtest_cfg,
+            exit_cfg,
+            reference_sizing,
+            features.label.k_sl,
+            features.label.sl_min,
+            features.label.sl_max,
+            features.label.H_label,
+            trade_masks=trade_masks,
+        )
+        s1_status = ""
     s1 = random_entry_baseline(
         reference_result,
         candidates,
@@ -569,7 +682,9 @@ def main(argv: list[str] | None = None) -> int:
             for index, fold in enumerate(fold_summary, start=1)
             for month in fold["test_months"]  # type: ignore[union-attr]
         }
-    monthly_net, fold_net = _monthly_fold_net(reference_result, fold_of_month)
+    monthly_net, fold_net = _monthly_fold_net(
+        reference_result, fold_of_month, test_months=test_months or None
+    )
     s5 = s5_time_stability(
         monthly_net,
         fold_net,
@@ -659,12 +774,13 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
-    # S11 试验次数登记（06 §7 S11）：先写入本次运行的 Sharpe/skew/kurtosis/n_obs，
-    # 再读取 EXPERIMENTS.log 中测试段上全部配置的 Sharpe，计算 Deflated Sharpe 概率。
+    # S11 试验次数登记（06 §7 S11）：先写入本次运行的日频夏普/skew/kurtosis/n_obs，
+    # 再读取 EXPERIMENTS.log 中测试段上全部配置的夏普，计算 Deflated Sharpe 概率。
+    # 周期约定：全部使用非年化日频夏普（与 n_obs = 日数同周期），并按 run_id 去重。
     reference_returns = daily_returns(
         reference_result.equity_curve, backtest_cfg.reference.initial_equity
     )
-    reference_sharpe = sharpe(reference_returns)
+    reference_sharpe = sharpe_daily(reference_returns)
     reference_skew = skew(reference_returns)
     reference_kurtosis = kurtosis(reference_returns)
     reference_n_obs = len(reference_returns)
@@ -680,12 +796,9 @@ def main(argv: list[str] | None = None) -> int:
             "kurtosis": reference_kurtosis,
             "n_obs": float(reference_n_obs),
         },
+        kind="test" if args.walk_forward_summary is not None else "smoke",
     )
-    trial_sharpes = [
-        float(row["sharpe"])
-        for row in read_experiments_log(log_path)
-        if row.get("sharpe") is not None
-    ]
+    trial_sharpes = _distinct_trial_sharpes(read_experiments_log(log_path))
     s11 = s11_deflated_sharpe(
         trial_sharpes, reference_sharpe, reference_skew, reference_kurtosis, reference_n_obs
     )
@@ -696,7 +809,7 @@ def main(argv: list[str] | None = None) -> int:
         s11_status = f"{flag}（N={int(s11['n_trials'])}，DSR={s11['dsr']:.3f}）"
 
     sanity = run_sanity_checks(
-        s1="passed" if s1["passed"] else "failed",
+        s1=s1_status or ("passed" if s1["passed"] else "failed"),
         s2=s2_status,
         s3=s3_status,
         s4=s4,

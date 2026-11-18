@@ -37,6 +37,7 @@ def _base_bars(n: int = 20) -> pd.DataFrame:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": np.full(n, 100.0),
+            "p_1s_filled": np.zeros(n, dtype="int64"),
             "hi_post_1s": np.full(n, 100.5),
             "lo_post_1s": np.full(n, 99.5),
         }
@@ -139,6 +140,7 @@ def test_numba_matches_python_reference() -> None:
             "kline_missing": 0,
             "aggtrades_missing": 0,
             "p_1s": close,
+            "p_1s_filled": np.zeros(n, dtype="int64"),
             "hi_post_1s": close * (1 + np.abs(rng.normal(0, 0.001, n))),
             "lo_post_1s": close * (1 - np.abs(rng.normal(0, 0.001, n))),
         }

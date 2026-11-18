@@ -28,6 +28,18 @@ class Sample:
     t_exit: int = 0
 
 
+@dataclass(frozen=True)
+class _SymbolSource:
+    """lazy 模式下重读单币特征所需的参数（05 §2）。"""
+
+    features_dir: Path
+    symbol: str
+    months: list[str] | None
+    window_len: int
+    warmup_days: int
+    cache_dir: Path | None
+
+
 def month_start_ms(month: str) -> int:
     """`YYYY-MM` → 该 UTC 自然月 1 日 00:00 的毫秒时间戳（03 §6）。"""
     year, mon = month.split("-")
@@ -75,6 +87,7 @@ class WindowDataset:
         cache_dir: Path | None = None,
         data_placement: str = "gpu",
         warmup_days: int = 30,
+        feature_mode: str = "resident",
     ) -> None:
         """加载各币特征与标签，建立样本索引并做币种均衡。
 
@@ -91,9 +104,13 @@ class WindowDataset:
             cache_dir: `.npy` fp16 缓存目录；None 时直接读 parquet。
             data_placement: `gpu`（默认）或 `pinned_cpu`（05 §5.1 显存不足退路）。
             warmup_days: 入选月份之前保留的特征预热天数（05 §5.1，默认 30）。
+            feature_mode: `resident`（特征常驻张量）或 `lazy`（只建样本索引，
+                特征由 `symbol_features()` 按币读取；表格化 M0 训练用，05 §2）。
         """
         if data_placement not in {"gpu", "pinned_cpu"}:
             raise ValueError(f"data_placement 只能是 gpu / pinned_cpu，收到 {data_placement}")
+        if feature_mode not in {"resident", "lazy"}:
+            raise ValueError(f"feature_mode 只能是 resident / lazy，收到 {feature_mode}")
         if data_placement == "pinned_cpu":
             device = "cpu"
         elif device is None:
@@ -108,8 +125,10 @@ class WindowDataset:
         self.feature_names = list(feature_names)
         self.months = list(months) if months is not None else None
         self.cache_dir = cache_dir
+        self.feature_mode = feature_mode
 
         x_arrays: list[torch.Tensor] = []
+        lazy_sources: list[_SymbolSource] = []
         raw: list[Sample] = []
         per_sym: list[int] = []
 
@@ -124,7 +143,21 @@ class WindowDataset:
                 cache_dir=cache_dir,
             )
             filled = _load_filled_flags(features_dir, symbol, open_time)
-            x_arrays.append(_to_tensor(x, device=device, pinned=data_placement == "pinned_cpu"))
+            if feature_mode == "resident":
+                x_arrays.append(_to_tensor(x, device=device, pinned=data_placement == "pinned_cpu"))
+            else:
+                # lazy：只记下读取参数，特征不常驻内存（05 §2 表格化 M0）
+                lazy_sources.append(
+                    _SymbolSource(
+                        features_dir=features_dir,
+                        symbol=symbol,
+                        months=self.months,
+                        window_len=window_L,
+                        warmup_days=warmup_days,
+                        cache_dir=cache_dir,
+                    )
+                )
+                del x
 
             lab = pd.read_parquet(
                 labels_dir / f"{symbol}.parquet",
@@ -171,7 +204,31 @@ class WindowDataset:
             per_sym.append(count)
 
         self.xs = x_arrays
+        self.lazy_sources = lazy_sources
         self.samples = self._balance(raw, per_sym)
+
+    def symbol_features(self, sym_id: int) -> np.ndarray:
+        """返回单币特征矩阵 (N, F)，`lazy` 模式按需读取（05 §5.1、§2）。
+
+        Args:
+            sym_id: 币在 `symbols` 中的下标。
+
+        Returns:
+            fp16 特征数组，行顺序与建样本时一致（行索引可直接用于 `samples` 的 `row_idx`）。
+        """
+        if self.feature_mode == "lazy":
+            source = self.lazy_sources[sym_id]
+            _, x = _load_symbol_features(
+                source.features_dir,
+                source.symbol,
+                self.feature_names,
+                months=source.months,
+                window_len=source.window_len,
+                warmup_days=source.warmup_days,
+                cache_dir=source.cache_dir,
+            )
+            return x
+        return np.asarray(self.xs[sym_id].detach().cpu().numpy(), dtype=np.float16)
 
     @staticmethod
     def _balance(raw: list[Sample], per_sym: list[int]) -> list[Sample]:
@@ -205,6 +262,8 @@ class WindowDataset:
         index: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """返回 (窗口 x (L,F), y, r_mult, w)。"""
+        if self.feature_mode == "lazy":
+            raise RuntimeError("lazy 特征模式不支持窗口切片（05 §2：只用于表格化 M0）")
         s = self.samples[index]
         x = self.xs[s.sym_id][s.row_idx - self.window_L + 1 : s.row_idx + 1]
         return (
@@ -230,6 +289,8 @@ class WindowDataset:
         clone.feature_names = self.feature_names
         clone.months = self.months
         clone.cache_dir = self.cache_dir
+        clone.feature_mode = self.feature_mode
+        clone.lazy_sources = self.lazy_sources
         clone.xs = self.xs
         clone.samples = [sample for sample, keep in zip(self.samples, mask, strict=True) if keep]
         return clone
@@ -241,6 +302,8 @@ class WindowDataset:
 
         `pinned_cpu` 放置时返回锁页 CPU 张量，由训练循环一次拷贝到 GPU。
         """
+        if self.feature_mode == "lazy":
+            raise RuntimeError("lazy 特征模式不支持批量切窗口（05 §2：只用于表格化 M0）")
         windows: list[torch.Tensor] = []
         ys: list[float] = []
         r_mults: list[float] = []
@@ -330,10 +393,17 @@ def _load_symbol_features(
 
 
 def _load_filled_flags(features_dir: Path, symbol: str, open_time: np.ndarray) -> np.ndarray:
-    """读取 is_filled（按 open_time 对齐）；缺列时视为全部非补齐。"""
-    frame = pd.read_parquet(features_dir / f"{symbol}.parquet")
+    """读取补齐标记 `is_filled`（按 open_time 对齐）。
+
+    缺列直接报错：`is_filled` 缺失时 `max_fill_ratio` 过滤器会静默失效（红线 13、
+    05 §5.1），必须回到 `build_dataset` 重新构建数据集。
+    """
+    frame = pd.read_parquet(features_dir / f"{symbol}.parquet", columns=["open_time", "is_filled"])
     if "is_filled" not in frame.columns:
-        return np.zeros(len(open_time), dtype="int64")
+        raise ValueError(
+            f"特征文件缺少 is_filled 列：{features_dir / f'{symbol}.parquet'}"
+            "（max_fill_ratio 依赖该列，05 §5.1；请重建数据集）"
+        )
     lookup = dict(
         zip(
             frame["open_time"].to_numpy(dtype="int64"),
@@ -341,4 +411,10 @@ def _load_filled_flags(features_dir: Path, symbol: str, open_time: np.ndarray) -
             strict=True,
         )
     )
-    return np.asarray([int(lookup.get(int(t), 0)) for t in open_time], dtype="int64")
+    missing = [int(t) for t in open_time if int(t) not in lookup]
+    if missing:
+        raise ValueError(
+            f"特征文件缺少 {len(missing)} 个 open_time 的 is_filled（{symbol}，"
+            f"首个 {missing[0]}）：{features_dir / f'{symbol}.parquet'}（05 §5.1）"
+        )
+    return np.asarray([int(lookup[int(t)]) for t in open_time], dtype="int64")

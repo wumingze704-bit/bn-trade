@@ -65,6 +65,9 @@ class AnchorSpec:
     fixed_slip: float
     fee_taker: float
     notional_ref: float
+    # 入场方式：False = 吃单（p_next 成交）；True = 挂单（挂在买一，06 §3.2）
+    entry_maker: bool = False
+    fee_maker: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,120 @@ def _empty_series(n: int) -> tuple[AnchorSeries, list[npt.NDArray[np.float64]]]:
     return series, arrays
 
 
+@dataclass(frozen=True)
+class LimitEntryPlan:
+    """回踩挂单的逐根 K 线入场计划（06 §3.2），回测与 `exit_sim` 标签共用。
+
+    `entry_bar[t] < 0` 表示信号 t 在 `expiry_bars` 根内没有成交；`p_fill` 与锚点
+    为按挂单价重算后的值（止损/止盈以挂单成交价为基准）。
+    """
+
+    entry_bar: npt.NDArray[np.int64]
+    p_fill: npt.NDArray[np.float64]
+    down: npt.NDArray[np.float64]
+    up: npt.NDArray[np.float64]
+    r_dist: npt.NDArray[np.float64]
+    min_move: npt.NDArray[np.float64]
+    sl: npt.NDArray[np.float64]
+
+
+def plan_limit_entry(
+    *,
+    close: npt.NDArray[np.float64],
+    low: npt.NDArray[np.float64],
+    kline_missing: npt.NDArray[np.int64],
+    atr_pct: npt.NDArray[np.float64],
+    tick_size: float,
+    offset_bp: float,
+    expiry_bars: int,
+    spec: AnchorSpec,
+) -> LimitEntryPlan:
+    """计算回踩挂单的成交 K 线、成交价与以成交价为基准的锚点（06 §3.2）。
+
+    挂单价 `limit[t] = floor_tick(close[t] × (1 − offset_bp/1e4), tick)`，只用信号
+    时刻已知的收盘价；成交判定为「其后 `expiry_bars` 根内出现 `low ≤ limit − 1 tick`
+    且该根 K 线不缺失」，成交价按 `limit`（挂单方成交，无点差与滑点成本）。
+
+    Args:
+        close: 每分钟收盘价。
+        low: 每分钟最低价。
+        kline_missing: K 线缺失标记（1 = 缺失，03 §2.3）。
+        atr_pct: 每分钟 ATR14 / 收盘价。
+        tick_size: 价格步长。
+        offset_bp: 挂单价相对信号收盘价的下移幅度，bp（30 = 0.30%）。
+        expiry_bars: 挂单有效根数（其后 N 根内未成交即作废）。
+        spec: 锚点组配置（止损系数与止盈倍数）。
+
+    Returns:
+        `LimitEntryPlan`，长度等于 bars 行数。
+
+    Raises:
+        ValueError: `offset_bp ≤ 0` 或 `expiry_bars < 1`（红线 13）。
+    """
+    if offset_bp <= 0.0:
+        raise ValueError(f"entry_limit_offset_bp 必须为正，收到 {offset_bp}（06 §3.2）")
+    if expiry_bars < 1:
+        raise ValueError(f"entry_limit_expiry_bars 必须 ≥ 1，收到 {expiry_bars}（06 §3.2）")
+    n = int(close.shape[0])
+    entry_bar = np.full(n, -1, dtype="int64")
+    p_fill = np.full(n, np.nan, dtype="float64")
+    down = np.full(n, np.nan, dtype="float64")
+    up = np.full(n, np.nan, dtype="float64")
+    r_dist = np.full(n, np.nan, dtype="float64")
+    min_move = np.full(n, np.nan, dtype="float64")
+    sl_arr = np.full(n, np.nan, dtype="float64")
+
+    c_t = np.asarray(close, dtype="float64")
+    with np.errstate(invalid="ignore"):
+        limit = np.floor(c_t * (1.0 - offset_bp / 1e4) / tick_size + 1e-9) * tick_size
+    trigger = limit - tick_size
+    pending = np.zeros(n, dtype=bool)
+    for k in range(1, expiry_bars + 1):
+        target = np.arange(n) + k
+        inside = target < n
+        idx = np.minimum(target, n - 1)
+        hit = (
+            inside
+            & (entry_bar < 0)
+            & (kline_missing[idx] == 0)
+            & np.isfinite(low[idx])
+            & (low[idx] <= trigger)
+        )
+        entry_bar[hit] = idx[hit]
+        pending |= hit
+
+    valid = pending & np.isfinite(limit) & (limit > 0.0)
+    valid &= np.isfinite(atr_pct) & np.isfinite(c_t) & (c_t > 0.0)
+    if valid.any():
+        rows = np.nonzero(valid)[0]
+        price = limit[rows]
+        sl_rows = np.clip(spec.k_sl * atr_pct[rows], spec.sl_min, spec.sl_max)
+        # 与 trade_anchors_py 同一组公式（向下/向上取整到 tick，06 §3.2、§3.3）
+        r_rows = price * sl_rows
+        down_rows = np.floor(price * (1.0 - sl_rows) / tick_size + 1e-9) * tick_size
+        if spec.mode == _MODE_FIXED:
+            up_rows = np.ceil(price * (1.0 + spec.rr * sl_rows) / tick_size - 1e-9) * tick_size
+        else:
+            up_rows = np.ceil((price + spec.tp_cap_r * r_rows) / tick_size - 1e-9) * tick_size
+        min_rows = np.maximum(tick_size, spec.min_stop_move_r * r_rows)
+        p_fill[rows] = price
+        sl_arr[rows] = sl_rows
+        down[rows] = down_rows
+        up[rows] = up_rows
+        r_dist[rows] = r_rows
+        min_move[rows] = min_rows
+    entry_bar[~valid] = -1
+    return LimitEntryPlan(
+        entry_bar=entry_bar,
+        p_fill=p_fill,
+        down=down,
+        up=up,
+        r_dist=r_dist,
+        min_move=min_move,
+        sl=sl_arr,
+    )
+
+
 def anchor_series_py(
     *,
     close: npt.NDArray[np.float64],
@@ -406,6 +523,45 @@ def _anchor_series_nb(
     )
 
 
+def _apply_maker_entry(
+    series: AnchorSeries,
+    *,
+    close: npt.NDArray[np.float64],
+    tick_size: float,
+    spec: AnchorSpec,
+) -> AnchorSeries:
+    """把吃单锚点改写成挂单锚点（06 §3.2）。
+
+    挂单价 = 买一近似 `floor_tick(c_t × (1 − half_spread), tick)`；入场滑点置 0，
+    入场费率按 maker、出场仍按 taker 计入 `loss_rate`。是否成交由调用方用下一分钟
+    最低价判断（`low_{t+1} ≤ 挂单价`）。
+    """
+    p_fill = np.floor(close * (1.0 - series.half_spread) / tick_size + 1e-9) * tick_size
+    sl = np.asarray(series.sl, dtype="float64")
+    r_dist = p_fill * sl
+    down = np.floor(p_fill * (1.0 - sl) / tick_size + 1e-9) * tick_size
+    if spec.mode == 0:
+        up = np.ceil(p_fill * (1.0 + spec.rr * sl) / tick_size - 1e-9) * tick_size
+    else:
+        up = np.ceil((p_fill + spec.tp_cap_r * r_dist) / tick_size - 1e-9) * tick_size
+    min_move = np.maximum(tick_size, spec.min_stop_move_r * r_dist)
+    loss = sl + series.half_spread + spec.fee_maker + spec.fee_taker
+    valid = np.asarray(series.valid, dtype=bool) & np.isfinite(p_fill) & (p_fill > 0.0)
+    return AnchorSeries(
+        down=down,
+        up=up,
+        p_fill=p_fill,
+        sl=sl,
+        r_dist=r_dist,
+        min_move=min_move,
+        slip=np.zeros_like(p_fill),
+        slip_stop=np.zeros_like(p_fill),
+        half_spread=series.half_spread,
+        loss_rate=loss,
+        valid=valid,
+    )
+
+
 def anchor_series(
     *,
     close: npt.NDArray[np.float64],
@@ -447,7 +603,7 @@ def anchor_series(
     if len(lengths) != 1:
         raise ValueError(f"锚点输入数组长度不一致：{sorted(lengths)}（06 §3.4）")
     if not use_numba:
-        return anchor_series_py(
+        series = anchor_series_py(
             close=close,
             p_entry=p_entry,
             atr_pct=atr_pct,
@@ -456,6 +612,9 @@ def anchor_series(
             tick_size=tick_size,
             spec=spec,
         )
+        if spec.entry_maker:
+            return _apply_maker_entry(series, close=close, tick_size=tick_size, spec=spec)
+        return series
     values = _anchor_series_nb(
         close,
         p_entry,
@@ -477,7 +636,7 @@ def anchor_series(
         spec.fee_taker,
         spec.notional_ref,
     )
-    return AnchorSeries(
+    series = AnchorSeries(
         down=values[0],
         up=values[1],
         p_fill=values[2],
@@ -490,3 +649,6 @@ def anchor_series(
         loss_rate=values[9],
         valid=values[10],
     )
+    if spec.entry_maker:
+        return _apply_maker_entry(series, close=close, tick_size=tick_size, spec=spec)
+    return series

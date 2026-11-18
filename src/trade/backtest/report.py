@@ -449,20 +449,39 @@ def append_experiments_log(
     run_id: str,
     config_hash: str,
     metrics: dict[str, float],
+    *,
+    kind: str = "tuning",
+    theta: float | None = None,
+    failed: bool = False,
 ) -> None:
-    """在 EXPERIMENTS.log 追加一行（06 §8，用于 S11）。
+    """在 EXPERIMENTS.log 追加一行（06 §8，用于 S11 与试验预算）。
 
     除核心指标外，记录 S11 所需的 `sharpe`/`skew`/`kurtosis`/`n_obs`（缺失时为
-    null，向后兼容旧日志）。周期单位见 `trade.backtest.sanity.deflated_sharpe`。
+    null，向后兼容旧日志）。`kind` 区分 tuning / test / smoke / final：试验预算只
+    统计 `kind=tuning` 的行，S11 只用 tuning/test 的夏普。
+
+    Args:
+        log_path: `artifacts/reports/EXPERIMENTS.log`。
+        run_id: 本次试验的 run_id（同一 run_id 只计一次）。
+        config_hash: 配置与输入文件的 SHA256。
+        metrics: 指标字典；缺失键写 null。
+        kind: 试验类型，取值 tuning / test / smoke / final。
+        theta: 该次试验使用的阈值 θ（无模型阈值时为 None）。
+        failed: 该组是否失败（失败组同样占用预算并登记）。
     """
+    if kind not in {"tuning", "test", "smoke", "final"}:
+        raise ValueError(f"kind 只能是 tuning/test/smoke/final，收到 {kind}")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "ts": datetime.now(UTC).isoformat(),
         "run_id": run_id,
+        "kind": kind,
         "config_hash": config_hash,
         "net_return_usdt": metrics.get("net_return_usdt"),
         "profit_factor": metrics.get("profit_factor"),
         "n_trades": metrics.get("n_trades"),
+        "theta": theta if theta is not None else metrics.get("theta"),
+        "failed": bool(failed) if failed else bool(metrics.get("failed", 0.0)),
         "sharpe": metrics.get("sharpe"),
         "skew": metrics.get("skew"),
         "kurtosis": metrics.get("kurtosis"),

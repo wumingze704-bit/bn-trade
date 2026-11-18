@@ -56,3 +56,14 @@ def max_trade_rel(max_trade_quote: np.ndarray, whale_thr: np.ndarray) -> np.ndar
         np.asarray(max_trade_quote, dtype="float64")
         / (np.asarray(whale_thr, dtype="float64") + EPS)
     )
+
+
+def whale_streak_5(
+    buy_quote: np.ndarray,
+    sell_quote: np.ndarray,
+    whale_buy_quote: np.ndarray,
+    whale_sell_quote: np.ndarray,
+) -> np.ndarray:
+    """#42 whale_streak_5 = sum_5(sign(whale_net)) / 5，近 5 根大单方向一致性（04 §4.6）。"""
+    net = whale_net(buy_quote, sell_quote, whale_buy_quote, whale_sell_quote)
+    return rolling_sum(np.sign(net), 5) / 5.0

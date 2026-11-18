@@ -311,6 +311,8 @@ def compute_random_entry_candidates(
     sl_min: float,
     sl_max: float,
     H_label: int,
+    *,
+    trade_masks: Mapping[str, np.ndarray] | None = None,
 ) -> list[tuple[str, int, float]]:
     """S1 预过滤样本候选的 reference 净盈亏（06 §7 S1）。
 
@@ -359,6 +361,7 @@ def compute_random_entry_candidates(
             sl_min=sl_min,
             sl_max=sl_max,
             H_label=H_label,
+            trade_mask=trade_masks.get(symbol) if trade_masks else None,
         )
         for tr in trades:
             out.append(

@@ -32,6 +32,7 @@ from trade.data.loader import (
 )
 from trade.data.universe import SnapshotCoin, UniverseConfig, load_universe_config, rule_hash
 from trade.features import FeaturesConfig, compute_features, enabled_features, feature_hash
+from trade.features.cross_section import build_market_series
 from trade.labels import exit_sim, is_sample_mask, triple_barrier, uniqueness_weights
 
 # tick_size / 当月收盘价中位数 的告警阈值（03 §4.6、04 §8）
@@ -158,6 +159,9 @@ def build_dataset(
     Y: float = 1.0,
     notional_ref: float = 1000.0,
     max_chase: float = 0.003,
+    entry_mode: str = "taker",
+    entry_limit_offset_bp: float = 30.0,
+    entry_limit_expiry_bars: int = 5,
 ) -> dict:
     """构建数据集并写 manifest.json，返回 manifest 内容。
 
@@ -198,6 +202,31 @@ def build_dataset(
 
     per_coin: list[dict] = []
     warnings: list[str] = []
+    # 跨市场序列（04 §4.7）：先遍历全部币的 close，按分钟累计全市场 r_15 统计，
+    # 再在逐币特征里按 open_time 对齐；只用 close，不加载其它列以省内存。
+    n_minutes = int((build_end_ms - start_ms) // 60_000) + 1
+    market_series = build_market_series(
+        (
+            (
+                bars_part["open_time"].to_numpy(dtype="int64"),
+                bars_part["close"].to_numpy(dtype="float64"),
+            )
+            for bars_part in (
+                load_bars(
+                    data_root,
+                    coin.alias,
+                    start_ms,
+                    build_end_ms,
+                    holdout_start_ms=holdout_start_ms,
+                    allow_holdout=include_holdout,
+                    columns=["open_time", "close"],
+                )
+                for coin in coins
+            )
+        ),
+        start_ms=start_ms,
+        n_minutes=n_minutes,
+    )
     for coin in coins:
         role = coin.role
         alias = coin.alias
@@ -210,7 +239,9 @@ def build_dataset(
             allow_holdout=include_holdout,
         )
         segments = segment_ids(bars["open_time"].to_numpy(dtype="int64"))
-        features_df = compute_features(bars, btc_bars, features, features_cfg, segments)
+        features_df = compute_features(
+            bars, btc_bars, features, features_cfg, segments, cross_section=market_series
+        )
         sample = is_sample_mask(
             bars,
             features_cfg.prefilter.vol_z_60,
@@ -218,6 +249,8 @@ def build_dataset(
             features_cfg.prefilter.brk_60,
             features_cfg.warmup_bars,
             segments,
+            direction=features_cfg.prefilter.direction,
+            cadence_min=features_cfg.prefilter.cadence_min,
         )
         if membership is not None:
             trade_mask = universe_trade_mask(
@@ -231,6 +264,9 @@ def build_dataset(
                 "（入场按 no_entry_price 放弃）"
             )
         features_df["is_sample"] = sample.astype("int64")
+        # 补齐分钟标记：下游 max_fill_ratio 过滤器按该列剔除窗口内补齐分钟过多的样本
+        # （05 §5.1）。缺失该列会让过滤器静默失效（红线 13）。
+        features_df["is_filled"] = bars["is_filled"].to_numpy(dtype="int64")
         # 特征以 fp16 落盘（design §4、05 §5；open_time/is_sample 保持 int64）
         feature_cols = [feature.name for feature in features]
         features_df[feature_cols] = features_df[feature_cols].astype("float16")
@@ -291,6 +327,11 @@ def build_dataset(
                 max_chase=max_chase,
                 tick_size=tick_size,
                 segments=segments,
+                entry_mode=entry_mode,
+                entry_limit_offset_bp=entry_limit_offset_bp,
+                entry_limit_expiry_bars=entry_limit_expiry_bars,
+                atr_timeframe_min=features_cfg.label.atr_timeframe_min,
+                r_mult_clip=features_cfg.label.exit_sim_r_mult_clip,
             )
         else:
             labels_df, kept_positions = triple_barrier(
@@ -444,6 +485,9 @@ def main(argv: list[str] | None = None) -> int:
         Y=backtest_cfg.costs.Y,
         notional_ref=notional_ref,
         max_chase=backtest_cfg.risk.max_chase,
+        entry_mode=backtest_cfg.entry_mode,
+        entry_limit_offset_bp=backtest_cfg.entry_limit_offset_bp,
+        entry_limit_expiry_bars=backtest_cfg.entry_limit_expiry_bars,
     )
     if manifest["warnings"]:
         for warning in manifest["warnings"]:

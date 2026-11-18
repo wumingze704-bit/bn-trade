@@ -57,6 +57,6 @@ def test_新进入组_训练段从未入选() -> None:
         "2026-03": frozenset({"A", "C"}),
     }
     # 前 2 个月为训练段：C 首次入选在第 3 个月 → 新进入组
-    assert new_entry_symbols(membership, tuning_months=2) == frozenset({"C"})
+    assert new_entry_symbols(membership, ["2026-01", "2026-02"]) == frozenset({"C"})
     # 前 3 个月为训练段：C 在训练段内 → 不再算新进入
-    assert new_entry_symbols(membership, tuning_months=3) == frozenset()
+    assert new_entry_symbols(membership, ["2026-01", "2026-02", "2026-03"]) == frozenset()

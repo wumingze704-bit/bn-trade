@@ -19,11 +19,21 @@ from trade.features.normalize import (
 
 
 def test_ewm_step_hand_calculated() -> None:
+    """偏差修正后：第 1 个值没有历史（W=0）输出 0；第 2 个值用 μ/W、σ²/W 标准化。"""
     state = EwmState(0.0, 1.0)
     z, next_state = ewm_step(state, 1.0, alpha=0.5, clip=5.0, min_var=1e-12)
-    assert z == pytest.approx(1.0 / (1.0 + 1e-12))
+    assert z == 0.0
     assert next_state.mean == pytest.approx(0.5)
     assert next_state.var == pytest.approx(1.0)
+    assert next_state.weight == pytest.approx(0.5)
+    assert next_state.decay == pytest.approx(0.5)
+
+    # μ/W = 0.5/0.5 = 1.0；(σ² − 先验权重)/W = (1.0 − 0.5)/0.5 = 1.0 → z = (2 − 1)/1 = 1
+    z2, state2 = ewm_step(next_state, 2.0, alpha=0.5, clip=5.0, min_var=1e-12)
+    assert z2 == pytest.approx(1.0, rel=1e-9)
+    assert state2.mean == pytest.approx(1.25)
+    assert state2.var == pytest.approx(1.625)
+    assert state2.weight == pytest.approx(0.75)
 
 
 def test_alpha_from_halflife() -> None:

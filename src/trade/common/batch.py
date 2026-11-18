@@ -13,8 +13,87 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from trade.common.anchors import AnchorSeries
+from trade.common.anchors import AnchorSeries, LimitEntryPlan
 from trade.common.exits import ExitBatch, ExitConfig, simulate_exit_batch
+
+
+def batch_exit_plan(
+    *,
+    open_: npt.NDArray[np.float64],
+    high: npt.NDArray[np.float64],
+    low: npt.NDArray[np.float64],
+    close: npt.NDArray[np.float64],
+    p_entry: npt.NDArray[np.float64],
+    hi_post: npt.NDArray[np.float64],
+    lo_post: npt.NDArray[np.float64],
+    kline_missing: npt.NDArray[np.int64],
+    aggtrades_missing: npt.NDArray[np.int64],
+    anchors: AnchorSeries,
+    signal_bars: npt.NDArray[np.int64],
+    plan: LimitEntryPlan,
+    atr_abs: npt.NDArray[np.float64],
+    h_max: int,
+    cfg: ExitConfig,
+    tick_size: float,
+    fee_taker: float,
+    fee_maker: float,
+) -> ExitBatch:
+    """回踩挂单成交后的批量出场（06 §3.2、§3.4），回测与标签共用。
+
+    与 `batch_exit` 的唯一区别：入场 K 线与成交价取自 `plan`（挂单成交），止损/止盈
+    锚点也以挂单价为基准；`signal_bars` 中未成交（`plan.entry_bar < 0`）的行不参与。
+
+    Args:
+        open_/high/low/close: 该币分钟 K 线数组。
+        p_entry: 每根 K 线的入场参考价（仅状态机内部用作回退，成交价用 `plan.p_fill`）。
+        hi_post/lo_post: 每根 K 线开盘延迟后的最高/最低价。
+        kline_missing/aggtrades_missing: 缺失标记（1=缺失）。
+        anchors: `anchor_series` 的输出（提供逐根成本与滑点）。
+        signal_bars: 已过滤为「有成交」的信号 K 线位置。
+        plan: `plan_limit_entry` 的输出。
+        atr_abs: ATR14 绝对值。
+        h_max: 最长持仓根数。
+        cfg: 出场配置。
+        tick_size: 价格步长。
+        fee_taker/fee_maker: 吃单/挂单费率。
+
+    Returns:
+        `ExitBatch`，长度等于 `signal_bars`。
+
+    Raises:
+        ValueError: 存在未成交的信号位置（调用方必须先过滤，红线 13）。
+    """
+    slots = np.asarray(signal_bars, dtype="int64")
+    if slots.size and bool((plan.entry_bar[slots] < 0).any()):
+        raise ValueError(
+            "batch_exit_plan 收到未成交的信号位置，请先用 plan.entry_bar 过滤（06 §3.2）"
+        )
+    return simulate_exit_batch(
+        open_,
+        high,
+        low,
+        close,
+        p_entry,
+        hi_post,
+        lo_post,
+        kline_missing,
+        aggtrades_missing,
+        t_entries=plan.entry_bar[slots],
+        down=plan.down[slots],
+        up=plan.up[slots],
+        r_dist=plan.r_dist[slots],
+        min_move=plan.min_move[slots],
+        p_fill=plan.p_fill[slots],
+        atr_abs=atr_abs[slots],
+        slip_stop=anchors.slip_stop[slots],
+        slip_exit=anchors.slip[slots],
+        half_spread=anchors.half_spread[slots],
+        H_max=h_max,
+        cfg=cfg,
+        tick_size=tick_size,
+        fee_taker=fee_taker,
+        fee_maker=fee_maker,
+    )
 
 
 def batch_exit(

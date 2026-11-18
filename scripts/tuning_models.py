@@ -94,10 +94,19 @@ def build_trials(cfg: ModelConfig) -> list[Trial]:
 
 
 def count_logged_trials(log_path: Path) -> int:
-    """统计 EXPERIMENTS.log 中已登记的组数（按 run_id 去重，含失败组）。"""
+    """统计 EXPERIMENTS.log 中已登记的 tuning 组数（按 run_id 去重，含失败组）。
+
+    只数 `kind = tuning` 的行：test / smoke / final 行不占试验预算（06 §8、R0-6）。
+    """
     if not log_path.exists():
         return 0
-    return len({str(row.get("run_id")) for row in read_experiments_log(log_path)})
+    return len(
+        {
+            str(row.get("run_id"))
+            for row in read_experiments_log(log_path)
+            if str(row.get("kind") or "tuning") == "tuning"
+        }
+    )
 
 
 def remaining_budget(log_path: Path, *, cap: int = TRIAL_BUDGET) -> int:
@@ -324,20 +333,26 @@ def _threshold_metrics(
     sizing_cfg: SizingConfig,
     features_cfg: FeaturesConfig,
     trade_masks: dict[str, np.ndarray] | None,
+    months: list[str],
 ) -> dict[float, dict[str, float]]:
     """在验证段逐 θ 跑 base 情景，返回 PF / 净收益 / 笔数（05 §7.2）。
 
-    优化：逐笔预计算与 θ 无关，只在最低 θ 上预计算一次，再按 θ 过滤候选后重跑组合
-    层；`simulate_exit` 不重复计算，阈值网格从 ~26 次出场模拟降为 1 次。
+    调参评估同时算两套仓位口径（R0-2）：
+    - reference（初始 100 USDT、固定风险、单笔期望与 PF）用于选 θ 与 G2 同口径比较；
+    - user（sizing.yaml 的复利仓位）用于月收益。
+    两套都在**关闭 R6/R8 停机**的配置下评估：否则验证期一旦触发回撤停机，后续
+    θ 的笔数与月收益全部失真（正式测试段回测仍按 strict 停机）。
+
+    优化：逐笔预计算与 θ 无关，只在最低 θ 上预计算一次，再按 θ 过滤候选后重跑组合层。
     """
     from trade.backtest.costs import scenario
     from trade.backtest.engine import precompute_trades_all, simulate_portfolio
+    from trade.backtest.metrics import monthly_return_stats
 
     grid = list(threshold_grid())
     min_theta = min(grid)
     scen = scenario("base")
     pre_cfg = backtest_cfg.model_copy(update={"threshold": min_theta})
-    # 本函数在最低 θ 上一次性预计算、再按各 θ 过滤；行内 θ 只用于通过按行契约（06 §8）
     scan_signals = signals.assign(theta=0.0) if "theta" not in signals.columns else signals
     all_trades, all_skipped = precompute_trades_all(
         bars_by_symbol,
@@ -355,25 +370,78 @@ def _threshold_metrics(
         H_label=features_cfg.label.H_label,
         trade_masks=trade_masks,
     )
+    reference_sizing = _no_halt_sizing(
+        sizing_cfg.model_copy(
+            update={
+                "initial_equity": backtest_cfg.reference.initial_equity,
+                "mode": backtest_cfg.reference.mode,
+                "risk_per_trade": backtest_cfg.reference.risk_per_trade,
+                "base": backtest_cfg.reference.base,
+            }
+        )
+    )
+    user_sizing = _no_halt_sizing(sizing_cfg)
     metrics: dict[float, dict[str, float]] = {}
     for theta in grid:
         trades = [t for t in all_trades if float(t.p) >= theta]
-        result = simulate_portfolio(
+        reference_result = simulate_portfolio(
             trades,
             list(all_skipped),
-            sizing_cfg=sizing_cfg,
+            sizing_cfg=reference_sizing,
             backtest_cfg=backtest_cfg,
             fees=fees,
             initial_equity=backtest_cfg.reference.initial_equity,
             bars_by_symbol=bars_by_symbol,
+            entry_maker=backtest_cfg.entry_mode == "maker",
         )
-        row = compute_metrics(result, backtest_cfg.reference.initial_equity)
+        reference_row = compute_metrics(
+            reference_result, backtest_cfg.reference.initial_equity, months=months
+        )
+        user_result = simulate_portfolio(
+            trades,
+            list(all_skipped),
+            sizing_cfg=user_sizing,
+            backtest_cfg=backtest_cfg,
+            fees=fees,
+            initial_equity=user_sizing.initial_equity,
+            bars_by_symbol=bars_by_symbol,
+            entry_maker=backtest_cfg.entry_mode == "maker",
+        )
+        user_row = monthly_return_stats(
+            user_result.equity_curve, user_sizing.initial_equity, months=months
+        )
+        user_dd = (
+            float(user_result.equity_curve["drawdown"].max())
+            if not user_result.equity_curve.empty
+            else 0.0
+        )
         metrics[theta] = {
-            "net_return": float(row["net_return_usdt"]),
-            "profit_factor": float(row["profit_factor"]),
-            "n_trades": float(row["n_trades"]),
+            # 选 θ 用 reference 口径（与 backtest.py / G2 一致）
+            "net_return": float(reference_row["net_return_usdt"]),
+            "profit_factor": float(reference_row["profit_factor"]),
+            "n_trades": float(reference_row["n_trades"]),
+            "avg_pnl_per_trade": float(reference_row["avg_pnl_per_trade"]),
+            # user 口径用于 15%/月 目标与回撤
+            "user_net_return": float(user_row["median_monthly_return"]),
+            "user_median_monthly_return": float(user_row["median_monthly_return"]),
+            "user_worst_monthly_return": float(user_row["worst_monthly_return"]),
+            "user_losing_months": float(user_row["losing_months"]),
+            "user_max_drawdown": user_dd,
+            "user_n_trades": float(len(user_result.trades)),
         }
     return metrics
+
+
+def _no_halt_sizing(cfg: SizingConfig) -> SizingConfig:
+    """调参评估用仓位：关闭 R6/R8/R7 停机（05 §7.2，正式回测仍用原配置）。"""
+    return cfg.model_copy(
+        update={
+            "daily_loss_stop": 0.99,
+            "daily_loss_halt": 0.995,
+            "max_drawdown_halt": 0.999,
+            "max_consecutive_losses": 1_000_000,
+        }
+    )
 
 
 def run_grid(args: argparse.Namespace) -> int:
@@ -391,13 +459,13 @@ def run_grid(args: argparse.Namespace) -> int:
     # 续跑：已登记的本轮组按顺序跳过，并把它们的指标纳入最终选择（05 §6.1）。
     done = logged_outcomes(log_path, trials)
     pending = trials[len(done) :]
-    if budget != len(pending):
-        print(
-            f"剩余预算 {budget} 组，与待运行 {len(pending)} 组不一致"
-            f"（已登记 {len(done)} 组）；停止。",
-            flush=True,
-        )
+    if budget <= 0:
+        print(f"试验预算已用尽（剩余 {budget} 组）；停止。", flush=True)
         return 2
+    if len(pending) > budget:
+        # 预算只数 kind=tuning 的已登记组；剩余预算不足时只跑得起的部分（R0-6）
+        print(f"剩余预算 {budget} 组 < 待运行 {len(pending)} 组，本轮只跑到预算上限。", flush=True)
+        pending = pending[:budget]
     if args.max_groups is not None:
         pending = pending[: args.max_groups]
 
@@ -427,7 +495,13 @@ def run_grid(args: argparse.Namespace) -> int:
     feature_names = manifest_features(args.features_dir)
 
     val_start = int(pd.Timestamp(f"{val_months[0]}-01", tz="UTC").timestamp() * 1000)
-    val_end = int(pd.Timestamp(f"{val_months[-1]}-01", tz="UTC").timestamp() * 1000)
+    # 验证段覆盖到最后一个验证月的月末（R0-1）；起点向前多读 2 天，保证出场预热与
+    # 跨月持仓的入场/出场都能在同一次加载内完成（与 tuning_exits 同口径）。
+    val_end = int(
+        (pd.Timestamp(f"{val_months[-1]}-01", tz="UTC") + pd.DateOffset(months=1)).timestamp()
+        * 1000
+    )
+    bars_start = val_start - 2 * 86_400_000
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     trade_masks: dict[str, np.ndarray] = {}
     # 只加载验证段有入选月份的币：其余币在该窗口没有 bars（T1-9 不下载），
@@ -444,7 +518,7 @@ def run_grid(args: argparse.Namespace) -> int:
         bars = load_bars(
             base_cfg.paths.data_root,
             entry.alias,
-            val_start,
+            bars_start,
             val_end,
             holdout_start_ms=wb.holdout_start_ms,
             allow_holdout=False,
@@ -528,6 +602,7 @@ def run_grid(args: argparse.Namespace) -> int:
                 sizing_cfg=sizing_cfg,
                 features_cfg=features_cfg,
                 trade_masks=trade_masks,
+                months=val_months,
             )
             choice = select_threshold(metrics, n_days=n_days)
             outcome = TrialOutcome(
@@ -553,6 +628,9 @@ def run_grid(args: argparse.Namespace) -> int:
                     "threshold": outcome.theta,
                     "failed": 1.0 if outcome.failed else 0.0,
                 },
+                kind="tuning",
+                theta=outcome.theta,
+                failed=outcome.failed,
             )
         print(
             f"{trial.run_id}: PF={outcome.pf} net={outcome.net_return} "

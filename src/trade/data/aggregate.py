@@ -142,6 +142,10 @@ def _finalize_minute(
     p_3s, p_3s_filled = entry_price(3000)
     hi_post_1s, lo_post_1s = post_high_low(1000, p_1s)
     hi_post_3s, lo_post_3s = post_high_low(3000, p_3s)
+    if not np.isfinite(whale_thr):
+        # 缺大单阈值时无法判定大单：输出 NaN，不用 0 冒充"没有大单"（03 §2.2、红线 13）
+        whale_buy_quote = float("nan")
+        whale_sell_quote = float("nan")
 
     return {
         "open_time": open_time,
@@ -517,8 +521,10 @@ def assemble_bars(
     bars = grid.merge(kline_source[list(kline_columns)], on="open_time", how="left", sort=True)
     kline_missing = bars["close"].isna()
     prior_close = bars["close"].shift().ffill()
-    if len(prior_close):
-        prior_close.iloc[0] = previous_close
+    # 月初连续缺失时，回退价必须在整段缺失区间都生效：`shift().ffill()` 在首根有效
+    # K 线之前全是 NaN，只给第 0 行赋值会让第 1..N 行仍是 NaN（03 §2.3）。
+    if previous_close is not None:
+        prior_close = prior_close.fillna(float(previous_close))
     for column in ("open", "high", "low", "close"):
         bars[column] = bars[column].where(~kline_missing, prior_close)
     for column in ("volume", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"):
@@ -536,9 +542,12 @@ def assemble_bars(
     atomic_source = atomic_source.sort_values("open_time").drop_duplicates("open_time", keep="last")
     bars = bars.merge(atomic_source[list(MINUTE_ATOMIC_COLUMNS)], on="open_time", how="left")
     atomic_missing = bars["agg_n"].isna() & ~kline_missing & (bars["quote_volume"] > 0)
+    # 零成交分钟（quote_volume = 0 且无 aggTrades 行）：价格沿用上一分钟收盘价并标记
+    # p_*_filled = 1（陈旧价），但不记为 aggtrades_missing（数据没缺，只是没有成交）。
+    no_trades = bars["agg_n"].isna() & ~kline_missing & (bars["quote_volume"] == 0)
     prior_price = bars["close"].shift().ffill()
-    if len(prior_price):
-        prior_price.iloc[0] = previous_close
+    if previous_close is not None:
+        prior_price = prior_price.fillna(float(previous_close))
     for column in MINUTE_ATOMIC_COLUMNS:
         if column in (
             "open_time",
@@ -554,10 +563,15 @@ def assemble_bars(
         ):
             continue
         bars[column] = bars[column].fillna(0)
+    # 大单成交额：有 aggTrades 行时保留内核输出（缺大单阈值的那一天为 NaN，不冒充 0）；
+    # 没有 aggTrades 行的分钟（零成交或缺失）按 0 处理（03 §2.2）。
+    for column in ("whale_buy_quote", "whale_sell_quote"):
+        bars[column] = bars[column].where(bars["agg_n"].notna(), 0.0)
     bars["whale_thr"] = bars["whale_thr"].ffill()
+    stale = atomic_missing | no_trades
     for column in ("p_1s", "p_3s", "hi_post_1s", "lo_post_1s", "hi_post_3s", "lo_post_3s"):
-        bars.loc[atomic_missing, column] = prior_price.loc[atomic_missing]
-    bars.loc[atomic_missing, ["p_1s_filled", "p_3s_filled"]] = 1
+        bars.loc[stale, column] = prior_price.loc[stale]
+    bars.loc[stale, ["p_1s_filled", "p_3s_filled"]] = 1
     bars["aggtrades_missing"] = atomic_missing.astype("int8")
     bars["is_filled"] = (kline_missing | atomic_missing).astype("int8")
     day_starts = bars["open_time"] // _DAY_MS * _DAY_MS

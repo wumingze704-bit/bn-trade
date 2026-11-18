@@ -126,6 +126,7 @@ def _event_combine(
         limits=limits,
         cooldown_bars=backtest_cfg.risk.cooldown_bars,
         fees=fees,
+        cooldown_on=backtest_cfg.risk.cooldown_on,
     )
     timeline = _risk_timeline(all_trades, close_arrays)
     cursor = 0
@@ -137,7 +138,11 @@ def _event_combine(
     for ts in by_entry:
         by_entry[ts].sort(key=lambda tr: (-tr.p, -tr.m))
 
-    times = sorted({t.entry_open_time for t in all_trades} | {t.exit_open_time for t in all_trades})
+    times = sorted(
+        {t.entry_open_time for t in all_trades}
+        | {t.exit_open_time for t in all_trades}
+        | {t.exit_open_time + 60_000 for t in all_trades}
+    )
 
     for ts in times:
         cursor = book.advance(ts, timeline, cursor)
@@ -196,15 +201,18 @@ def _event_combine(
                     SkippedSignal(tr.symbol, tr.signal_open_time, tr.p, sz.status)
                 )
                 continue
-            funding_fee = sz.notional * tr.funding_rate_sum
-            net_pnl = sz.notional * net_return_after_fees(
+            # 实际名义价值与保证金按取整后的数量计（06 §5.3），与 simulate_portfolio 同口径
+            notional = sz.qty * tr.p_fill
+            margin = notional / float(sizing_cfg.leverage)
+            funding_fee = notional * tr.funding_rate_sum
+            net_pnl = notional * net_return_after_fees(
                 gross_return=tr.gross_return,
                 entry_fee_rate=fees.taker,
                 exit_fee_rate=tr.exit_fee_rate,
                 funding_rate=tr.funding_rate_sum,
             )
-            entry_fee = sz.notional * fees.taker
-            exit_fee = sz.notional * (1.0 + tr.gross_return) * tr.exit_fee_rate
+            entry_fee = notional * fees.taker
+            exit_fee = notional * (1.0 + tr.gross_return) * tr.exit_fee_rate
             trade = ExecutedTrade(
                 symbol=tr.symbol,
                 group=tr.group,
@@ -218,9 +226,9 @@ def _event_combine(
                 exit_price=tr.exit_price,
                 exit_type=tr.exit_type,
                 exit_type_code=tr.exit_type_code,
-                notional=sz.notional,
+                notional=notional,
                 qty=sz.qty,
-                margin=sz.margin,
+                margin=margin,
                 bars_held=tr.bars_held,
                 stop_updates=tr.stop_updates,
                 mfe_r=tr.mfe_r,
@@ -228,7 +236,7 @@ def _event_combine(
                 entry_fee=entry_fee,
                 exit_fee=exit_fee,
                 funding_fee=funding_fee,
-                gross_pnl=sz.notional * tr.gross_return,
+                gross_pnl=notional * tr.gross_return,
                 net_pnl=net_pnl,
                 rebate=(entry_fee + exit_fee) * fees.rebate_rate,
                 capped_by=sz.capped_by,

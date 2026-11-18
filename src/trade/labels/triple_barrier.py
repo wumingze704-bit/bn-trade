@@ -31,6 +31,7 @@ def _triple_barrier_nb(
     lo_post: np.ndarray,
     hi_post: np.ndarray,
     is_filled: np.ndarray,
+    entry_filled: np.ndarray,
     open_time: np.ndarray,
     k_sl: float,
     rr: float,
@@ -66,8 +67,8 @@ def _triple_barrier_nb(
         # 数据末尾不足 H_label 根、或入场 K 线不存在：丢弃（04 §7.4）
         if t + 1 >= n or t + H_label >= n:
             continue
-        # 入场 K 线不得为补齐分钟（与 06 §3.1 开仓条件一致）
-        if is_filled[t + 1] == 1:
+        # 入场 K 线不得为补齐分钟，且入场那一秒必须有真实逐笔成交（p_*_filled = 0）
+        if is_filled[t + 1] == 1 or entry_filled[t + 1] == 1:
             continue
         sigma = atr_pct_arr[t]
         if not np.isfinite(sigma):
@@ -134,6 +135,7 @@ def _triple_barrier_py(
     lo_post: np.ndarray,
     hi_post: np.ndarray,
     is_filled: np.ndarray,
+    entry_filled: np.ndarray,
     open_time: np.ndarray,
     k_sl: float,
     rr: float,
@@ -160,7 +162,7 @@ def _triple_barrier_py(
         outcome[k] = _TO
         if t + 1 >= n or t + H_label >= n:
             continue
-        if is_filled[t + 1] == 1:
+        if is_filled[t + 1] == 1 or entry_filled[t + 1] == 1:
             continue
         sigma = float(atr_pct_arr[t])
         if not np.isfinite(sigma):
@@ -245,12 +247,13 @@ def triple_barrier(
         bars["low"].to_numpy(dtype="float64"),
         bars["close"].to_numpy(dtype="float64"),
     )
-    n = len(bars)
-    is_filled = (
-        bars["is_filled"].to_numpy(dtype="int64")
-        if "is_filled" in bars.columns
-        else np.zeros(n, dtype="int64")
-    )
+    filled_col = "p_1s_filled" if entry_latency_ms == 1000 else "p_3s_filled"
+    missing = [name for name in ("is_filled", filled_col) if name not in bars.columns]
+    if missing:
+        raise ValueError(f"bars 缺少列 {missing}（03 §2.2、红线 13）")
+    is_filled = bars["is_filled"].to_numpy(dtype="int64")
+    # 入场那一秒无成交（沿用上一分钟收盘价）时该列为 1：与 06 §3.1 一样放弃该样本
+    entry_filled = bars[filled_col].to_numpy(dtype="int64")
     sample_idx = np.asarray(sample_idx, dtype="int64")
     args = (
         sample_idx,
@@ -263,6 +266,7 @@ def triple_barrier(
         bars[lo_col].to_numpy(dtype="float64"),
         bars[hi_col].to_numpy(dtype="float64"),
         is_filled,
+        entry_filled,
         bars["open_time"].to_numpy(dtype="int64"),
         k_sl,
         rr,

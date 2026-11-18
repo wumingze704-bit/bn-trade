@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.optimize import minimize_scalar  # type: ignore[import-untyped]
+from scipy.optimize import minimize, minimize_scalar  # type: ignore[import-untyped]
 
 from trade.common.exits import ExitConfig
 from trade.features import enabled_features, feature_hash
@@ -22,8 +22,9 @@ from trade.features.registry import FeaturesConfig
 THRESHOLD_MIN = 0.10
 THRESHOLD_MAX = 0.80
 THRESHOLD_STEP = 0.02
-MIN_TRADES_PER_DAY = 3.0
-PF_RETENTION = 0.9
+MIN_TRADES_PER_DAY = 5.0
+# 验证集上没有任何 θ 达到正期望时的阈值：p 永远小于 1，等价于该折不交易（05 §7.2）
+DISABLED_THETA = 1.0
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,8 @@ class ThresholdChoice:
     # 验证集 θ 网格上的 PF 与笔数（05 §9 model_meta.json 的 threshold_selection 记录）
     pf_by_theta: dict[float, float] = field(default_factory=dict)
     n_trades_by_theta: dict[float, int] = field(default_factory=dict)
+    # 阈值被禁用（验证集无正期望）时的原因；正常选择为 None（05 §7.2）
+    disabled_reason: str | None = None
 
 
 def sigmoid(logits: np.ndarray) -> np.ndarray:
@@ -73,6 +76,46 @@ def fit_temperature(logits: np.ndarray, y: np.ndarray) -> float:
     return float(result.x) if result.success else 1.0
 
 
+def fit_platt(logits: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """在验证集上学习 Platt 校准 `p = σ(a·z + b)`（05 §7.1）。
+
+    训练时 BCE 的 `pos_weight = √(neg/pos)` 会把 logit 整体平移 ln(pos_weight)，
+    纯温度缩放（只缩放不平移）无法消除该偏移，因此校准改用带偏移的 Platt 形式。
+
+    Args:
+        logits: 模型原始 logit。
+        y: 0/1 标签。
+
+    Returns:
+        (a, b)；样本为空或标签单一分布时返回 (1.0, 0.0)。
+    """
+    logits = np.asarray(logits, dtype="float64")
+    y = np.asarray(y, dtype="float64")
+    if len(logits) == 0 or y.min() == y.max():
+        return 1.0, 0.0
+
+    def objective(params: np.ndarray) -> float:
+        a, b = float(params[0]), float(params[1])
+        p = sigmoid(a * logits + b)
+        terms = y * np.log(np.clip(p, 1e-12, 1.0)) + (1 - y) * np.log(np.clip(1 - p, 1e-12, 1.0))
+        return float(-np.mean(terms))
+
+    result = minimize(
+        objective,
+        x0=np.array([1.0, 0.0]),
+        method="L-BFGS-B",
+        bounds=[(0.02, 20.0), (-10.0, 10.0)],
+    )
+    if not result.success:
+        return 1.0, 0.0
+    return float(result.x[0]), float(result.x[1])
+
+
+def platt_sigmoid(logits: np.ndarray, a: float, b: float) -> np.ndarray:
+    """按 Platt 参数把 logit 转成校准后概率：`σ(a·z + b)`（05 §7.1）。"""
+    return sigmoid(a * np.asarray(logits, dtype="float64") + b)
+
+
 def expected_calibration_error(y: np.ndarray, p: np.ndarray, *, bins: int = 10) -> float:
     """ECE（10 分箱，05 §7.1）。"""
     y = np.asarray(y, dtype="float64")
@@ -101,19 +144,22 @@ def select_threshold(
     *,
     n_days: float,
     min_trades_per_day: float = MIN_TRADES_PER_DAY,
-    pf_retention: float = PF_RETENTION,
+    min_profit_factor: float = 0.0,
 ) -> ThresholdChoice:
     """按 05 §7.2 在验证集指标上选择阈值。
 
-    约束：验证集日均交易笔数 ≥ `min_trades_per_day`；
-    在满足约束的 θ 中取 PF 最高者 θ*，最终 θ = 使 PF ≥ pf_retention × PF(θ*) 的
-    最小 θ（偏向更多交易，降低对单点的过拟合）。
+    约束与目标：
+    1. 验证集日均交易笔数 ≥ `min_trades_per_day`；
+    2. 在其中只保留 PF ≥ `min_profit_factor` 的 θ；
+    3. 取净收益最大的 θ（同值取笔数多者）。
+    若没有任何 θ 同时满足 1、2，判定该折无正期望：返回 `theta = DISABLED_THETA`
+    （p 恒小于 1，等价于不交易）并写明 `disabled_reason`。
 
     Args:
         metrics_by_theta: θ → {"net_return", "profit_factor", "n_trades"}。
         n_days: 验证段自然日数。
-        min_trades_per_day: 日均笔数下限（05 §7.2 为 3）。
-        pf_retention: 最终阈值保留的 PF 比例（05 §7.2 为 0.9）。
+        min_trades_per_day: 日均笔数下限（05 §7.2 为 5）。
+        min_profit_factor: 验证集 PF 下限；低于它则该折不交易（05 §7.2）。
 
     Returns:
         ThresholdChoice。
@@ -133,11 +179,39 @@ def select_threshold(
         raise ValueError(f"验证集上没有任何 θ 达到日均 {min_trades_per_day} 笔（05 §7.2 约束）")
     best_theta, best = max(eligible, key=lambda item: float(item[1].get("profit_factor", 0.0)))
     best_pf = float(best.get("profit_factor", 0.0))
-    threshold = best_pf * pf_retention
-    chosen_theta, chosen = next(
+    pf_by_theta = {
+        float(theta): float(metrics.get("profit_factor", 0.0))
+        for theta, metrics in sorted(metrics_by_theta.items())
+    }
+    n_trades_by_theta = {
+        float(theta): int(metrics.get("n_trades", 0.0))
+        for theta, metrics in sorted(metrics_by_theta.items())
+    }
+    positive = [
         (theta, metrics)
         for theta, metrics in eligible
-        if float(metrics.get("profit_factor", 0.0)) >= threshold
+        if float(metrics.get("profit_factor", 0.0)) >= min_profit_factor
+    ]
+    if not positive:
+        return ThresholdChoice(
+            theta=DISABLED_THETA,
+            profit_factor=0.0,
+            net_return=0.0,
+            n_trades=0,
+            daily_trades=0.0,
+            best_theta=float(best_theta),
+            best_profit_factor=best_pf,
+            n_candidates=len(eligible),
+            pf_by_theta=pf_by_theta,
+            n_trades_by_theta=n_trades_by_theta,
+            disabled_reason=f"validation_pf_below_min:{best_pf:.4f}",
+        )
+    chosen_theta, chosen = max(
+        positive,
+        key=lambda item: (
+            float(item[1].get("net_return", 0.0)),
+            int(item[1].get("n_trades", 0.0)),
+        ),
     )
     n_trades = int(chosen.get("n_trades", 0.0))
     return ThresholdChoice(
@@ -149,24 +223,23 @@ def select_threshold(
         best_theta=float(best_theta),
         best_profit_factor=best_pf,
         n_candidates=len(eligible),
-        pf_by_theta={
-            float(theta): float(metrics.get("profit_factor", 0.0))
-            for theta, metrics in sorted(metrics_by_theta.items())
-        },
-        n_trades_by_theta={
-            float(theta): int(metrics.get("n_trades", 0.0))
-            for theta, metrics in sorted(metrics_by_theta.items())
-        },
+        pf_by_theta=pf_by_theta,
+        n_trades_by_theta=n_trades_by_theta,
     )
 
 
 def calibration_metrics(logits: np.ndarray, y: np.ndarray) -> dict[str, float]:
-    """返回温度缩放前后的 NLL/ECE 与温度（05 §7.1）。"""
+    """返回 Platt 校准前后的 NLL/ECE 与校准参数（05 §7.1）。
+
+    返回键含 `platt_a`/`platt_b`（校准后的 `p = σ(a·z + b)`）与兼容键
+    `temperature`（= a，旧代码按温度缩放读取时仍可用）。
+    """
     logits = np.asarray(logits, dtype="float64")
     y = np.asarray(y, dtype="float64")
     temperature = fit_temperature(logits, y)
+    platt_a, platt_b = fit_platt(logits, y)
     p_before = sigmoid(logits)
-    p_after = sigmoid(logits / temperature)
+    p_after = platt_sigmoid(logits, platt_a, platt_b)
 
     def nll(p: np.ndarray) -> float:
         return float(
@@ -177,6 +250,8 @@ def calibration_metrics(logits: np.ndarray, y: np.ndarray) -> dict[str, float]:
 
     return {
         "temperature": temperature,
+        "platt_a": platt_a,
+        "platt_b": platt_b,
         "nll_before": nll(p_before),
         "nll_after": nll(p_after),
         "ece_before": expected_calibration_error(y, p_before),
@@ -208,6 +283,7 @@ def write_model_meta(
     temperature: float,
     threshold: float,
     dataset_manifest_sha256: str,
+    platt_b: float = 0.0,
     threshold_selection: dict[str, Any] | None = None,
     git_commit: str | None = None,
     created_at: datetime | None = None,
@@ -245,6 +321,8 @@ def write_model_meta(
         "exit_policy": exit_cfg.model_dump(),
         "ensemble_seeds": list(ensemble_seeds),
         "temperature": float(temperature),
+        # Platt 校准参数：p = σ(a·logit + b)，a = temperature（05 §7.1）
+        "calibration": {"a": float(temperature), "b": float(platt_b)},
         "threshold": float(threshold),
         "market": market,
         "universe_rule_hash": universe_rule_hash,

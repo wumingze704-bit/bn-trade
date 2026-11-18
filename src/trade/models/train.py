@@ -76,6 +76,7 @@ def build_model(arch: str, in_features: int, cfg: ModelConfig) -> nn.Module:
             blocks=cfg.blocks,
             kernel=cfg.kernel,
             dropout=cfg.dropout,
+            project_norm=cfg.project_norm,
         )
     if arch == "lstm":
         return LSTMModel(in_features, hidden=cfg.hidden, dropout=cfg.dropout)
@@ -141,9 +142,15 @@ def multitask_loss(
         cls = -((1.0 - pt).clamp(min=0.0) ** cfg.focal_gamma) * torch.log(pt.clamp(min=1e-12))
         cls = (cls * w).sum() / w.sum().clamp(min=1e-12)
     else:
+        # 与 Huber/focal 同一口径：按权重求加权平均（sum(w·l)/sum(w)），
+        # 否则 BCE 的梯度尺度会随 batch 内权重和变化（05 §4）
         cls = F.binary_cross_entropy_with_logits(
-            logits, y, weight=w, pos_weight=pos_weight.to(logits.device)
-        )
+            logits,
+            y,
+            weight=w,
+            pos_weight=pos_weight.to(logits.device),
+            reduction="sum",
+        ) / w.sum().clamp(min=1e-12)
     huber = F.smooth_l1_loss(m, r_mult, beta=1.0, reduction="none")
     reg = (huber * w).sum() / w.sum().clamp(min=1e-12)
     return cls + cfg.lambda_reg * reg
@@ -227,6 +234,20 @@ def _val_loss(val_ds: WindowDataset, logits: np.ndarray, m: np.ndarray, cfg: Mod
     return bce + cfg.lambda_reg * float(np.mean(huber))
 
 
+def warmup_cosine_factor(epoch: int, warmup: int, total: int) -> float:
+    """预热 + 余弦学习率因子（05 §6 第 4 条）。
+
+    预热期（`epoch < warmup`）从 `1/(warmup+1)` 线性升到 1，余弦段从 1 衰减到 0。
+    `warmup_epochs=1` 时第 0 轮为 0.5 倍学习率（原实现为 1.0，等于没有预热）。
+    """
+    warmup = max(1, warmup)
+    total = max(1, total)
+    if epoch < warmup:
+        return float(epoch + 1) / float(warmup + 1)
+    progress = (epoch - warmup) / max(1, total - warmup)
+    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+
 def _train_one_seed(
     model: nn.Module,
     train_ds: WindowDataset,
@@ -247,10 +268,7 @@ def _train_one_seed(
     total = max(1, cfg.max_epochs)
 
     def lr_lambda(epoch: int) -> float:
-        if epoch < warmup:
-            return float(epoch + 1) / float(warmup)
-        progress = (epoch - warmup) / max(1, total - warmup)
-        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+        return warmup_cosine_factor(epoch, warmup, total)
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     rng = np.random.default_rng(seed)
@@ -386,6 +404,8 @@ def train_ensemble(
     pos_weight = _pos_weight(_labels(train_ds))
     decay = _decay_weights(train_ds, cfg)
     for seed in cfg.seeds:
+        # 种子必须在构造模型之前设置，否则初始权重不是由 cfg.seeds 决定的（05 §6）
+        set_deterministic(seed)
         model = build_model(arch_name, in_features, cfg).to(device)
         state_dict, logits, m, rows = _train_one_seed(
             model,

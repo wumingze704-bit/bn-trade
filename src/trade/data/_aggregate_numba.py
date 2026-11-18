@@ -128,6 +128,10 @@ def aggregate_arrays_numba(
         if not has_post_3s:
             hi_post_3s = p_3s
             lo_post_3s = p_3s
+        if not np.isfinite(whale_threshold):
+            # 缺大单阈值时无法判定大单：输出 NaN，不用 0 冒充"没有大单"（03 §2.2、红线 13）
+            whale_buy_quote = np.nan
+            whale_sell_quote = np.nan
 
         output[group_index, 0] = minute_open_ms
         output[group_index, 1] = group_end - group_start

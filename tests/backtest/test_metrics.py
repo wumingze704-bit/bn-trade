@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from trade.backtest.engine import ExecutedTrade, PortfolioResult
-from trade.backtest.metrics import compute_metrics, daily_block_bootstrap_ci, kurtosis, skew
+from trade.backtest.metrics import (
+    compute_metrics,
+    daily_block_bootstrap_ci,
+    kurtosis,
+    monthly_return_stats,
+    monthly_returns,
+    skew,
+)
 
 
 def _trade(symbol="A", exit_type="tp", net_pnl=1.0, gross=1.5, exit_code=3) -> ExecutedTrade:
@@ -85,6 +93,27 @@ def _day_trade(day: int, bp: float) -> ExecutedTrade:
         net_pnl=net_pnl,
         capped_by=None,
     )
+
+
+def test_月收益忽略初始权益标记行() -> None:
+    """ts_ms=0 的初始权益标记不产生 1970-01 假月份（08 §3 G2-U）。"""
+    jan_start = 1_735_689_600_000  # 2025-01-01T00:00Z
+    feb_start = 1_738_368_000_000  # 2025-02-01T00:00Z
+    mar_start = 1_740_787_200_000  # 2025-03-01T00:00Z
+    curve = pd.DataFrame(
+        {
+            "ts_ms": [0, jan_start, feb_start - 60_000, mar_start - 60_000],
+            "equity": [100.0, 100.0, 110.0, 99.0],
+            "drawdown": [0.0, 0.0, 0.0, 0.1],
+        }
+    )
+    returns = monthly_returns(curve, initial_equity=100.0)
+    assert list(returns.index) == ["2025-01", "2025-02"]
+    assert returns["2025-01"] == pytest.approx(0.10)
+    assert returns["2025-02"] == pytest.approx(-0.10)
+    stats = monthly_return_stats(curve, initial_equity=100.0)
+    assert stats["months"] == 2.0
+    assert stats["losing_months"] == 1.0
 
 
 def test_daily_block_bootstrap_ci固定种子可复现():

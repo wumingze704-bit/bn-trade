@@ -36,9 +36,16 @@ def _mark_to_market_curve(
     """按分钟盯市的权益曲线（06 §3.4、§5.1）。
 
     权益 = 钱包余额（初始 + 已实现净盈亏） + 未实现盈亏；在每根持仓 K 线收盘处采样。
+    与生产实现一致：不写 `ts_ms = 0` 的初始权益标记行。
     """
     if not trades:
-        return pd.DataFrame({"ts_ms": [0], "equity": [initial_equity], "drawdown": [0.0]})
+        return pd.DataFrame(
+            {
+                "ts_ms": pd.Series(dtype="int64"),
+                "equity": pd.Series(dtype="float64"),
+                "drawdown": pd.Series(dtype="float64"),
+            }
+        )
 
     sample_ts: set[int] = set()
     for t in trades:
@@ -67,6 +74,4 @@ def _mark_to_market_curve(
         drawdown = (peak - equity) / peak if peak > 0.0 else 0.0
         rows.append((ts, equity, drawdown))
 
-    if not rows or rows[0][0] != 0:
-        rows.insert(0, (0, initial_equity, 0.0))
     return pd.DataFrame(rows, columns=["ts_ms", "equity", "drawdown"])

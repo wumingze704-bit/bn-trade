@@ -31,10 +31,10 @@ class CausalConv1d(nn.Module):
 class TCNBlock(nn.Module):
     """TCN 残差块：两层因果卷积 + GELU + Dropout + 残差连接（05 §3）。"""
 
-    def __init__(self, channels: int, dilation: int, dropout: float) -> None:
+    def __init__(self, channels: int, dilation: int, dropout: float, kernel_size: int = 3) -> None:
         super().__init__()
-        self.conv1 = CausalConv1d(channels, channels, kernel_size=3, dilation=dilation)
-        self.conv2 = CausalConv1d(channels, channels, kernel_size=3, dilation=dilation)
+        self.conv1 = CausalConv1d(channels, channels, kernel_size=kernel_size, dilation=dilation)
+        self.conv2 = CausalConv1d(channels, channels, kernel_size=kernel_size, dilation=dilation)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -71,11 +71,18 @@ class TCNModel(nn.Module):
         blocks: int = 4,
         kernel: int = 3,
         dropout: float = 0.2,
+        project_norm: bool = True,
     ) -> None:
         super().__init__()
-        self.project = nn.Sequential(nn.Linear(in_features, hidden), nn.LayerNorm(hidden))
+        # 输入投影默认带 LayerNorm；`project_norm=False` 是对照版本（R2-8）：
+        # LayerNorm 会抹掉"所有特征同时极端"这一突破信号。
+        layers: list[nn.Module] = [nn.Linear(in_features, hidden)]
+        if project_norm:
+            layers.append(nn.LayerNorm(hidden))
+        self.project = nn.Sequential(*layers)
         self.tcn_blocks = nn.ModuleList(
-            TCNBlock(hidden, dilation=2**i, dropout=dropout) for i in range(blocks)
+            TCNBlock(hidden, dilation=2**i, dropout=dropout, kernel_size=kernel)
+            for i in range(blocks)
         )
         self.attn_pool = AttnPool(hidden)
         self.mlp = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.GELU(), nn.Dropout(dropout))

@@ -199,3 +199,46 @@ def test_vwap_dev_60() -> None:
     out = kline.vwap_dev_60(qv, volume, close)
     vwap = 1000.0 / 10.0
     assert out[59] == pytest.approx((101.0 - vwap) / 101.0)
+
+
+def test_wick_ratio_5() -> None:
+    """近 5 根上影线占比（04 §4.6 #38）。"""
+    n = 6
+    high = np.array([101.0] * n)
+    low = np.array([99.0] * n)
+    open_ = np.array([100.0] * n)
+    close = np.array([100.0] * n)
+    out = kline.wick_ratio_5(high, low, open_, close)
+    # 每根上影 1、振幅 2 → 5 根合计 5/10
+    assert out[5] == pytest.approx(0.5)
+
+
+def test_close_pos_5() -> None:
+    """近 5 根收盘强度（04 §4.6 #39）。"""
+    n = 5
+    high = np.array([101.0] * n)
+    low = np.array([99.0] * n)
+    close = np.array([100.5] * n)
+    out = kline.close_pos_5(high, low, close)
+    assert out[4] == pytest.approx(0.75)
+
+
+def test_range_ratio_5() -> None:
+    """当根振幅 / 近 5 根均值（04 §4.6 #40）。"""
+    n = 6
+    high = np.array([101.0] * 5 + [102.0])
+    low = np.array([99.0] * 5 + [98.0])
+    close = np.array([100.0] * n)
+    out = kline.range_ratio_5(high, low, close)
+    mean_range = (4 * (2.0 / 100.0) + 4.0 / 100.0) / 5.0  # 近 5 根含当根
+    assert out[5] == pytest.approx((4.0 / 100.0) / mean_range)
+
+
+def test_tbr_div() -> None:
+    """短周期与中周期主动买占比之差（04 §4.6 #41）。"""
+    tbq = np.array([60.0, 40.0, 50.0, 50.0, 50.0, 90.0])
+    qv = np.array([100.0] * 6)
+    out = kline.tbr_div(tbq, qv)
+    tbr_now = 90.0 / 100.0
+    tbr_5_now = (40.0 + 50.0 + 50.0 + 50.0 + 90.0) / 500.0
+    assert out[5] == pytest.approx(tbr_now - tbr_5_now)

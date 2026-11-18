@@ -276,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
 
     base = load_config(BaseConfig, _resolve(repo_root, args.base))
     months = universe_months(base)
+    # 硬限制：本脚本只处理 M1~M{months−holdout_months}（红线 2）。封存集 M23~M24
+    # 只能由 --final 专用流程处理，不能靠命令行参数绕过。
+    dev_months = months[: len(months) - base.data_window.holdout_months]
+    if args.phase == "holdout":
+        raise SystemExit(
+            "run_pipeline 只处理 M1~M"
+            f"{len(dev_months)}；封存集 {months[len(dev_months) :]} 不得由此脚本下载（红线 2）"
+        )
     bars_root = _resolve(repo_root, args.out)
     raw_root = _resolve(repo_root, args.raw)
     python = sys.executable
@@ -284,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         job
         for job in build_jobs(
             base.paths.data_root,
-            months,
+            dev_months,
             base.data_window.tuning_months,
             base.data_window.holdout_months,
         )

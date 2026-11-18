@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from trade.common.config import load_config
+from trade.common.sizing import SizingConfig
 from trade.dashboard.app import create_app
 from trade.dashboard.config import (
     ControlConfig,
@@ -51,11 +53,13 @@ def test_overview指标与持仓(tmp_path: Path, state_db: Path, report_dir: Pat
     body = client.get("/api/overview").json()
     assert body["live_available"] is True
     kpis = body["kpis"]
+    sizing = load_config(SizingConfig, _ROOT / "configs" / "sizing.yaml")
     assert kpis["equity"]["value"] == 10.35
     assert kpis["today_pnl"]["value"] == 0.23
     assert kpis["today_pnl"]["daily_loss_stop"] == 0.05
     assert kpis["positions"]["count"] == 1
-    assert kpis["positions"]["max_positions"] == 3
+    # 上限跟随 configs/sizing.yaml（使用者可改），不写死
+    assert kpis["positions"]["max_positions"] == sizing.max_positions
     assert kpis["positions"]["margin_used"] == 4.0
     assert kpis["today_trades"]["count"] == 2
     assert kpis["today_trades"]["wins"] == 1

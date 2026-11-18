@@ -64,6 +64,8 @@ class Scenario:
     fixed_slip: float | None  # 单边固定滑点（hell/breakeven 用），None 表示用动态滑点
     tp_taker: bool  # 止盈是否按吃单费率
     all_taker: bool  # 所有成交是否按吃单费率（hell）
+    # 入场是否按 maker 费率（只用于 `maker` 情景的成本对照；不模拟未成交，06 §4.3）
+    entry_maker: bool = False
     # 每币实测半价差下限（alias, 比例）；非空时覆盖 `half_spread_mult × half_spread_min`
     # 的全局口径，用于 `spread_measured` 情景（06 §4.3）
     half_spread_by_symbol: tuple[tuple[str, float], ...] = ()
@@ -103,7 +105,18 @@ _SCENARIOS: dict[str, Scenario] = {
         tp_taker=True,
         all_taker=True,
     ),
-    # 实测点差压力情景（06 §4.3）：每币 half_spread_min = 该币相对点差 P75 / 2，
+    # 入场按 maker 费率的成本对照（06 §4.3）：价格与滑点口径同 base，只改入场费率；
+    # 不模拟挂单未成交，因此是成本优势的保守估计（未计入未成交与排队风险）。
+    "maker": Scenario(
+        name="maker",
+        latency_ms=1000,
+        slip_mult=1.0,
+        half_spread_mult=1.0,
+        fixed_slip=None,
+        tp_taker=False,
+        all_taker=False,
+        entry_maker=True,
+    ),
     # 由 `scripts/spread_profile.py` 产出、`trade.backtest.costs.spread_measured_scenario`
     # 注入；未提供覆盖时用全局 P75 / 2。只报告，不改变 `base`。
     "spread_measured": Scenario(

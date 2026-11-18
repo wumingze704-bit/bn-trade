@@ -51,3 +51,17 @@ def hour_sin(open_time: np.ndarray) -> np.ndarray:
 def hour_cos(open_time: np.ndarray) -> np.ndarray:
     """#33 hour_cos = cos(2π·(UTC 小时 + 分钟/60) / 24)。"""
     return np.cos(2.0 * np.pi * _utc_hour(open_time) / 24.0)
+
+
+def weekday_sin(open_time: np.ndarray) -> np.ndarray:
+    """`weekday_sin = sin(2π·weekday / 7)`（UTC 星期几的周期编码）。"""
+    ts = np.asarray(open_time, dtype="int64")
+    weekday = (ts // _MS_PER_DAY + 4) % 7  # 1970-01-01 是周四
+    return np.sin(2.0 * np.pi * weekday / 7.0)
+
+
+def weekday_cos(open_time: np.ndarray) -> np.ndarray:
+    """`weekday_cos = cos(2π·weekday / 7)`（UTC 星期几的周期编码）。"""
+    ts = np.asarray(open_time, dtype="int64")
+    weekday = (ts // _MS_PER_DAY + 4) % 7
+    return np.cos(2.0 * np.pi * weekday / 7.0)

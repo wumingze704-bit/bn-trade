@@ -75,6 +75,11 @@ class PrefilterCfg(BaseModel):
     vol_z_60: float = Field(default=1.0)
     r1_sigma: float = Field(default=2.0, gt=0.0)
     brk_60: float = Field(default=0.0)
+    # 信号节流：只在 open_time 的分钟序号能被 cadence_min 整除的分钟产生样本（1 = 不节流）
+    cadence_min: int = Field(default=1, ge=1, le=60)
+    # 预过滤方向（04 §6）：any = 三个条件取或；up = 只保留上涨方向事件（brk_60 > 0
+    # 或 r_1 > 0 且 body > 0），剔除砸盘与卖压放量导致的向下事件
+    direction: str = Field(default="any", pattern=r"^(any|up)$")
     retention_min: float = Field(default=0.05, ge=0.0, le=1.0)
     retention_max: float = Field(default=0.60, ge=0.0, le=1.0)
 
@@ -90,10 +95,14 @@ class LabelCfg(BaseModel):
     sl_min: float = Field(default=0.010, gt=0.0, le=1.0)
     sl_max: float = Field(default=0.025, gt=0.0, le=1.0)
     H_label: int = Field(default=60, ge=1)
+    # 止损 ATR 的聚合周期（分钟）：1 = 1 分钟 ATR；5/15 = 先聚合到该周期再算 ATR14
+    atr_timeframe_min: int = Field(default=1, ge=1, le=60)
     entry_latency_ms: int = Field(default=1000)
     c_rt: float = Field(default=0.0012, ge=0.0)
     y_min_r: float = Field(default=0.25, ge=0.0)
     r_mult_clip: tuple[float, float] = (-1.5, 3.0)
+    # exit_sim 的 r_mult 截断区间（04 §7.3；与 triple_barrier 的 r_mult_clip 分开）
+    exit_sim_r_mult_clip: tuple[float, float] = (-1.5, 4.0)
     fill_ratio_max: float = Field(default=0.10, ge=0.0, le=1.0)
     positive_min: float = Field(default=0.10, ge=0.0, le=1.0)
     positive_max: float = Field(default=0.50, ge=0.0, le=1.0)
@@ -111,7 +120,7 @@ class FeaturesConfig(BaseModel):
     label: LabelCfg = Field(default_factory=LabelCfg)
 
 
-# 全部 37 个特征（04 §4.5），顺序与文档一致。
+# 全部 46 个特征（04 §4.7），顺序与文档一致。
 FEATURES: tuple[Feature, ...] = (
     # K 线类（group = kline）
     Feature("r_1", "kline", lambda c, b: kline.r_1(c["close"]), 2, "ewm_z"),
@@ -243,6 +252,8 @@ FEATURES: tuple[Feature, ...] = (
     ),
     Feature("hour_sin", "context", lambda c, b: context.hour_sin(c["open_time"]), 1, "none"),
     Feature("hour_cos", "context", lambda c, b: context.hour_cos(c["open_time"]), 1, "none"),
+    Feature("weekday_sin", "context", lambda c, b: context.weekday_sin(c["open_time"]), 1, "none"),
+    Feature("weekday_cos", "context", lambda c, b: context.weekday_cos(c["open_time"]), 1, "none"),
     # 合约类（group = futures）
     Feature("oi_chg_15", "futures", lambda c, b: futures.oi_chg_15(c["oi"]), 16, "ewm_z"),
     Feature("oi_chg_60", "futures", lambda c, b: futures.oi_chg_60(c["oi"]), 61, "ewm_z"),
@@ -253,6 +264,79 @@ FEATURES: tuple[Feature, ...] = (
         lambda c, b: futures.futures_missing(c["oi"], c["funding_rate"]),
         1,
         "none",
+    ),
+    # 订单流与持仓量扩展（04 §4.6）
+    Feature(
+        "wick_ratio_5",
+        "kline",
+        lambda c, b: kline.wick_ratio_5(c["high"], c["low"], c["open"], c["close"]),
+        5,
+        "none",
+    ),
+    Feature(
+        "close_pos_5",
+        "kline",
+        lambda c, b: kline.close_pos_5(c["high"], c["low"], c["close"]),
+        5,
+        "ewm_z",
+    ),
+    Feature(
+        "range_ratio_5",
+        "kline",
+        lambda c, b: kline.range_ratio_5(c["high"], c["low"], c["close"]),
+        5,
+        "ewm_z",
+    ),
+    Feature(
+        "tbr_div",
+        "kline",
+        lambda c, b: kline.tbr_div(c["taker_buy_quote_volume"], c["quote_volume"]),
+        5,
+        "none",
+    ),
+    Feature(
+        "whale_streak_5",
+        "flow",
+        lambda c, b: flow.whale_streak_5(
+            c["buy_quote"], c["sell_quote"], c["whale_buy_quote"], c["whale_sell_quote"]
+        ),
+        5,
+        "none",
+    ),
+    Feature(
+        "oi_price_div_15",
+        "futures",
+        lambda c, b: futures.oi_price_div_15(c["close"], c["oi"]),
+        16,
+        "ewm_z",
+    ),
+    # 跨市场（同分钟全市场统计，04 §4.7）
+    Feature("xs_breadth", "context", lambda c, b: c["xs_breadth"], 1, "none"),
+    Feature("xs_mean_r15", "context", lambda c, b: c["xs_mean_r15"], 1, "ewm_z"),
+    Feature("xs_disp_r15", "context", lambda c, b: c["xs_disp_r15"], 1, "ewm_z"),
+    # 多周期动量与流动性水平（04 §4.8）
+    Feature("r_240", "kline", lambda c, b: kline.r_240(c["close"]), 241, "ewm_z"),
+    Feature("r_1440", "kline", lambda c, b: kline.r_1440(c["close"]), 1441, "ewm_z"),
+    Feature(
+        "dist_24h_high",
+        "kline",
+        lambda c, b: kline.dist_24h_high(c["high"], c["close"]),
+        1440,
+        "ewm_z",
+    ),
+    Feature(
+        "log_qv_60",
+        "kline",
+        lambda c, b: kline.log_qv_60(c["quote_volume"]),
+        60,
+        "ewm_z",
+    ),
+    Feature(
+        "bars_since_brk_60",
+        "kline",
+        lambda c, b: kline.bars_since_brk_60(c["high"], c["close"]),
+        61,
+        "ewm_z",
     ),
 )
 

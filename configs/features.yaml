@@ -17,6 +17,8 @@ prefilter:
   vol_z_60: 1.0 # 条件一：vol_z_60 ≥ 1.0（04 §6）
   r1_sigma: 2.0 # 条件二：|r_1| ≥ 2.0 × std_60(r)（04 §6）
   brk_60: 0.0 # 条件三：brk_60 > 0（04 §6）
+  direction: any # any=三条件取或；up=只保留上涨方向事件（brk_60 > 0 或 r_1 > 0 且 body > 0，04 §6）
+  cadence_min: 1 # 信号节流：只在分钟序号能被其整除的分钟产生样本（5 = 5 分钟决策，04 §6）
   retention_min: 0.05 # 样本保留率告警下限（04 §6）
   retention_max: 0.60 # 样本保留率告警上限（04 §6）
 
@@ -27,10 +29,12 @@ label:
   sl_min: 0.010 # 止损幅度下限 1.0%（04 §7.2）
   sl_max: 0.025 # 止损幅度上限 2.5%（04 §7.2）
   H_label: 60 # 时间障碍根数（04 §7.4）
+  atr_timeframe_min: 1 # 止损 ATR 的聚合周期（分钟）：1 = 1 分钟 ATR；5/15 = 先聚合再算 ATR14
   entry_latency_ms: 1000 # 入场延迟：1000 → p_1s / hi_post_1s；3000 → p_3s / hi_post_3s
   c_rt: 0.0012 # 固定往返成本估计 0.12%（04 §7.4，triple_barrier 用）
   y_min_r: 0.25 # exit_sim 正样本净 R 下限（04 §7.3，事先固定，不调参）
   r_mult_clip: [-1.5, 3.0] # r_mult 截断区间（04 §7.4，triple_barrier 用）
+  exit_sim_r_mult_clip: [-1.5, 4.0] # exit_sim 的 r_mult 截断区间（04 §7.3）
   fill_ratio_max: 0.10 # 标签窗口内补齐分钟占比上限（04 §7.4）
   positive_min: 0.10 # 正样本率告警下限（04 §8）
   positive_max: 0.50 # 正样本率告警上限（04 §8）

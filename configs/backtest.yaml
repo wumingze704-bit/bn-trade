@@ -3,6 +3,10 @@
 # 说明：模型信号时阈值 θ 来自 model_meta.json（05 §7.2）；R0 信号时用本文件 threshold。
 
 threshold: 0.5 # R0 信号阈值（p=0/1）；模型信号时被 model_meta.json 覆盖
+entry_mode: taker # taker | maker | limit_pullback（回踩挂单，06 §3.2）
+entry_limit_offset_bp: 30.0 # limit_pullback：挂单价 = c_t × (1 − offset_bp/1e4)
+entry_limit_expiry_bars: 5 # limit_pullback：挂单有效根数，未成交即作废
+signal_rank_by: p # 开仓排序分数：p=分类概率；m=回归净 R；ev=p×m（05 §7.2）
 
 costs: # 成本模型（06 §4）
   half_spread_min: 0.0001 # 最小半价差 1bp（06 §3.2）
@@ -15,6 +19,7 @@ scenarios: [base, stress, hell, breakeven] # 每次回测必须全部运行（06
 
 risk: # 风控与交易规则（06 §3.1、§3.4）
   cooldown_bars: 15 # 该币止损后冷却根数
+  cooldown_on: loss_stop # 冷却触发条件：loss_stop=止损类出场且净亏损；any_stop=任一止损类出场（06 §3.1）
   max_chase: 0.003 # 追价上限 0.3%（与实盘 risk.max_chase 同一配置项）
   halt_mode: strict # R6/R8 触发后：strict=停止交易至运行结束，reset=停 halt_reset_days 天后继续（06 §2）
   halt_reset_days: 1 # reset 模式的停机自然日数

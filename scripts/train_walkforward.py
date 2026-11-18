@@ -70,7 +70,19 @@ def make_evaluator(
     exit_cfg: ExitConfig,
     features_cfg: FeaturesConfig,
 ) -> Callable[[str], ThresholdEvaluator]:
-    """返回按验证月构造阈值评估器的工厂（只读该月 bars）。"""
+    """返回按验证月构造阈值评估器的工厂（只读该月 bars）。
+
+    阈值评估用「不停机」的仓位口径：风险停机（R5/R8 等）会把验证月的交易截断，
+    使日均笔数与 PF 曲线失真；正式回测仍用 `configs/sizing.yaml` 的停机设置（05 §7.2）。
+    """
+
+    eval_sizing = sizing_cfg.model_copy(
+        update={
+            "daily_loss_halt": 0.99,
+            "max_drawdown_halt": 0.99,
+            "max_consecutive_losses": 1000,
+        }
+    )
 
     def factory(month: str) -> ThresholdEvaluator:
         start = month_start_ms(month)
@@ -115,7 +127,7 @@ def make_evaluator(
                 ),
                 backtest_cfg=backtest_cfg,
                 exit_cfg=exit_cfg,
-                sizing_cfg=sizing_cfg,
+                sizing_cfg=eval_sizing,
                 features_cfg=features_cfg,
                 trade_masks=masks,
             )

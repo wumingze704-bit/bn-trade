@@ -266,7 +266,35 @@ def test_collate_batch_shape(tmp_path) -> None:
     assert w.shape == (3,)
 
 
-def test_peak_memory_mb_without_cuda() -> None:
+def test_lazy_features_match_resident(tmp_path) -> None:
+    """lazy 特征模式与常驻模式样本、单币特征矩阵逐值一致（05 §2、§5.1）。"""
+    _make_coin(tmp_path, "C01", n=120)
+    common = {
+        "features_dir": tmp_path / "features" / "run",
+        "labels_dir": tmp_path / "labels" / "run",
+        "symbols": ["C01"],
+        "feature_names": _FEATURES,
+        "window_L": 60,
+    }
+    resident = WindowDataset(**common)
+    lazy = WindowDataset(**common, feature_mode="lazy")
+    assert len(lazy) == len(resident) == 5
+    for left, right in zip(resident.samples, lazy.samples, strict=True):
+        assert (left.sym_id, left.row_idx, left.y, left.w) == (
+            right.sym_id,
+            right.row_idx,
+            right.y,
+            right.w,
+        )
+    np.testing.assert_array_equal(lazy.symbol_features(0), resident.symbol_features(0))
+    assert lazy.xs == []  # 特征不常驻
+    with pytest.raises(RuntimeError):
+        lazy[0]
+    with pytest.raises(RuntimeError):
+        lazy.collate([0])
+    with pytest.raises(ValueError):
+        WindowDataset(**common, feature_mode="stale")
+
     """无 CUDA 时显存实测返回 0（05 §6.2）。"""
     if torch.cuda.is_available():
         pytest.skip("有 CUDA，跳过无显卡分支")

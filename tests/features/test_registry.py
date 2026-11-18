@@ -18,9 +18,9 @@ from trade.features import (
 )
 
 
-def test_registry_has_37_features() -> None:
-    assert len(FEATURES) == 37
-    assert len(FEATURES_BY_NAME) == 37
+def test_registry_has_46_features() -> None:
+    assert len(FEATURES) == 53
+    assert len(FEATURES_BY_NAME) == 53
 
 
 def test_registry_rejects_execution_atomic_as_feature() -> None:
@@ -42,7 +42,7 @@ def test_feature_hash_changes_with_lookback() -> None:
 
 
 def test_enabled_features_default_all() -> None:
-    assert len(enabled_features(FeaturesConfig())) == 37
+    assert len(enabled_features(FeaturesConfig())) == 53
 
 
 def test_enabled_features_disabled() -> None:
@@ -50,7 +50,7 @@ def test_enabled_features_disabled() -> None:
     names = [f.name for f in enabled_features(cfg)]
     assert "r_1" not in names
     assert "funding" not in names
-    assert len(names) == 35
+    assert len(names) == 51
 
 
 def test_enabled_features_rejects_unknown() -> None:

@@ -45,7 +45,14 @@ class Predictor:
         self.meta = meta
         self.model_id = str(meta.get("model_id", ""))
         self.threshold = float(meta.get("threshold", 0.5))
-        self.temperature = float(meta.get("temperature", 1.0))
+        calibration = meta.get("calibration")
+        if not isinstance(calibration, dict) or "a" not in calibration:
+            raise ArtifactError(
+                f"模型 {self.model_id} 缺少 Platt 校准参数 calibration={{a,b}}"
+                "（05 §7.1；不得用温度/1.0 静默回退，请重训）"
+            )
+        self.platt_a = float(calibration["a"])
+        self.platt_b = float(calibration.get("b", 0.0))
         self.device = device
         self.arch = str(meta.get("arch"))
         self.window_L = int(meta.get("window_L", 0))
@@ -84,7 +91,7 @@ class Predictor:
             prob = np.asarray(self._booster.predict(_lgbm_matrix(values)), dtype="float64")
             prob = np.clip(prob, 1e-9, 1.0 - 1e-9)
             logit = np.log(prob / (1.0 - prob))
-            p = 1.0 / (1.0 + np.exp(-logit / self.temperature))
+            p = 1.0 / (1.0 + np.exp(-(self.platt_a * logit + self.platt_b)))
             return p, np.zeros(len(p), dtype="float64")
         tensor = torch.from_numpy(values).to(self.device)
         logits: list[np.ndarray] = []
@@ -95,7 +102,7 @@ class Predictor:
                 logits.append(logit.detach().cpu().numpy())
                 regs.append(m.detach().cpu().numpy())
         mean_logit = np.mean(np.stack(logits, axis=0), axis=0)
-        p = 1.0 / (1.0 + np.exp(-mean_logit / self.temperature))
+        p = 1.0 / (1.0 + np.exp(-(self.platt_a * mean_logit + self.platt_b)))
         return p, np.mean(np.stack(regs, axis=0), axis=0)
 
 

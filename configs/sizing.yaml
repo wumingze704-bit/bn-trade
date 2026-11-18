@@ -4,9 +4,9 @@
 
 initial_equity: 100 # 初始本金 USDT（user 运行，由使用者设定）
 mode: fixed_fraction # fixed_fraction | fixed_risk（06 §5.2）
-position_frac: 0.20 # 每笔保证金 = 当前权益 × 20%
+position_frac: 0.18 # 每笔保证金 = 当前权益 × 18%
 leverage: 5
-max_positions: 3 # 0.20 × 3 = 0.60 ≤ 0.95（06 §5.4 校验 1）
+max_positions: 5 # 0.18 × 5 = 0.90 ≤ 0.95（06 §5.4 校验 1）
 base: equity # 按当前权益复利；reference 运行用 base=initial
 risk_per_trade: 0.005 # 仅 fixed_risk 模式使用（06 §5.2）
 max_risk_per_trade: 0.025 # 单笔止损亏损硬上限（占权益）

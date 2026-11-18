@@ -86,6 +86,8 @@ def _clone_with_samples(dataset: WindowDataset, samples: list[Sample]) -> Window
         "feature_names",
         "months",
         "cache_dir",
+        "feature_mode",
+        "lazy_sources",
         "xs",
     ):
         setattr(clone, name, getattr(dataset, name))
@@ -103,6 +105,8 @@ def _empty_dataset() -> WindowDataset:
     dataset.feature_names = ["f0"]
     dataset.months = None
     dataset.cache_dir = None
+    dataset.feature_mode = "resident"
+    dataset.lazy_sources = []
     dataset.xs = []
     dataset.samples = []
     return dataset
@@ -298,3 +302,67 @@ def test_purge_bars小于H_max时报错() -> None:
     with pytest.raises(ValueError, match="purge_bars"):
         require_purge_floor(60, label_mode="triple_barrier", h_max=120, h_label=120)
     require_purge_floor(121, label_mode="exit_sim", h_max=120, h_label=120)
+
+
+def test_run_fold_lgbm_smoke(wf_fixture: dict[str, object]) -> None:
+    """M0（LightGBM）走 walk-forward 分支：折划分、Purge、温度与 θ 口径与 TCN 相同（05 §2、§6）。"""
+    root = wf_fixture["root"]
+    feature_names = wf_fixture["feature_names"]
+    cfg = ModelConfig(
+        arch="lgbm",
+        window_L=10,
+        seeds=[42],
+        lgbm_num_boost_round=20,
+        lgbm_early_stopping_rounds=10,
+    )
+    fold = build_folds(
+        ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05"],
+        first_test_month="2025-04",
+        n_folds=1,
+        train_start="2025-01",
+    )[0]
+
+    def evaluator(signals: pd.DataFrame, n_days: float) -> dict[float, dict[str, float]]:
+        assert not signals.empty
+        assert n_days > 0
+        return {
+            theta: {"net_return": 1.0, "profit_factor": 1.5, "n_trades": 200}
+            for theta in (0.30, 0.40, 0.50)
+        }
+
+    result = run_fold(
+        fold,
+        run_id="wf_lgbm_smoke",
+        features_dir=root / "features" / "run",  # type: ignore[operator]
+        labels_dir=root / "labels" / "run",  # type: ignore[operator]
+        feature_names=feature_names,  # type: ignore[arg-type]
+        train_symbols=["C01", "C02"],
+        all_symbols=["C01", "C02", "C03"],
+        cfg=cfg,
+        walk_cfg=WalkForwardConfig(purge_bars=121, embargo_days=1),
+        threshold_evaluator=evaluator,
+        features_cfg=wf_fixture["features_cfg"],  # type: ignore[arg-type]
+        exit_cfg=wf_fixture["exits_cfg"],  # type: ignore[arg-type]
+        universe_rule_hash=str(wf_fixture["universe_hash"]),
+        market="usdm",
+        models_root=root / "models",  # type: ignore[operator]
+        signals_root=root / "signals",  # type: ignore[operator]
+        manifest_path=wf_fixture["manifest"],  # type: ignore[arg-type]
+    )
+    assert (result.model_dir / "lgbm.txt").is_file()
+    assert (result.model_dir / "model_meta.json").is_file()
+    assert result.threshold == pytest.approx(0.30)
+    signals = pd.read_parquet(result.signals_path)
+    assert set(signals.columns) >= {
+        "symbol",
+        "open_time",
+        "p",
+        "m",
+        "is_sample",
+        "fold_id",
+        "theta",
+    }
+    assert set(signals["symbol"]) == {"C01", "C02", "C03"}
+    assert set(signals["fold_id"]) == {fold.fold_id}
+    assert np.allclose(signals["theta"].to_numpy(dtype="float64"), 0.30)
+    assert signals["p"].between(0.0, 1.0).all()

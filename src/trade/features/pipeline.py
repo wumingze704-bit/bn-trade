@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from trade.features.cross_section import XS_COLUMNS, align_market_series
 from trade.features.normalize import (
     EwmState,
     alpha_from_halflife,
@@ -56,15 +57,29 @@ def _column_array(frame: pd.DataFrame, column: str, n: int) -> np.ndarray:
 
 
 def compute_raw(
-    bars: pd.DataFrame, btc_bars: pd.DataFrame, features: Sequence[Feature]
+    bars: pd.DataFrame,
+    btc_bars: pd.DataFrame,
+    features: Sequence[Feature],
+    cross_section: pd.DataFrame | None = None,
 ) -> dict[str, np.ndarray]:
-    """计算全部启用特征的原始值（未归一化），返回 name -> 数组。"""
+    """计算全部启用特征的原始值（未归一化），返回 name -> 数组。
+
+    `cross_section` 为 `build_market_series` 的输出时，把全市场序列按 `open_time`
+    对齐进本币原始量，供 04 §4.7 的跨市场特征读取。
+    """
     n = len(bars)
     coin: dict[str, np.ndarray] = {
         col: _column_array(bars, col, n) for col in _COIN_FEATURE_COLUMNS
     }
     for col in _FUTURES_COLUMNS:
         coin[col] = _column_array(bars, col, n)
+    if cross_section is not None:
+        aligned = align_market_series(bars["open_time"].to_numpy(dtype="int64"), cross_section)
+        coin.update(aligned)
+    else:
+        # 没有全市场序列时（单币测试、缺数据的场景）按缺失处理：04 §5 的 NaN→0 规则生效
+        for name in XS_COLUMNS:
+            coin[name] = np.full(n, np.nan, dtype="float64")
     btc_aligned = align_btc(bars["open_time"].to_numpy(dtype="int64"), btc_bars)
     btc: dict[str, np.ndarray] = {
         col: _column_array(btc_aligned, col, n) for col in _BTC_FEATURE_COLUMNS
@@ -94,11 +109,13 @@ def compute_features(
     features: Sequence[Feature],
     cfg: FeaturesConfig,
     segments: np.ndarray | None = None,
+    cross_section: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """批量计算标准化特征，返回 open_time + 特征列 的 DataFrame。
 
     按数据段独立计算（03 §6）：每个连续段内的滚动窗口与 EWM 状态不跨越段界，段首
     作为预热。`segments` 为 None 时整段视为单一数据段（与旧行为一致）。
+    `cross_section` 见 `compute_raw`（04 §4.7）。
     """
     n = len(bars)
     if segments is None:
@@ -109,7 +126,7 @@ def compute_features(
     for seg in np.unique(segments):
         idx = np.nonzero(segments == seg)[0]
         seg_bars = bars.iloc[idx].reset_index(drop=True)
-        raw = compute_raw(seg_bars, btc_bars, features)
+        raw = compute_raw(seg_bars, btc_bars, features, cross_section)
         result = normalize_features(raw, features, cfg)
         result.insert(0, "open_time", open_time[idx])
         parts.append(result)
@@ -131,6 +148,8 @@ class IncrementalComputer:
         self._max_lookback = max(feature.lookback for feature in self._features)
         self._coin: dict[str, list[float]] = {}
         self._btc: dict[str, list[float]] = {}
+        # 跨市场特征（04 §4.7）：由调用方每分钟喂入全市场统计；缺省按 NaN（→0）处理
+        self._xs: dict[str, list[float]] = {name: [] for name in XS_COLUMNS}
         self._ewm: dict[str, EwmState] = {
             feature.name: EwmState(0.0, 1.0)
             for feature in self._features
@@ -139,15 +158,22 @@ class IncrementalComputer:
         self._alpha = alpha_from_halflife(cfg.ewm.halflife_bars)
 
     def update(
-        self, coin_bar: Mapping[str, object], btc_bar: Mapping[str, object]
+        self,
+        coin_bar: Mapping[str, object],
+        btc_bar: Mapping[str, object],
+        xs_bar: Mapping[str, object] | None = None,
     ) -> dict[str, float]:
-        """喂入一根新分钟（coin + 已对齐的 btc），返回该分钟的标准化特征。"""
+        """喂入一根新分钟（coin + 已对齐的 btc + 可选的跨市场统计），返回标准化特征。"""
         for col in (*_COIN_FEATURE_COLUMNS, *_FUTURES_COLUMNS):
             self._coin.setdefault(col, []).append(float(coin_bar.get(col, np.nan)))
         for col in _BTC_FEATURE_COLUMNS:
             self._btc.setdefault(col, []).append(float(btc_bar.get(col, np.nan)))
+        for name in XS_COLUMNS:
+            value = np.nan if xs_bar is None else float(xs_bar.get(name, np.nan))
+            self._xs[name].append(value)
 
         coin = {key: np.asarray(value, dtype="float64") for key, value in self._coin.items()}
+        coin.update({name: np.asarray(value, dtype="float64") for name, value in self._xs.items()})
         btc = {key: np.asarray(value, dtype="float64") for key, value in self._btc.items()}
         # 滚动类特征只依赖末尾 max_lookback 根；atr_pct 为 Wilder 全前缀递推，需完整历史
         limit = self._max_lookback

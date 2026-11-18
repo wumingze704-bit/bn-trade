@@ -240,6 +240,7 @@ def _run_scenarios(
                 fees=fees,
                 initial_equity=equity,
                 bars_by_symbol=slim,
+                entry_maker=scenario(name).entry_maker or backtest_cfg.entry_mode == "maker",
             )
     return results
 
