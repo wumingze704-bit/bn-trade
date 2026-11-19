@@ -25,3 +25,13 @@
 19. **`neighbors` 情景自检**：冻结后用 `--neighbors-from docs/rotation/phase1.md` 跑了 4 个相邻组（冻结开关不变），相邻组夏普中位数 0.446、冻结组 1.646，验证了网格文件可被机器读取。
 
 11. **其他取舍**：`exit_check_hours=0`、`funding_filter=false`、`oi_bonus=0`、`stop_atr_mult=3` 作为第 1 轮基线；调仓周期 4h。第 2、3 轮的试验在下面追加。
+
+## 2026-11-19 第二阶段（测试段 M13~M22 一次性确认回测）
+
+20. **依据测试段确认任务指令授权自行决定：判定所需的 M13~M22 指标由同一次运行落盘的 `equity.parquet` / `trades.parquet` 只读切片得出，不重跑。** 原因：`confirm` 阶段的评估区间写死在冻结文件 `src/trade/rotation/stage.py`（M2 起点 2024-11-01 ~ M22 末尾 2026-08-01），脚本没有只跑 M13~M22 的命令行开关，而指令要求只通过 `--stage confirm` 运行、且不得修改冻结文件。因此单次 `confirm` 运行产出「M1 预热 + M2~M22」的完整曲线，M13~M22 的净收益、夏普、回撤、逐月收益、亏损月数、最差月、笔数、换手率、成本占比、bootstrap 置信区间由该次运行的产物切片计算，计算仍调用冻结的 `trade.rotation.metrics.compute_metrics`（切片区间的 `initial_equity` 取 M12 最后一日权益），不重新实现任何策略或指标。
+21. **依据测试段确认任务指令授权自行决定：`--rotation` 显式指向 `configs/rotation_frozen.yaml`。** 脚本默认读 `configs/rotation.yaml`；两者 17 个字段逐项相同（已用 `RotationConfig` 加载比对 `model_dump()` 一致），但冻结文件才是规格来源，确认运行必须读冻结文件。
+22. **依据测试段确认任务指令授权自行决定：`neighbors` 用同一脚本的 `--neighbors-from` 独立入口跑一次。** 该入口不写 `EXPERIMENTS.log`、不覆盖主运行的 `summary.json`，只产出 `neighbors.json`，是敏感性检查而不是测试段的第二次评估；冻结组自身不重复跑，判定用主运行的 `base`。
+23. **依据测试段确认任务指令授权自行决定：`EXPERIMENTS.log` 先写开始记录，运行结束后补写完成记录；崩溃重跑上限 1 次，且只在没有任何收益数字时重跑。** 运行环境：本地 Windows，`C:\Users\32837\AppData\Local\Programs\Python\Python313\python.exe`（Python 3.13.7、numpy 2.4.6、pandas 3.1.0、pyarrow 26.0.0），与 phase1 相同口径；本次不访问币安、不读 M23~M24（本地 `data/bars` 无 202608 及之后文件，守卫再加一层）。
+24. **依据测试段确认任务指令授权自行决定：本地无 `develop` 分支，提交与 push 目标为仓库既有的 `devlop` 分支。** `artifacts/` 与 `data/` 在 `.gitignore` 内，不提交。
+25. **测试段结果与结论**：一次 `confirm` 运行（`run_id=rot_confirm`，未重跑、未崩溃），测试段 M13~M22 的 base 净收益 −7.93%、年化夏普 −0.711、最大回撤 14.71%、亏损月 3 个、最差月 −8.43%、bootstrap 日收益均值 95% 区间 [−0.000964, +0.000558]；cost2x 净收益 −11.22%；neighbors 2/4 组为正。6 项固定标准中第 1、3、5 项不通过，结论 FAIL。**不根据测试段结果修改任何参数、不重跑、不提出“调参后再跑”**；结论与全部数字写 `docs/rotation/phase2.md`，产物在 `artifacts/reports/rotation/rot_confirm/`。
+26. **依据测试段确认任务指令授权自行决定：新增只读汇总脚本 `scripts/rotation_report_confirm.py`**，只读同一次运行的产物切片并用冻结的 `trade.rotation.metrics.compute_metrics` 计算，不重新实现策略；其规格写入 `docs/11-轮动策略.md` §7。切片里没有 `skipped` / `risk_events` / `filter_off_decisions` 明细（未落盘），因此不引用这三项，不做插值或估算。
