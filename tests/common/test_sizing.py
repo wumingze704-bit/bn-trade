@@ -142,3 +142,63 @@ def test_numba与python一致(use_numba):
     a = _calc(_cfg(), use_numba=True)
     b = _calc(_cfg(), use_numba=False)
     assert a == b
+
+
+def _fixed_risk_cfg(**kwargs) -> SizingConfig:
+    """fixed_risk 的实盘起始仓位（configs/sizing.yaml：8%、0.75%、5x）。"""
+    params = dict(
+        mode="fixed_risk",
+        position_frac=0.08,
+        risk_per_trade=0.0075,
+        leverage=5,
+        max_positions=5,
+    )
+    params.update(kwargs)
+    return _cfg(**params)
+
+
+@pytest.mark.parametrize("use_numba", [True, False])
+def test_fixed_risk低波动币被每仓上限截断(use_numba):
+    """止损距离小（低波动）时 notional_raw 超过每仓上限 → position_cap 截断（06 §5.3）。"""
+    # B = 100，每仓上限 = 100 × 0.08 × 5 = 40
+    # 止损距离 1% → notional_raw = 100 × 0.0075 / 0.01 = 75 > 40
+    r = _calc(
+        _fixed_risk_cfg(),
+        base=100.0,
+        sl=0.01,
+        loss_rate=0.01,
+        available_margin=100.0,
+        mean_qv_60=1e7,
+        use_numba=use_numba,
+    )
+    assert r.notional_raw == pytest.approx(75.0)
+    assert r.notional == pytest.approx(40.0)
+    assert r.capped_by == "position_cap"
+    assert r.margin == pytest.approx(8.0)
+
+
+@pytest.mark.parametrize("use_numba", [True, False])
+def test_fixed_risk高波动币不被每仓上限截断(use_numba):
+    """止损距离大（高波动）时 notional_raw 低于每仓上限 → 不截断（06 §5.3）。"""
+    # 止损距离 5% → notional_raw = 100 × 0.0075 / 0.05 = 15 < 40
+    r = _calc(
+        _fixed_risk_cfg(),
+        base=100.0,
+        sl=0.05,
+        loss_rate=0.05,
+        available_margin=100.0,
+        mean_qv_60=1e7,
+        use_numba=use_numba,
+    )
+    assert r.notional == pytest.approx(15.0)
+    assert r.capped_by is None
+    assert r.margin == pytest.approx(3.0)
+
+
+def test_fixed_fraction每仓上限行为不变():
+    """fixed_fraction 的 notional_raw 已含 position_frac × leverage，不再叠加 position_cap。"""
+    r = _calc(
+        _cfg(position_frac=0.2, leverage=5), base=100.0, loss_rate=0.01, available_margin=100.0
+    )
+    assert r.notional == pytest.approx(100.0)
+    assert r.capped_by is None

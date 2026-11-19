@@ -1,0 +1,21 @@
+# 山寨币截面动量轮动策略：冻结配置（调参期 M1~M12 选定，docs/rotation/phase1.md 记录 SHA256）。
+# 规格：docs/11-轮动策略.md §2（唯一规格来源）。
+# 冻结后任何任务不得修改本文件：后续任务（confirm / final）必须逐字段核对 SHA256。
+
+btc_symbol: BTCUSDT
+ma_days: 50
+lookback_days: 14
+top_k: 3
+buffer_mult: 2
+rebalance_hours: 8
+score_lag_hours: 4
+alt_index_days: 7
+min_score: 0.0
+stop_atr_period: 14
+stop_atr_mult: 3.0
+stop_max_pct: 0.15
+stop_cooldown_hours: 24
+exit_check_hours: 0
+funding_filter: true
+oi_bonus: 0.5
+oi_bonus_days: 7

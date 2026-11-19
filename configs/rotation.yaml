@@ -1,0 +1,21 @@
+# 山寨币截面动量轮动策略配置。规格：docs/11-轮动策略.md §2（唯一规格来源）。
+# 字段与 pydantic 模型 trade.rotation.config.RotationConfig 一一对应，未知字段报错。
+# 冻结后不得修改：docs/rotation/phase1.md 记录本文件的 SHA256。
+
+btc_symbol: BTCUSDT # 大盘状态过滤基准
+ma_days: 50 # 大盘过滤：BTC 收盘价 > 过去 N 天 1h 收盘均值
+lookback_days: 14 # 动量打分回看天数 L
+top_k: 3 # 目标持仓数 K
+buffer_mult: 2 # 持仓缓冲区：已持有且仍在前 2K 名则继续持有
+rebalance_hours: 8 # 调仓周期（UTC 00/08/16）
+score_lag_hours: 4 # 打分截止 = 调仓时刻 − 4h（跳过最近 4 小时）
+alt_index_days: 7 # 山寨等权指数 7 日收益 > 0 才开仓
+min_score: 0.0 # score ≤ 0 的币不选
+stop_atr_period: 14 # ATR 周期（4h 根数）
+stop_atr_mult: 3.0 # 灾难止损距离 = min(k_stop × ATR14(4h) ÷ 入场价, stop_max_pct)
+stop_max_pct: 0.15 # 止损距离硬上限（5x 逐仓强平约 −19%）
+stop_cooldown_hours: 24 # 止损后该币 24 小时内不再买入
+exit_check_hours: 0 # 0 = 关闭；1 = 每个整点只做卖出检查（不在整点买入）
+funding_filter: true # 只选资金费 ≤ 当月全市场中位数的币
+oi_bonus: 0.5 # score += oi_bonus × z(OI 7 日变化)；0 = 关闭
+oi_bonus_days: 7 # OI 变化回看天数

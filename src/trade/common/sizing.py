@@ -17,12 +17,14 @@ _CAP_NONE = 0
 _CAP_RISK = 1
 _CAP_LIQUIDITY = 2
 _CAP_MARGIN = 3
+_CAP_POSITION = 4
 
 _CAP_TO_STR = {
     _CAP_NONE: None,
     _CAP_RISK: "risk_cap",
     _CAP_LIQUIDITY: "liquidity",
     _CAP_MARGIN: "margin",
+    _CAP_POSITION: "position_cap",
 }
 
 # 放弃原因编码（06 §5.3）
@@ -116,6 +118,12 @@ def _calc_notional_nb(
 
     notional = notional_raw
     capped = _CAP_NONE
+    # fixed_risk：单仓名义价值再受“每仓保证金上限 × 杠杆”约束（06 §5.3）
+    if mode == _MODE_FIXED_RISK:
+        position_cap = base * position_frac * leverage
+        if position_cap < notional:
+            notional = position_cap
+            capped = _CAP_POSITION
     if risk_cap < notional:
         notional = risk_cap
         capped = _CAP_RISK
@@ -272,6 +280,12 @@ def _calc_notional_py(
 
     notional = notional_raw
     capped = _CAP_NONE
+    # fixed_risk：单仓名义价值再受“每仓保证金上限 × 杠杆”约束（06 §5.3）
+    if mode == _MODE_FIXED_RISK:
+        position_cap = base * position_frac * leverage
+        if position_cap < notional:
+            notional = position_cap
+            capped = _CAP_POSITION
     if risk_cap < notional:
         notional = risk_cap
         capped = _CAP_RISK
