@@ -13,6 +13,7 @@ build/
 dist/
 /data/
 /artifacts/
+/指令/
 
 # Local credentials and private configuration
 configs/*local*.yaml

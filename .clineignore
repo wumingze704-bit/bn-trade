@@ -1,6 +1,7 @@
 # Cline 读取文件时的排除清单：防止读到封存集数据、大文件与密钥（AGENTS.md §6 红线 2、6）
 data/
 artifacts/
+docs/archive/
 .env
 .env.*
 *.pem

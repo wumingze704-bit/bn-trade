@@ -1,7 +1,7 @@
 # 09 币安数据与 API 说明
 
 > 本项目的数据与交易**全部基于币安（Binance）**，不使用任何第三方行情源或交易所。
-> 本文汇总项目用到的全部币安资源：用途、是否需要 API Key、在哪个阶段使用。接口路径、参数、权重、费率会变化，**实施与每次部署前都必须对照 [developers.binance.com](https://developers.binance.com) 最新文档核对**，核对结果按 §9 写入 `docs/records.md`。
+> 本文汇总项目用到的全部币安资源：用途、是否需要 API Key、在哪个阶段使用。接口路径、参数、权重、费率会变化，**实施与每次部署前都必须对照 [developers.binance.com](https://developers.binance.com) 最新文档核对**，核对结果按 §9 写入 `docs/archive/records.md`。
 
 ## 1. 总览
 
@@ -60,7 +60,7 @@
 | `GET /fapi/v1/openOrders`、`DELETE /fapi/v1/allOpenOrders`                                               | 对账、Kill Switch                                                                                                                                                 |
 | 算法条件单接口（`POST /fapi/v1/algoOrder`、`DELETE /fapi/v1/algoOrder`、`GET /fapi/v1/openAlgoOrders`、`GET /fapi/v1/algoOrder`） | 止损单与追踪改单（07 §5.2）。经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单返回 `-4120`，必须先走算法订单接口；参数见下 |
 
-算法条件单参数（测试网核对，原始记录见 docs/records.md）：
+算法条件单参数（测试网核对，原始记录见 docs/archive/records.md）：
 
 - `POST /fapi/v1/algoOrder`：`algoType` 是「算法类别」，条件单固定为 **`CONDITIONAL`**，真正的 STOP_MARKET 放在 **`type`** 字段（`algoType=STOP_MARKET` 会返回 `-4500 Invalid algoType`）。其余字段：`side`、`quantity`、`reduceOnly`、`triggerPrice`、`triggerPriceType`（`CONTRACT_PRICE`）、`workingType`（`CONTRACT_PRICE`）、`newClientAlgoId`；响应含 `algoId`、`clientAlgoId`、`algoStatus`、`orderType`。
 - `DELETE /fapi/v1/algoOrder`：按 `symbol` + `algoId`（或 `clientAlgoId`）撤销。
@@ -104,7 +104,7 @@
 - 单连接订阅流上限 1024；`MarketDataFeed` 先按路由分组，再按该上限切分成多条连接（07 §3.1）。
 - 用户数据流不能放进组合流，必须用 listenKey 单独连接。
 
-订阅核对结论见 docs/records.md；`scripts/api_smoke.py --ws-check` 按路由各订阅一段时间，逐类打印消息数，任一为 0 判失败（09 §8）。
+订阅核对结论见 docs/archive/records.md；`scripts/api_smoke.py --ws-check` 按路由各订阅一段时间，逐类打印消息数，任一为 0 判失败（09 §8）。
 
 ### 3.4 历史数据仓库（data.binance.vision）
 
@@ -178,4 +178,4 @@
 
 ## 9. 接口核对记录
 
-每次部署前按 §8 核对接口，核对记录写入 [docs/records.md](./records.md)。
+每次部署前按 §8 核对接口，核对记录写入 [docs/archive/records.md](./archive/records.md)。

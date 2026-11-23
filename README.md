@@ -1,8 +1,12 @@
 # bn-trade
 
-币安山寨币超短线做多量化工具。
+币安 USDⓈ-M 永续多策略研究与实盘工具（允许做多与做空）。
 
-工程阶段与验收标准见 [docs/design.md](docs/design.md) 和 [docs/08-开发计划与验收.md](docs/08-开发计划与验收.md)。
+当前工作按 `指令/自动多轮/` 下的指令执行：**平时只发 `指令/自动多轮/0_自动调度_每次发这个.txt`**，Agent 会读取 `docs/research/ledger.yaml` 与各结果文件判断该做哪一项（自动研究循环 / 最终检验 / 实盘工程与看板 / 影子盘与上线评估 / 实盘监控）并执行。
+
+- 目标与风险包络：[docs/00-当前目标.md](docs/00-当前目标.md)
+- 文档索引：[docs/design.md](docs/design.md)；任务交接文件：`docs/research/`
+- 已结束的旧策略文档在 [docs/archive/](docs/archive/README.md)，只供查阅，不代表当前规格。
 
 ## 环境
 
@@ -35,10 +39,11 @@ python -m pip install -e .
 ## 使用 Cline 时的规则文件说明
 
 - 工作区根目录必须是本仓库根目录（`AGENTS.md` 与 `.clinerules/` 所在目录），否则 Cline 找不到规则文件。
-- `.clinerules/00-core.md` 无 frontmatter，每个任务都注入：AGENTS.md 的红线 1~15、工作流程、质量命令、完成报告要点。它是 AGENTS.md 的摘要，冲突时以 AGENTS.md 为准。
+- `.clinerules/00-core.md` 无 frontmatter，每个任务都注入：AGENTS.md 的红线 1~14、工作流程、质量命令、完成报告要点。它是 AGENTS.md 的摘要，冲突时以 AGENTS.md 为准。
 - `.clinerules/10-docs.md` 的 `paths` 为 `docs/**`，只在上下文涉及设计文档时生效；`.clinerules/20-quant.md` 的 `paths` 为 `src/trade/**`、`scripts/**`、`configs/**`、`tests/**`，只在涉及量化核心代码时生效。
-- `.clineignore` 让 Cline 不读取 `data/`、`artifacts/`、`.env` 与密钥类文件（AGENTS.md §6 红线 2、6）。
+- `.clineignore` 让 Cline 不读取 `data/`、`artifacts/`、`docs/archive/`、`.env` 与密钥类文件（AGENTS.md §6 红线 6、13）。
 - 摘要与 AGENTS.md 的一致性由 `tests/test_agent_rules.py` 校验：改 AGENTS.md 后同步 `.clinerules/` 并运行该测试。
+- `指令/` 不进 git 仓库（`.gitignore` 已覆盖），只在本地作为任务来源。
 
 ## 长时脚本与 numba 编译缓存
 
@@ -49,7 +54,7 @@ $env:TRADE_NUMBA_CACHE = "1"
 python scripts/tuning_exits.py --features-dir data/features/ds_20261107 --limit 2
 ```
 
-## P0 检查
+## 质量检查
 
 ```powershell
 python scripts/check_env.py

@@ -16,9 +16,9 @@ DOCS_RULES_PATH = REPO_ROOT / ".clinerules" / "10-docs.md"
 QUANT_RULES_PATH = REPO_ROOT / ".clinerules" / "20-quant.md"
 CLINEIGNORE_PATH = REPO_ROOT / ".clineignore"
 
-# AGENTS.md §6 的红线编号（1~15）与本文件要求再列一次的编号
-RED_LINE_NUMBERS = tuple(range(1, 16))
-QUANT_RED_LINE_NUMBERS = (1, 2, 3, 4, 12, 13, 15)
+# AGENTS.md §6 的红线编号（1~14）与本文件要求再列一次的编号
+RED_LINE_NUMBERS = tuple(range(1, 15))
+QUANT_RED_LINE_NUMBERS = (1, 2, 3, 4, 11, 12, 14)
 QUALITY_COMMAND_COUNT = 5
 
 NUMBERED_ITEM_RE = re.compile(r"^(\d{1,2})\.\s+(\S.*)$")
@@ -136,10 +136,10 @@ def agents_red_lines() -> dict[int, str]:
     return numbered_items(section_body(read_rules_text(AGENTS_PATH), "量化专项红线"))
 
 
-def test_核心规则照抄十五条红线() -> None:
+def test_核心规则照抄十四条红线() -> None:
     """00-core.md 的红线必须与 AGENTS.md §6 逐条完全相等（不改写、不删减）。"""
     agents = agents_red_lines()
-    core = numbered_items(section_body(read_rules_text(CORE_RULES_PATH), "红线 1~15"))
+    core = numbered_items(section_body(read_rules_text(CORE_RULES_PATH), "红线 1~14"))
     assert tuple(sorted(agents)) == RED_LINE_NUMBERS
     assert core == agents
 
@@ -161,12 +161,16 @@ def test_核心规则包含五条质量命令() -> None:
     assert core_commands == agents_commands
 
 
-def test_文档规则包含红线11与文档同步对照表() -> None:
-    """10-docs.md 必须包含红线 11 原文与 §5.1 对照表原文。"""
+def test_文档规则包含文档同步规则与对照表() -> None:
+    """10-docs.md 必须包含 AGENTS.md §5 的同步规则原文与 §5.1 对照表原文。"""
     docs_rules = read_rules_text(DOCS_RULES_PATH)
-    assert agents_red_lines()[11] in docs_rules
+    agents_text = read_rules_text(AGENTS_PATH)
+    for rule in section_body(agents_text, "文档同步规则"):
+        stripped = rule.strip()
+        if stripped.startswith("- "):
+            assert stripped in docs_rules, f"§5 规则未同步到 10-docs.md：{stripped}"
 
-    agents_rows = table_rows(section_body(read_rules_text(AGENTS_PATH), "文档同步对照表"))
+    agents_rows = table_rows(section_body(agents_text, "文档同步对照表"))
     docs_rows = table_rows(section_body(docs_rules, "文档同步对照表"))
     assert agents_rows
     assert docs_rows == agents_rows

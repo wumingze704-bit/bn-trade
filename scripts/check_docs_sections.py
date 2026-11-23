@@ -9,9 +9,10 @@
 
 检查项：
     a) 标题（编号 + 标题文本 + 层级）与基线完全一致；
-    b) 基线中的数字 token 在精简后不得无故消失，消失的必须出现在 docs/records.md；
+    b) 基线中的数字 token 在精简后不得无故消失，消失的必须出现在 docs/archive/records.md；
     c) configs/*.yaml 的键名在基线文档出现过的，精简后仍须出现；
-    d) 全仓库（docs/、src/、scripts/、AGENTS.md）的“文档 §章节”引用必须指向仍存在的章节。
+    d) 全仓库（docs/、src/、scripts/、AGENTS.md）的“文档 §章节”引用必须指向仍存在的章节
+       （docs/archive/ 下的归档文档与 docs/ 下的当前文档一样算有效目标）。
 
 任一项不通过时以非零退出码结束，并逐行输出问题。
 """
@@ -169,6 +170,25 @@ def load_baseline(path: Path, baseline_dir: Path | None, root: Path) -> str:
     return result.stdout.decode("utf-8")
 
 
+def try_load_baseline(path: Path, baseline_dir: Path | None, root: Path) -> str | None:
+    """读取基线内容，基线不存在时返回 None。
+
+    新增文档在基线中不存在，此时无法做前后比对，由调用方跳过并打印提示（不静默当成通过）。
+
+    Args:
+        path: 文档路径。
+        baseline_dir: 基线快照目录；为 None 时用 `git show HEAD:<路径>`。
+        root: 仓库根目录。
+
+    Returns:
+        基线全文；基线不存在时为 None。
+    """
+    try:
+        return load_baseline(path, baseline_dir, root)
+    except SystemExit:
+        return None
+
+
 def check_headings(path: Path, before: str, after: str) -> list[str]:
     """比对标题序列（层级 + 编号 + 标题文本）。
 
@@ -323,6 +343,22 @@ def check_refs(
     return errors, warnings
 
 
+def iter_doc_paths(root: Path) -> list[Path]:
+    """列出全部设计文档（docs/ 当前文档与 docs/archive/ 归档文档）。
+
+    归档文档不再更新，但其章节号仍是源码注释里“04 §7.3”这类引用的有效目标。
+
+    Args:
+        root: 仓库根目录。
+
+    Returns:
+        文件名以两位编号开头的文档路径列表。
+    """
+    paths = sorted((root / "docs").glob("*.md"))
+    paths.extend(sorted((root / "docs" / "archive").glob("*.md")))
+    return [path for path in paths if DOC_ID_RE.match(path.name)]
+
+
 def doc_section_map(
     root: Path, baseline_dir: Path | None, *, baseline: bool = False
 ) -> dict[str, set[str]]:
@@ -337,11 +373,19 @@ def doc_section_map(
         如 {"06": {"1", "3", "3.3", ...}}。
     """
     mapping: dict[str, set[str]] = {}
-    for path in sorted((root / "docs").glob("*.md")):
+    for path in iter_doc_paths(root):
         match = DOC_ID_RE.match(path.name)
         if not match:
             continue
-        text = load_baseline(path, baseline_dir, root) if baseline else read_text(path)
+        if baseline:
+            text = try_load_baseline(path, baseline_dir, root)
+            if text is None and path.parent.name == "archive":
+                # 归档文档在基线里位于 docs/ 根下，路径不同但章节号相同。
+                text = try_load_baseline(root / "docs" / path.name, baseline_dir, root)
+            if text is None:
+                continue
+        else:
+            text = read_text(path)
         mapping[match.group(1)] = extract_sections(text)
     return mapping
 
@@ -375,15 +419,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     files = [p if p.is_absolute() else root / p for p in files]
 
-    records_path = root / "docs" / "records.md"
+    records_path = root / "docs" / "archive" / "records.md"
     records_numbers = extract_numbers(read_text(records_path)) if records_path.is_file() else set()
     keys = config_keys(root)
     now_map = doc_section_map(root, args.baseline_dir)
     base_map = doc_section_map(root, args.baseline_dir, baseline=True)
 
     problems: list[str] = []
+    skipped: list[str] = []
     for path in files:
-        before = load_baseline(path, args.baseline_dir, root)
+        before = try_load_baseline(path, args.baseline_dir, root)
+        if before is None:
+            skipped.append(path.name)
+            continue
         after = read_text(path)
         problems.extend(check_headings(path, before, after))
         problems.extend(check_numbers(path, before, after, records_numbers))
@@ -392,18 +440,21 @@ def main(argv: list[str] | None = None) -> int:
     problems.extend(ref_errors)
 
     if not records_path.is_file():
-        problems.append("docs/records.md: 文件不存在")
+        problems.append("docs/archive/records.md: 文件不存在")
 
     for problem in problems:
         print(problem)
     for warning in ref_warnings:
         print(f"[警告] {warning}")
+    for name in skipped:
+        print(f"[提示] {name}: 基线中不存在该文档，跳过前后比对")
     if problems:
         print(f"\n共 {len(problems)} 处问题，另有 {len(ref_warnings)} 条基线已有警告；检查未通过。")
         return 1
     print(
-        f"检查通过：{len(files)} 份文档的标题、数字、配置键与全仓库章节引用一致"
-        f"（基线已有的失效引用 {len(ref_warnings)} 条，见上方警告）。"
+        f"检查通过：{len(files) - len(skipped)} 份文档的标题、数字、配置键与全仓库章节引用一致"
+        f"（基线已有的失效引用 {len(ref_warnings)} 条，"
+        f"无基线而跳过的文档 {len(skipped)} 份，见上方提示）。"
     )
     return 0
 
