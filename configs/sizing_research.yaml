@@ -1,0 +1,19 @@
+# 研究期风险包络（docs/13-研究框架.md §3；由使用者确定，Agent 不得自行修改）。
+# 字段与 pydantic 模型 trade.common.sizing.SizingConfig 一一对应，未知字段报错。
+# 从 configs/sizing.yaml 复制后按自动研究循环指令第二部分第 3 条修改；旧文件不动。
+
+initial_equity: 100 # 初始权益 USDT（研究、最终检验、影子盘统一 100 USDT 模拟）
+mode: fixed_risk # fixed_fraction | fixed_risk
+position_frac: 0.08 # 每仓保证金上限 = 权益 × 8%（fixed_risk 下为名义价值上限）
+leverage: 5
+max_positions: 10 # 0.08 × 10 = 0.80 ≤ 0.95
+base: equity # 按当前权益复利
+risk_per_trade: 0.0075 # 默认每笔风险；冻结候选时在 {0.005, 0.0075, 0.01} 中选
+max_risk_per_trade: 0.025 # 单笔止损亏损硬上限（占权益）
+daily_loss_stop: 0.05 # 当日亏损达权益 5% 停止开仓
+daily_loss_halt: 0.08 # 当日亏损达 8% 全平并停机
+max_drawdown_halt: 0.20 # 从峰值回撤 20% 停机
+max_consecutive_losses: 6
+consecutive_loss_pause_min: 120 # 连续止损后暂停开仓分钟数
+liq_cap: 0.005 # 单币名义 ≤ 0.5% × 该币 24 小时成交额 / 24
+maint_margin_rate: 0.01 # 维持保证金率（保守值）

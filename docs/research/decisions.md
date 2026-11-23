@@ -1,5 +1,52 @@
 # 决策记录（共用，只追加）
 
+## 2026-11-23 自动研究循环（首次运行）
+
+### 1. 运行位置与研究数据
+
+- 研究数据：2020-10 ~ 2026-07 的月度 1h/1d K 线与资金费，共 59,703 个文件、约 834 MB，
+  全部来自 data.binance.vision 月度目录，CHECKSUM 校验通过，0 缺失、0 失败（`data/history/manifest.json`）。
+- 选币快照：`data/universe_hist/` 重建 70 个月（2020-10 ~ 2026-07），规则与 `configs/universe.yaml` 一致；
+  第 7 步质量门槛改为“R 前一个自然月 1h 缺失比例 ≤ 1%”。各月入选数：2020-10 ~ 2021-01 依次为
+  0、0、8、9，此后 2021-02 起 ≥ 20（最多 60），最近 6 个月为 2026-02 48、2026-03 39、2026-04 38、
+  2026-05 33、2026-06 35、2026-07 39。`research_start` 取第一个 ≥ 20 的月份 2021-02-01。
+- 181 个币在 `artifacts/exchange_info/rules.json` 中没有交易规则（多为已下架且逐笔数据已清理的老合约，
+  以及 TradFi 合约）。这些币无法取整与判定可交易性，统一标记 `excluded`，不进入 U(R)；名单写入
+  `data/universe_hist/summary.json`。2020-10 的快照在补充该标记前生成，不用于研究（research_start 之后）。
+- 运行位置：服务器上加载 310 个币、2021-01~2026-07 数据，峰值 RSS 630 MB、耗时 46 秒，空闲内存 2.5 GB，
+  满足“峰值 ≤ 1.5 GB 且内存充足”，因此研究在东京服务器上运行（1 个进程，`nice -n 10`，tmux）。
+
+### 2. 与旧框架的差异（有意偏差，已同步 docs/13）
+
+- 旧回测的滑点用 1 分钟 `rv_15_raw`；本框架只有 1h 数据，改用过去 24 小时 1h 对数收益标准差
+  作为波动代理：`slip = max(1bp, Y × rv_1h × sqrt(notional / mean_1h_quote_volume))`，
+  `Y` 取 `configs/backtest.yaml: costs.Y`。已在 `docs/13-研究框架.md` §4 写明。
+- 流动性上限按指令第二部分第 3 条：`单币名义 ≤ liq_cap × 该币 24 小时成交额 / 24`，
+  `liq_cap` 取 `configs/sizing_research.yaml` 的 0.005；旧框架的 `mean_60` 口径不再使用。
+- Deflated Sharpe 的 `trial_sharpes` 与 `sharpe` 统一用日频非年化夏普（指令第五部分 B 第 9 条），
+  `n_obs` 为拼接曲线日数；与 `trade.backtest.sanity.deflated_sharpe` 的“同周期单位”要求一致。
+
+### 3. 首轮 R1~R5 结果与关键约束
+
+- R1~R5 首轮网格全部不达标：拼接年化夏普分别为 R1 −0.470、R2 −0.607、R3 无法选参（训练期无交易，
+  全期最好 0.43）、R4 −0.939、R5 −1.078。逐组数字与诊断见 `docs/research/rounds/R1.md` ~ `R5.md`，
+  报告在服务器 `artifacts/reports/R1~R5/grid.json`，试验登记 `artifacts/reports/EXPERIMENTS.log`。
+- 关键约束（使用者确定的风险包络，Agent 不得修改）：100 USDT × `risk_per_trade` 0.0075 ÷ 15% 止损
+  ≈ 4.9 USDT 名义，低于最小下单额 5 × 1.1 = 5.5，因此宽止损仓位全部被丢弃。R3 的 3 × ATR14(1d)
+  几乎总是触及 15% 上限，2021-02~2022-02 没有交易，按第七部分第 3 条无法选参；R4 的多头一侧
+  （近期下跌币，波动更大）也被大量丢弃。
+- 所有轮次都未修订：网格内已覆盖可调参数，方向上做反向选择属于按结果挑参数，不符合第七部分第 6 条。
+  各轮的决定与理由写在对应 `rounds/*.md` 的“判定”一节。
+
+### 4. ledger 被同步覆盖后恢复
+
+- 服务器 `~/trade` 不是 git 仓库，研究结果直接写在服务器上的 `docs/research/ledger.yaml`。在同步代码时
+  用 tar 覆盖了该文件，导致 R1~R4 的 trials 与状态被重置；已按服务器 `EXPERIMENTS.log`（R1 12 条、
+  R2 6 条、R3 8 条、R4 6 条、R5 4 条，合计 36 条 `kind=tuning`）恢复 `trials_used: 36` 与
+  R1~R5 的 failed 状态与结果摘要。之后同步代码时排除 `docs/research/ledger.yaml`，以本地 git 版本为准，
+  研究运行结束后再把服务器 ledger 复制回本地。
+
+
 ## 2026-11-23 一次性准备（00_一次性准备_最先发这个.txt）
 
 ### 1. 分支与 git

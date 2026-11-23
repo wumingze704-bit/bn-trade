@@ -1,0 +1,17 @@
+# R1 截面动量多空网格（docs/13 §5；指令第八部分）
+round: R1
+family: xs_momentum_ls
+exposure: neutral
+params:
+  - {lookback_days: 7, top_k: 3, rebalance_hours: 8}
+  - {lookback_days: 7, top_k: 3, rebalance_hours: 24}
+  - {lookback_days: 7, top_k: 5, rebalance_hours: 8}
+  - {lookback_days: 7, top_k: 5, rebalance_hours: 24}
+  - {lookback_days: 14, top_k: 3, rebalance_hours: 8}
+  - {lookback_days: 14, top_k: 3, rebalance_hours: 24}
+  - {lookback_days: 14, top_k: 5, rebalance_hours: 8}
+  - {lookback_days: 14, top_k: 5, rebalance_hours: 24}
+  - {lookback_days: 28, top_k: 3, rebalance_hours: 8}
+  - {lookback_days: 28, top_k: 3, rebalance_hours: 24}
+  - {lookback_days: 28, top_k: 5, rebalance_hours: 8}
+  - {lookback_days: 28, top_k: 5, rebalance_hours: 24}

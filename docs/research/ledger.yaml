@@ -1,0 +1,23 @@
+version: 2
+global_trial_budget: 200
+trials_used: 36
+research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
+research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
+rounds:
+  - {id: R1, family: xs_momentum_ls, status: failed, trials: 12, result: "拼接夏普 -0.470；成本/毛收益 1.42；R8 停机；见 rounds/R1.md"}
+  - {id: R2, family: funding_carry_ls, status: failed, trials: 6, result: "拼接夏普 -0.607；最大回撤 24.5%；见 rounds/R2.md"}
+  - {id: R3, family: ts_trend, status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md"}
+  - {id: R4, family: xs_reversal_ls, status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md"}
+  - {id: R5, family: ensemble, status: failed, trials: 4, result: "拼接夏普 -1.078；成分均不达标；见 rounds/R5.md"}
+  - {id: R6, family: ai_proposed_1, status: pending, trials: 0, result: null}
+  - {id: R7, family: ai_proposed_2, status: pending, trials: 0, result: null}
+  - {id: R8, family: ai_proposed_3, status: pending, trials: 0, result: null}
+  - {id: R9, family: ai_proposed_4, status: pending, trials: 0, result: null}
+  - {id: R10, family: ai_proposed_5, status: pending, trials: 0, result: null}
+qualified_pool: []
+candidates: []
+final_windows:
+  - {id: W1, start: "2026-08-01", end: "2026-11-30", available_after: "2026-12-03", status: unused, candidate: null}
+  - {id: W2, start: "2026-12-01", end: "2027-02-28", available_after: "2027-03-03", status: unused, candidate: null}
+  - {id: W3, start: "2027-03-01", end: "2027-05-31", available_after: "2027-06-03", status: unused, candidate: null}
+live_candidates: []

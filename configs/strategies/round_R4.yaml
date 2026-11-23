@@ -1,0 +1,11 @@
+# R4 短期反转多空网格（docs/13 §5；指令第八部分）
+round: R4
+family: xs_reversal_ls
+exposure: neutral
+params:
+  - {lookback_days: 1, top_k: 3}
+  - {lookback_days: 1, top_k: 5}
+  - {lookback_days: 2, top_k: 3}
+  - {lookback_days: 2, top_k: 5}
+  - {lookback_days: 3, top_k: 3}
+  - {lookback_days: 3, top_k: 5}

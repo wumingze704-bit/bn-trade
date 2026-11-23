@@ -1,0 +1,45 @@
+# 研究框架配置（docs/13-研究框架.md §2）。
+# 字段与 pydantic 模型 trade.research.config.ResearchConfig 一一对应，未知字段报错。
+
+paths:
+  klines_1h: ./data/klines_1h
+  klines_1d: ./data/klines_1d
+  funding: ./data/funding
+  universe_hist: ./data/universe_hist
+  research_cache: ./artifacts/research_cache
+  experiments_log: ./artifacts/reports/EXPERIMENTS.log
+  artifacts: ./artifacts
+  data_root: ./data
+
+rolling:
+  train_months: 12 # 研究起点起最初 12 个月只做训练与预热
+  folds: 5 # 训练期之后切成 5 个等长验证折
+
+bootstrap:
+  iters: 10000
+  seed: 42
+
+execution:
+  half_spread_top_n: 20 # 当月 30 天成交额前 20 名
+  half_spread_top_bp: 1.0 # 前 20 名最小半价差 1bp
+  half_spread_other_bp: 3.0 # 其余最小半价差 3bp
+  slip_min_bp: 1.0 # 最小单边滑点 1bp
+  impact_y: 1.0 # 平方根冲击模型系数（backtest.yaml costs.Y）
+  impact_vol_hours: 24 # 冲击模型的波动与成交额窗口（小时）
+  stop_slip_mult: 2.0 # 止损成交按 2 倍滑点
+  cooldown_hours: 24 # 止损后该币 24 小时内不同方向开仓
+  delist_penalty: 0.01 # 下架 / 断档强制平仓额外 1% 惩罚
+  stop_max: 0.15 # 止损距离硬上限
+
+portfolio:
+  total_notional_cap: 2.0 # 多 + 空总名义 ≤ 权益 × 2
+  net_exposure_cap: 1.0 # 净敞口绝对值 ≤ 权益 × 1
+  margin_cap: 0.95 # 总保证金 ≤ 权益 × 0.95
+  neutral_max_gap: 0.10 # 中性策略多空名义差 ≤ 10%
+  liq_cap_hours: 24 # 流动性上限使用的成交额窗口（小时）
+  max_positions: 10 # 与 sizing_research.yaml 一致
+
+quality:
+  missing_ratio_max: 0.01 # 选币第 7 步：1h K 线缺失比例 ≤ 1%
+
+scenarios: [base, cost2x, nohalt, delay1, shuffle, long_only, short_only]
