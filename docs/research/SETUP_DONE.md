@@ -1,12 +1,12 @@
 结论：DONE
 
 准备完成时间：2026-11-23 11:40 UTC（本地 19:40 CST）。执行文件：`指令/自动多轮/00_一次性准备_最先发这个.txt`。
-提交：`54fe7f4`（chore(setup): 一次性准备），已推送到 `origin/devlop`。
+提交：`54fe7f4`（chore(setup): 一次性准备），已推送到 `origin/develop`。
 
 ## 一、环境检查结果
 
 - 指令文件：`指令/自动多轮/` 下 7 个文件齐全（0 调度、00 准备、1 研究循环、2 最终检验、3 实盘工程与看板、4 影子盘与上线评估、5 实盘监控）。
-- git：分支 `devlop`（远端 `origin/devlop`；远端不存在 `develop`，按实际分支执行）；`git pull --rebase origin devlop` 成功；`origin` = `https://github.com/wumingze704-bit/bn-trade.git`。
+- git：开发分支 `develop`（远端 `origin/develop`；原分支名 `devlop` 为拼写错误，已改名并推送）；`git pull --rebase` 成功；`origin` = `https://github.com/wumingze704-bit/bn-trade.git`。
 - Python：3.11.9（`C:\Users\32837\AppData\Local\Programs\Python\Python311\python.exe`）。
 - 测试基线（改动前，补装依赖后）：`1 failed, 690 passed, 3 skipped, 16 warnings in 103.11s`。
   失败项：`tests/models/test_dataset.py::test_pinned_cpu_placement`（`RuntimeError: Cannot access accelerator device when none is available`，本机无 CUDA 设备，按指令不修改测试）。

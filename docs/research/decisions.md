@@ -102,3 +102,11 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 依据一次性准备任务指令授权自行决定：本任务要改写的规范文件（AGENTS.md、`.clinerules/`、
 `tests/test_agent_rules.py` 的解析部分、`docs/tasks.md`、`docs/design.md`、README、`.clineignore`、`.gitignore`）
 均属指令第三部分底线之外，按指令要求直接改写，不再另行征求确认。
+
+
+依据使用者指示自行决定（2026-11-23，准备完成之后）：
+分支名 `devlop` 是 `develop` 的拼写错误。已执行 `git branch -m devlop develop`，把本地分支改名为
+`develop`、推送到 `origin/develop`，并删除远端拼写错误的分支 `origin/devlop`（`develop` 与 `devlop`
+指向同一个提交，历史未改写）。AGENTS.md §2/§9、`.clinerules/00-core.md`、`docs/research/` 里的分支名
+同步改为 `develop`；README 重写为当前体系的使用说明（调度用法、目录结构、文档入口、质量检查、数据与制品、
+服务器与网络、分支与提交、安全与已知状态）。`docs/archive/tasks.md` 里的旧记录保持原样（归档文档不随代码改动更新）。

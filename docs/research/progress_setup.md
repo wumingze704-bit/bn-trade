@@ -19,13 +19,12 @@
 
 ## 二、git 检查（第二部分第 2 条）
 
-- 分支：仓库的实际开发分支名是 `devlop`（`origin/devlop`，远端不存在 `develop`；远端分支为
-  `main`、`devlop`、`feat/p4-p6-dashboard-models`）。按“develop 分支”的实际含义使用 `devlop`，
-  不新建 `develop`（理由见 decisions.md）。
+- 分支：仓库原来的分支名是 `devlop`（`devlop` 是 `develop` 的拼写错误）。准备阶段按该名字执行，
+  准备完成后已把本地与远端分支改名为 `develop`（远端分支为 `main`、`develop`、`feat/p4-p6-dashboard-models`）。
 - 准备前未提交改动：`docs/rotation/decisions.md`、`docs/rotation/progress_round2.md`、
   `docs/rotation/round2.md`、`scripts/rotation_grid_scan.py`（`指令/` 未跟踪，已排除）。
   已单独提交 `chore: 准备前快照`（0c90cf2）。
-- `git pull --rebase origin devlop`：成功（当前分支已是最新）。
+- `git pull --rebase origin develop`：成功（当时分支名为 `devlop`，准备完成后已改名为 `develop`）。
 - `git remote -v`：`origin https://github.com/wumingze704-bit/bn-trade.git`（fetch/push）。
 
 ## 三、Python 环境与测试基线（第二部分第 3 条）
