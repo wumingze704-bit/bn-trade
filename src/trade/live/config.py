@@ -71,6 +71,55 @@ class StorageConfig(BaseModel):
     retention_days: int = Field(default=90, ge=1, le=3650)
 
 
+class EngineConfig(BaseModel):
+    """低频引擎的路径、节拍与阈值（07 §6、§12；configs/live.yaml engine 节）。
+
+    所有字段都有默认值，旧版 `configs/live.yaml`（没有 engine 节）仍可加载；
+    运行引擎时建议在 YAML 中显式写出，便于核查。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 交接文件
+    ledger: Path = Path("./docs/research/ledger.yaml")
+    candidates_dir: Path = Path("./docs/research/candidates")
+    final_dir: Path = Path("./docs/research/final")
+    shadow_dir: Path = Path("./docs/research/shadow")
+    # 研究与基础配置（费率、执行成本、组合上限、停机方式）
+    research: Path = Path("./configs/research.yaml")
+    base: Path = Path("./configs/base.yaml")
+    backtest: Path = Path("./configs/backtest.yaml")
+    sizing_research: Path = Path("./configs/sizing_research.yaml")
+    # 研究数据目录：回补 1h / 1d K 线与资金费
+    klines_1h: Path = Path("./data/klines_1h")
+    klines_1d: Path = Path("./data/klines_1d")
+    funding: Path = Path("./data/funding")
+    universe_hist: Path = Path("./data/universe_hist")
+    # 历史回补长度（天）：1h 取策略最长回看 + 缓冲；1d 取 30 天成交额中位数的 2 倍以上
+    history_days_hourly: int = Field(default=45, ge=3, le=400)
+    history_days_daily: int = Field(default=120, ge=35, le=800)
+    funding_limit: int = Field(default=1000, ge=10, le=1000)
+    # 资金与运行参数
+    live_capital_cap: float = Field(default=100.0, gt=0.0)
+    hide_pnl_until_final: bool = True
+    rebalance_delay_sec: int = Field(default=30, ge=0, le=600)
+    post_only_wait_sec: int = Field(default=45, ge=1, le=600)
+    ioc_tick_buffer: int = Field(default=2, ge=0, le=20)
+    heartbeat_minutes: int = Field(default=5, ge=1, le=60)
+    loop_sleep_sec: int = Field(default=20, ge=1, le=300)
+    # 风控阈值（07 §6、§7）
+    max_order_errors_1h: int = Field(default=5, ge=1, le=100)
+    clock_drift_ms: int = Field(default=1000, ge=1, le=60_000)
+    spread_median_mult: float = Field(default=5.0, gt=1.0, le=50.0)
+    spread_lookback_hours: int = Field(default=24, ge=1, le=720)
+    net_exposure_cap: float = Field(default=0.5, gt=0.0, le=2.0)
+    net_exposure_grace_min: int = Field(default=10, ge=1, le=240)
+    fee_reject_ratio: float = Field(default=1.2, gt=1.0, le=5.0)
+    # 日报（UTC）与看门狗
+    daily_report_utc: str = Field(default="00:10", pattern=r"^\d{2}:\d{2}$")
+    watchdog_stale_min: int = Field(default=15, ge=1, le=240)
+
+
 class LiveConfig(BaseModel):
     """`configs/live.yaml` 的 pydantic 模型（07 §10）。"""
 
@@ -89,6 +138,7 @@ class LiveConfig(BaseModel):
     exits: Path
     notify: NotifyConfig
     storage: StorageConfig
+    engine: EngineConfig = Field(default_factory=EngineConfig)
 
 
 def load_live_config(path: Path) -> LiveConfig:

@@ -88,3 +88,22 @@
 
 3. **`paper` 模式的合约测试网端点**（09 §2、§3）：`https://testnet.binancefuture.com` 的网页路径已 301 跳转到 `https://demo.binance.com/...`，而 `https://demo-fapi.binance.com`（REST）与 `wss://fstream-demo.binance.com`（WS）可用。需确认 `paper` 模式是否切换为 demo 域名，确认后再改 `trade.live.exchange.endpoints` 并同步 09 §2。
 4. **`shadow` / `live` 的行情来源**（09 §3.3，详见 T5-7 条目）：正式网 `@kline_1m` / `@aggTrade` 在 `/ws/`、`/stream?streams=`、`/ws`+`SUBSCRIBE` 三种写法下均无消息，K 线与逐笔的正式网来源尚未确定。
+
+## 新方案与旧清单的对照
+
+| 旧清单项 | 新方案 | 说明 |
+| :-- | :-- | :-- |
+| 分钟级 WebSocket 行情与逐笔录制 | 不做 | 低频策略每个整点用 REST 拉 1h K 线即可；不需要逐笔与分钟级推送 |
+| 动态候选池（24h 涨幅榜） | 不做 | 交易范围只用当月选币快照 U(R) 与 BTC/ETH；避免再平衡逻辑与研究对象不一致 |
+| 月度再平衡预热与缺口回补 | 简化为启动回补 | 启动回补 45 天 1h / 120 天 1d；月度再平衡由研究循环更新快照 |
+| 分钟级特征 EWM 状态 | 不做 | 策略只读 `View` 的已收盘数据 |
+| 分钟级止损追踪与止盈 | 不做 | 只挂 STOP_MARKET；止盈由下一轮调仓决定 |
+| 追价保护、逐笔缺口、止损冷却分钟 | 删除或改为小时 | 见 `docs/07` §9 对照表 |
+| 目标仓位对账 | 做 | `trade.live.targets`，交易所为准 |
+| 挂单优先执行器 | 做 | GTX → IOC → 市价兜底 |
+| 交易所侧止损 | 做 | `algoType=CONDITIONAL` + `STOP_MARKET` |
+| R5~R8 风控 | 做 | 复用 `trade.common.risk_rules` |
+| 状态库与看板 | 做 | 旧表 + 新表，6 个页面 |
+| 控制、PIN、kill switch | 做 | `trade.live.control` / `trade.live.killswitch` |
+| 看门狗 | 做 | `trade-watchdog.timer` |
+

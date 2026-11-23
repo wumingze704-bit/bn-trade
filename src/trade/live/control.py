@@ -124,3 +124,72 @@ def reset_overrides(store: Store) -> None:
 def effective_sizing_from_store(store: Store, sizing: SizingConfig) -> SizingConfig:
     """从状态库读取覆盖并计算生效配置。"""
     return effective_sizing(sizing, store.get_overrides())
+
+
+# ---- 低频引擎控制（docs/07 §6.8、§8；看板与 set_sizing.py 共用）----
+
+_RISK_PER_TRADE_MIN = 0.005
+_RISK_PER_TRADE_MAX = 0.01
+
+
+def set_pause_open(store: Store, *, candidate: str, paused: bool, source: str) -> None:
+    """暂停或恢复开仓（只影响运行中的引擎，不写回配置）。"""
+    store.set_control_flags(candidate=candidate, pause_open=paused)
+    store.insert_event(
+        level="info",
+        event=f"{'暂停开仓' if paused else '恢复开仓'}（来源 {source}）",
+        symbol=None,
+        detail={"candidate": candidate},
+    )
+    store.commit()
+
+
+def request_flatten(store: Store, *, candidate: str, source: str) -> None:
+    """请求引擎在下一轮巡检平掉全部持仓（一次有效）。"""
+    store.set_control_flags(candidate=candidate, flatten_requested=True)
+    store.insert_event(
+        level="warn",
+        event=f"请求全部平仓（来源 {source}）",
+        symbol=None,
+        detail={"candidate": candidate},
+    )
+    store.commit()
+
+
+def set_risk_per_trade(store: Store, *, candidate: str, value: float, source: str) -> None:
+    """调整运行中 risk_per_trade，只允许 [0.005, 0.01]。
+
+    Args:
+        store: 状态库。
+        candidate: 候选 ID。
+        value: 新的单笔风险比例。
+        source: `cli` / `dashboard`。
+
+    Raises:
+        ControlError: 超出允许区间。
+    """
+    if not _RISK_PER_TRADE_MIN <= value <= _RISK_PER_TRADE_MAX:
+        raise ControlError(
+            f"risk_per_trade 只允许 [{_RISK_PER_TRADE_MIN}, {_RISK_PER_TRADE_MAX}]：{value}"
+        )
+    store.set_override(key="risk_per_trade", value=f"{value:.6f}", source=source)
+    store.insert_event(
+        level="info",
+        event=f"risk_per_trade -> {value:.6f}（来源 {source}）",
+        symbol=None,
+        detail={"candidate": candidate},
+    )
+    store.commit()
+
+
+def control_state(store: Store, candidate: str) -> dict[str, Any]:
+    """读取控制状态（暂停开仓、平仓请求、risk_per_trade 覆盖）。"""
+    flags = store.get_control_flags(candidate)
+    overrides = store.get_overrides()
+    return {
+        "candidate": candidate,
+        "pause_open": bool(flags["pause_open"]),
+        "flatten_requested": bool(flags["flatten_requested"]),
+        "risk_per_trade": overrides.get("risk_per_trade"),
+        "updated_ms": flags["updated_ms"],
+    }

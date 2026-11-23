@@ -312,6 +312,10 @@ class ExchangeClient:
         data = await self._request("GET", "/fapi/v2/positionRisk", params=params, signed=True)
         return data if isinstance(data, list) else []
 
+    async def api_restrictions(self) -> dict[str, Any]:
+        """读取 API Key 权限（提现权限与 IP 白名单，docs/07 §5.3）。"""
+        return dict(await self._request("GET", "/sapi/v1/account/apiRestrictions", signed=True))
+
     # ---- 订单（09 §3.2、07 §5）----
 
     async def place_order(self, **params: Any) -> OrderResult:

@@ -210,3 +210,15 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 没有产生候选，因此没有冻结、最终检验、影子盘与实盘环节。后续建议见本轮完成报告。
 
 
+
+## 2026-11-23 实盘工程与看板（P5 / P6）
+
+- 依据实盘工程任务指令授权自行决定：旧版 `src/trade/live/` 的分钟级模块（`engine.py`、`market_data.py`、`orders.py`、`reconcile.py`、`risk.py`、`bar_builder.py`）与现有测试保留不删，新增低频路径模块（`candidate` / `feed` / `targets` / `execution` / `stops` / `riskguard` / `killswitch`）。理由：删除旧模块必须同时删除 `tests/live/` 下大量既有测试，与 AGENTS.md §6 红线 11 冲突；新模块名与职责清晰，旧模块不再被新入口引用。代价是仓库保留一份历史实现，已在 engine.md 记录。
+- 依据实盘工程任务指令授权自行决定：状态库沿用旧表（`orders` / `fills` / `positions` / `equity_snapshots` / `risk_state` / `events` / `scan_cycles` / `scan_state`）并新增引擎表。理由：看板旧接口与测试继续可用，引擎写入同一份数据，避免两套状态库。
+- 依据实盘工程任务指令授权自行决定：paper 模式端点改为 `https://demo-fapi.binance.com`（服务器实测 ping 返回 200），保留 `endpoints_for("testnet")` 兼容旧测试；`credentials.build_client` 对 shadow 使用公开端点与假签名材料，并由 `ReadOnlyMarketClient` 拦截一切交易调用。
+- 依据实盘工程任务指令授权自行决定：systemd 用两个模板区分内存上限（shadow / paper 400M，live 500M），live 实例名不带模式后缀（`trade-runner-live@<候选ID>`）；`trade.live.units.unit_name` 统一命名，kill_switch 与看门狗共用。
+- 依据实盘工程任务指令授权自行决定：`LiveConfig` 新增 `engine` 节，全部字段带默认值，旧 `configs/live.yaml` 与 `tests/live/test_config.py` 不受影响；`configs/live.yaml` 保留 `model_dir` / `sizing` / `exits` 兼容字段但低频引擎不读取。
+- 依据实盘工程任务指令授权自行决定：`load_universe_history` 只读取 `YYYY-MM.json`，忽略同目录的 `aliases.json` / `summary.json`（服务器目录实测包含这两个文件，按快照解析会抛错）。
+- 发现但未修改：服务器 `data/universe_hist` 只到 `2026-07.json`，当前月份没有选币快照；引擎 `View.universe_symbols()` 会抛带上下文的 `KeyError`（符合红线 12），启动 shadow 前需补齐当月快照。
+- 部署：服务器 `sudo -n` 可用，已安装单元并启动看板与看门狗；未创建任何交易实例（总账无候选）。看板 `curl` 返回 200，`/api/status` 显示 `live_available=false`。
+

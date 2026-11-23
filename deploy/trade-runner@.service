@@ -1,0 +1,25 @@
+[Unit]
+Description=trade 低频引擎 %i（shadow / paper）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/trade
+# 密钥只放在服务器上的环境变量文件（权限 600，不进入 git，红线 6）
+EnvironmentFile=-/home/ubuntu/trade/.env.live
+ExecStart=/bin/bash -lc 'i="%i"; exec /home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_runner.py --mode "${i##*-}" --candidate "${i%-*}"'
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=120
+MemoryMax=400M
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

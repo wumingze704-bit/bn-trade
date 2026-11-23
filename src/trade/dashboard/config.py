@@ -48,6 +48,9 @@ class DashboardPathsConfig(BaseModel):
     live_dir: Path
     reports_dir: Path
     models_dir: Path
+    ledger: Path | None = None
+    research_dir: Path | None = None
+    live_config: Path | None = None
     data_dir: Path | None = None
     quality_cache: Path | None = None
     universe_config: Path | None = None

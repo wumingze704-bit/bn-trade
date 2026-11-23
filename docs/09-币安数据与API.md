@@ -19,10 +19,11 @@
 | 环境     | REST                                | WebSocket（按路由）                                                                                    |
 | :------- | :---------------------------------- | :----------------------------------------------------------------------------------------------------- |
 | 正式网   | `https://fapi.binance.com`          | `wss://fstream.binance.com/public`、`/market`、`/private`（组合流：`/{route}/stream?streams=a/b/c`）    |
-| 测试网   | `https://testnet.binancefuture.com` | `wss://stream.binancefuture.com/public`、`/market`、`/private`（写法同上）                             |
+| 模拟盘   | `https://demo-fapi.binance.com`     | `wss://fstream-demo.binance.com/public`、`/market`、`/private`                                          |
+| 旧测试网 | `https://testnet.binancefuture.com` | `wss://stream.binancefuture.com/public`、`/market`、`/private`                                          |
 | 历史数据 | `https://data.binance.vision`       | —                                                                                                      |
 
-- 环境由 `live.yaml` 的 `mode` 决定：`paper` → 测试网；`shadow`、`live` → 正式网。代码中禁止出现“正式网与测试网混用”的路径（例如用测试网 Key 访问正式网）。
+- 环境由运行模式决定：`paper` → 模拟盘（`demo_endpoints()`）；`shadow`、`live` → 正式网。代码中禁止出现“正式网与测试网混用”的路径（例如用模拟盘 Key 访问正式网）。
 - WebSocket 基址按流类别分为 `public`、`market`、`private` 三个路由，集中在 `trade.live.exchange.endpoints.Endpoints` 的 `ws_public_base`、`ws_market_base`、`ws_private_base`；其他模块不得自行拼接 URL。不带路由路径的旧入口 `wss://<host>/stream` 只推送 public 类数据，market 类流在该入口收不到消息。
 - 网络与部署要求见 02 §5。
 
@@ -58,11 +59,12 @@
 | `POST /fapi/v1/order`                                                                                    | 开仓（LIMIT IOC）、止盈（LIMIT GTC reduceOnly）、超时平仓（MARKET reduceOnly）                                                                                    |
 | `GET /fapi/v1/order`、`DELETE /fapi/v1/order`                                                            | 按 `origClientOrderId` 查询、撤单                                                                                                                                 |
 | `GET /fapi/v1/openOrders`、`DELETE /fapi/v1/allOpenOrders`                                               | 对账、Kill Switch                                                                                                                                                 |
-| 算法条件单接口（`POST /fapi/v1/algoOrder`、`DELETE /fapi/v1/algoOrder`、`GET /fapi/v1/openAlgoOrders`、`GET /fapi/v1/algoOrder`） | 止损单与追踪改单（07 §5.2）。经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单返回 `-4120`，必须先走算法订单接口；参数见下 |
+| 算法条件单接口（`POST /fapi/v1/algoOrder`、`DELETE /fapi/v1/algoOrder`、`GET /fapi/v1/openAlgoOrders`、`GET /fapi/v1/algoOrder`） | 止损单（07 §8）。经典 `POST /fapi/v1/order` 发送 STOP_MARKET 等条件单返回 `-4120`，必须先走算法订单接口；参数见下 |
+| `GET /sapi/v1/account/apiRestrictions`                                                                   | 启动时核对 API Key 权限（提现、IP 白名单、合约权限，07 §5）                                                                                                        |
 
 算法条件单参数（测试网核对，原始记录见 docs/archive/records.md）：
 
-- `POST /fapi/v1/algoOrder`：`algoType` 是「算法类别」，条件单固定为 **`CONDITIONAL`**，真正的 STOP_MARKET 放在 **`type`** 字段（`algoType=STOP_MARKET` 会返回 `-4500 Invalid algoType`）。其余字段：`side`、`quantity`、`reduceOnly`、`triggerPrice`、`triggerPriceType`（`CONTRACT_PRICE`）、`workingType`（`CONTRACT_PRICE`）、`newClientAlgoId`；响应含 `algoId`、`clientAlgoId`、`algoStatus`、`orderType`。
+- `POST /fapi/v1/algoOrder`：`algoType` 是「算法类别」，条件单固定为 **`CONDITIONAL`**，真正的 STOP_MARKET 放在 **`type`** 字段（`algoType=STOP_MARKET` 会返回 `-4500 Invalid algoType`）。其余字段：`side`、`quantity`、`reduceOnly`、`triggerPrice`、`workingType`（止损用 `MARK_PRICE`）、`clientAlgoId`；响应含 `algoId`、`clientAlgoId`、`algoStatus`、`orderType`。
 - `DELETE /fapi/v1/algoOrder`：按 `symbol` + `algoId`（或 `clientAlgoId`）撤销。
 - `GET /fapi/v1/openAlgoOrders`：查询未触发条件单（`symbol` 可选）；`GET /fapi/v1/algoOrder`：按 `algoId` 或 `clientAlgoId` 查单张。
 - 价格取整：tick 取整必须消掉浮点尾差（`round(x/tick)*tick` 会产生 `77710.90000000001`，被拒 `-1111 Precision is over the maximum`），统一用 `trade.live.orders.floor_to_tick`。
@@ -133,11 +135,10 @@
    - 类型：优先选择**自行生成 Ed25519 密钥对**并上传公钥；也可使用系统生成的 HMAC 密钥。
    - 权限：勾选“允许读取”和“允许合约”；**不要**勾选提现、内部划转、杠杆借贷等其他权限。
    - IP 访问限制：选择“仅限受信任 IP”，填入实盘服务器的固定公网 IP。
-4. 把 Key 与 Secret（或私钥文件路径）写入服务器 `/etc/trade/env`（02 §7）。
-5. 测试网在**合约测试网**申请 Key，写入 `BINANCE_TESTNET_*` 环境变量。
-   - 网址是 `https://testnet.binancefuture.com`（U 本位合约测试网）；**不要**用 `https://testnet.binance.vision`（现货测试网），两者 key 完全不通用，用错时合约接口返回 `-2015 Invalid API-key, IP, or permissions`（同一把现货测试网 key 打 `/api/v3/account` 返回 200、打 `/fapi/v2/account` 返回 -2015）。
-   - 该站只支持 GitHub 账号登录；登录后默认给测试资金，在页面底部“API Key”处生成 Key 与 Secret（Secret 只显示一次）。
-   - 测试网 key 长期不用会被自动删除，失效后重新生成即可。
+4. 把 Key 与 Secret（或私钥文件路径）写入服务器 `/home/ubuntu/trade/.env.live`（权限 600，不进入 git）。
+5. 模拟盘（`paper`）在合约模拟盘 `https://demo-fapi.binance.com` 申请 Key，写入 `BINANCE_DEMO_API_KEY` / `BINANCE_DEMO_API_SECRET`。
+   - **不要**用 `https://testnet.binance.vision`（现货测试网），两者 key 完全不通用，用错时合约接口返回 `-2015 Invalid API-key, IP, or permissions`。
+   - 模拟盘 Key 长期不用会被自动删除，失效后重新生成即可。
 
 ### 5.2 签名规则
 

@@ -553,3 +553,5 @@ code { background: rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 1px 6
   background: rgba(255, 159, 10, 0.12);
   border: 1px solid rgba(255, 159, 10, 0.35);
 }
+
+/* 低频引擎页面补充（docs/10 §5）：表格容器、表单与控制按钮 */.table-wrap { overflow-x: auto; margin-top: 8px; }.field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; max-width: 360px; }.field label { color: var(--text-2); font-size: 12px; }.input, .select { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border); border-radius: 9px; color: var(--text); padding: 8px 10px; font-size: 13px; }.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }.btn { background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border); border-radius: 9px; color: var(--text); padding: 8px 14px; font-size: 13px; cursor: pointer; }.btn:hover { background: rgba(255, 255, 255, 0.14); }.btn.danger { background: rgba(255, 69, 58, 0.18); border-color: rgba(255, 69, 58, 0.5); color: var(--red); }.danger { color: var(--red); }

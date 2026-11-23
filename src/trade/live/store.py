@@ -144,6 +144,69 @@ CREATE TABLE IF NOT EXISTS scan_state (
 );
 """
 
+# 低频引擎新增表（docs/07 §6.1）。旧表结构保持不变，保证看板旧接口与测试可继续使用。
+_ENGINE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS engine_status (
+    candidate TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    pid INTEGER,
+    started_ms INTEGER NOT NULL,
+    heartbeat_ms INTEGER NOT NULL,
+    last_rebalance_ms INTEGER,
+    next_rebalance_ms INTEGER,
+    version TEXT NOT NULL,
+    note TEXT
+);
+CREATE TABLE IF NOT EXISTS rebalance_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    open_time INTEGER NOT NULL,
+    finished_ms INTEGER NOT NULL,
+    equity REAL NOT NULL,
+    long_notional REAL NOT NULL,
+    short_notional REAL NOT NULL,
+    cost_bp REAL,
+    est_cost_bp REAL,
+    n_targets INTEGER NOT NULL DEFAULT 0,
+    n_orders INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT
+);
+CREATE TABLE IF NOT EXISTS consistency_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ts_ms INTEGER NOT NULL,
+    agree_ratio REAL,
+    detail_json TEXT
+);
+CREATE TABLE IF NOT EXISTS halt_flags (
+    candidate TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    halted INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    updated_ms INTEGER NOT NULL,
+    PRIMARY KEY (candidate, mode)
+);
+CREATE TABLE IF NOT EXISTS control_flags (
+    candidate TEXT PRIMARY KEY,
+    pause_open INTEGER NOT NULL DEFAULT 0,
+    flatten_requested INTEGER NOT NULL DEFAULT 0,
+    updated_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS shadow_positions (
+    candidate TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side INTEGER NOT NULL,
+    qty REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    sl REAL NOT NULL,
+    opened_ms INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL,
+    PRIMARY KEY (candidate, symbol)
+);
+"""
+
 
 def _now_ms() -> int:
     return int(time() * 1000)
@@ -162,6 +225,7 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_ENGINE_SCHEMA)
         self._conn.commit()
 
     def close(self) -> None:
@@ -304,6 +368,11 @@ class Store:
             (ts_ms, wallet_balance, unrealized_pnl, available_margin),
         )
 
+    def latest_equity_snapshot(self) -> dict[str, Any] | None:
+        """读取最近一条权益快照（shadow 虚拟账户重启后恢复钱包余额）。"""
+        rows = self._query("SELECT * FROM equity_snapshots ORDER BY ts_ms DESC LIMIT 1")
+        return rows[0] if rows else None
+
     def insert_latency(self, *, ts_ms: int, stage: str, ms: float) -> None:
         self._execute("INSERT INTO latency (ts_ms, stage, ms) VALUES (?, ?, ?)", (ts_ms, stage, ms))
 
@@ -431,3 +500,226 @@ class Store:
                 """,
                 state,
             )
+
+    # ---- 低频引擎：运行状态、调仓、停机与控制（docs/07 §6.1）----
+
+    def upsert_engine_status(
+        self,
+        *,
+        candidate: str,
+        mode: str,
+        pid: int | None,
+        started_ms: int,
+        heartbeat_ms: int,
+        last_rebalance_ms: int | None,
+        next_rebalance_ms: int | None,
+        version: str,
+        note: str | None = None,
+    ) -> None:
+        """写入或更新引擎心跳（每 5 分钟一次；看门狗与看板读取）。"""
+        self._execute(
+            """
+            INSERT INTO engine_status
+                (candidate, mode, pid, started_ms, heartbeat_ms, last_rebalance_ms,
+                 next_rebalance_ms, version, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(candidate) DO UPDATE SET
+                mode=excluded.mode, pid=excluded.pid, started_ms=excluded.started_ms,
+                heartbeat_ms=excluded.heartbeat_ms, last_rebalance_ms=excluded.last_rebalance_ms,
+                next_rebalance_ms=excluded.next_rebalance_ms, version=excluded.version,
+                note=excluded.note
+            """,
+            (
+                candidate,
+                mode,
+                pid,
+                started_ms,
+                heartbeat_ms,
+                last_rebalance_ms,
+                next_rebalance_ms,
+                version,
+                note,
+            ),
+        )
+
+    def get_engine_status(self, candidate: str) -> dict[str, Any] | None:
+        """读取某候选的引擎心跳（不存在返回 None）。"""
+        rows = self._query("SELECT * FROM engine_status WHERE candidate = ?", (candidate,))
+        return rows[0] if rows else None
+
+    def list_engine_status(self) -> list[dict[str, Any]]:
+        """读取全部候选的引擎心跳，按最近心跳倒序（看板总览用）。"""
+        return self._query("SELECT * FROM engine_status ORDER BY heartbeat_ms DESC")
+
+    def insert_rebalance_log(
+        self,
+        *,
+        candidate: str,
+        mode: str,
+        open_time: int,
+        finished_ms: int,
+        equity: float,
+        long_notional: float,
+        short_notional: float,
+        cost_bp: float | None,
+        est_cost_bp: float | None,
+        n_targets: int,
+        n_orders: int,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """写入一条调仓记录（目标、成交与成本对比，docs/07 §6.7）。"""
+        detail_json = json.dumps(detail, ensure_ascii=False) if detail is not None else None
+        self._execute(
+            """
+            INSERT INTO rebalance_log
+                (candidate, mode, open_time, finished_ms, equity, long_notional,
+                 short_notional, cost_bp, est_cost_bp, n_targets, n_orders, detail_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate,
+                mode,
+                open_time,
+                finished_ms,
+                equity,
+                long_notional,
+                short_notional,
+                cost_bp,
+                est_cost_bp,
+                n_targets,
+                n_orders,
+                detail_json,
+            ),
+        )
+
+    def list_rebalance_log(self, candidate: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """按时间倒序读取调仓记录。"""
+        return self._query(
+            "SELECT * FROM rebalance_log WHERE candidate = ? ORDER BY open_time DESC LIMIT ?",
+            (candidate, limit),
+        )
+
+    def insert_consistency(
+        self,
+        *,
+        candidate: str,
+        kind: str,
+        ts_ms: int,
+        agree_ratio: float | None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """写入一条一致性比对结果（shadow 与回放、live 与 shadow）。"""
+        detail_json = json.dumps(detail, ensure_ascii=False) if detail is not None else None
+        self._execute(
+            "INSERT INTO consistency_log (candidate, kind, ts_ms, agree_ratio, detail_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (candidate, kind, ts_ms, agree_ratio, detail_json),
+        )
+
+    def list_consistency(self, candidate: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """按时间倒序读取一致性比对结果。"""
+        return self._query(
+            "SELECT * FROM consistency_log WHERE candidate = ? ORDER BY ts_ms DESC LIMIT ?",
+            (candidate, limit),
+        )
+
+    def set_engine_halt(
+        self, *, candidate: str, mode: str, halted: bool, reason: str | None
+    ) -> None:
+        """写入停机标志（引擎拒绝开新仓；只能由使用者用 kill_switch 清除）。"""
+        self._execute(
+            """
+            INSERT INTO halt_flags (candidate, mode, halted, reason, updated_ms)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(candidate, mode) DO UPDATE SET
+                halted=excluded.halted, reason=excluded.reason, updated_ms=excluded.updated_ms
+            """,
+            (candidate, mode, int(halted), reason, _now_ms()),
+        )
+
+    def get_engine_halt(self, *, candidate: str, mode: str) -> dict[str, Any] | None:
+        """读取停机标志（不存在返回 None）。"""
+        rows = self._query(
+            "SELECT * FROM halt_flags WHERE candidate = ? AND mode = ?", (candidate, mode)
+        )
+        return rows[0] if rows else None
+
+    def clear_engine_halt(self, *, candidate: str, mode: str) -> None:
+        """清除停机标志（仅供使用者显式确认后调用）。"""
+        self._execute("DELETE FROM halt_flags WHERE candidate = ? AND mode = ?", (candidate, mode))
+
+    def set_control_flags(
+        self,
+        *,
+        candidate: str,
+        pause_open: bool | None = None,
+        flatten_requested: bool | None = None,
+    ) -> None:
+        """写入暂停开仓 / 请求平仓标志（看板控制页与 set_sizing.py 共用）。"""
+        current = self.get_control_flags(candidate)
+        pause = current["pause_open"] if pause_open is None else int(pause_open)
+        flatten = (
+            current["flatten_requested"] if flatten_requested is None else int(flatten_requested)
+        )
+        self._execute(
+            """
+            INSERT INTO control_flags (candidate, pause_open, flatten_requested, updated_ms)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(candidate) DO UPDATE SET
+                pause_open=excluded.pause_open, flatten_requested=excluded.flatten_requested,
+                updated_ms=excluded.updated_ms
+            """,
+            (candidate, pause, flatten, _now_ms()),
+        )
+
+    def get_control_flags(self, candidate: str) -> dict[str, Any]:
+        """读取控制标志；没有记录时返回关闭状态。"""
+        rows = self._query("SELECT * FROM control_flags WHERE candidate = ?", (candidate,))
+        if rows:
+            return rows[0]
+        return {"candidate": candidate, "pause_open": 0, "flatten_requested": 0, "updated_ms": 0}
+
+    def clear_flatten_request(self, candidate: str) -> None:
+        """清除一次性平仓请求。"""
+        self._execute(
+            "UPDATE control_flags SET flatten_requested = 0, updated_ms = ? WHERE candidate = ?",
+            (_now_ms(), candidate),
+        )
+
+    # ---- 影子盘虚拟持仓（shadow 模式，docs/07 §6.4）----
+
+    def upsert_shadow_position(
+        self,
+        *,
+        candidate: str,
+        symbol: str,
+        side: int,
+        qty: float,
+        entry_price: float,
+        sl: float,
+        opened_ms: int,
+    ) -> None:
+        """写入或更新影子盘虚拟持仓。"""
+        self._execute(
+            """
+            INSERT INTO shadow_positions
+                (candidate, symbol, side, qty, entry_price, sl, opened_ms, updated_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(candidate, symbol) DO UPDATE SET
+                side=excluded.side, qty=excluded.qty, entry_price=excluded.entry_price,
+                sl=excluded.sl, updated_ms=excluded.updated_ms
+            """,
+            (candidate, symbol, side, qty, entry_price, sl, opened_ms, _now_ms()),
+        )
+
+    def delete_shadow_position(self, *, candidate: str, symbol: str) -> None:
+        """删除影子盘虚拟持仓（平仓或止损后）。"""
+        self._execute(
+            "DELETE FROM shadow_positions WHERE candidate = ? AND symbol = ?", (candidate, symbol)
+        )
+
+    def list_shadow_positions(self, candidate: str) -> list[dict[str, Any]]:
+        """读取影子盘全部虚拟持仓。"""
+        return self._query(
+            "SELECT * FROM shadow_positions WHERE candidate = ? ORDER BY symbol", (candidate,)
+        )

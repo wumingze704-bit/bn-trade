@@ -29,18 +29,13 @@
         <div class="sidebar-card-title">连接状态</div>
         <div class="conn-row">
           <span class="conn-dot" :class="{ on: wsConnected }"></span>
-          <span>行情 WS</span>
+          <span>状态推送</span>
           <span class="conn-value" x-text="wsConnected ? '已连接' : '断开'"></span>
         </div>
         <div class="conn-row">
           <span class="conn-dot" :class="{ on: liveAvailable }"></span>
-          <span>用户数据流</span>
+          <span>状态库</span>
           <span class="conn-value" x-text="liveAvailable ? '正常' : '—'"></span>
-        </div>
-        <div class="conn-row">
-          <span class="conn-dot" :class="{ on: liveAvailable }"></span>
-          <span>请求权重</span>
-          <span class="conn-value" x-text="weightLabel"></span>
         </div>
         <div class="conn-row">
           <span class="conn-dot" :class="{ on: status.notified_ok }"></span>
@@ -55,38 +50,37 @@
       <header class="topbar">
         <div class="topbar-title" x-text="pageTitle"></div>
         <div class="topbar-chips">
+          <select class="select" x-model="candidate" @change="onCandidateChange()">
+            <option value="">选择候选</option>
+            <template x-for="item in candidateOptions" :key="item.id">
+              <option :value="item.id" x-text="item.label"></option>
+            </template>
+          </select>
           <span class="mode-tag" :class="modeClass" x-text="modeLabel"></span>
           <span class="chip">
-            <span class="chip-dot" :class="{ bad: heartbeatSeconds > 120 }"></span>
+            <span class="chip-dot" :class="{ bad: heartbeatSeconds > 900 }"></span>
             <span x-text="heartbeatLabel"></span>
           </span>
-          <span class="chip" x-text="modelLabel"></span>
-          <span class="chip" x-text="sizingLabel"></span>
-          <span class="chip warn" x-show="status.halted || status.safe_mode"
-                x-text="status.halted ? '已停机' : '安全模式'"></span>
+          <span class="chip" x-text="engineLabel"></span>
+          <span class="chip warn" x-show="halted || status.halted || status.safe_mode"
+                x-text="halted ? '已停机' : '安全模式'"></span>
         </div>
         <div class="topbar-clock">
           <div class="clock-main" x-text="clockBeijing"></div>
-          <div class="clock-sub">
-            <span x-text="clockUtc"></span>
-            <span>· 下一根收盘 <span x-text="nextCloseLabel"></span></span>
-          </div>
+          <div class="clock-sub"><span x-text="clockUtc"></span></div>
         </div>
       </header>
 
       <div class="alert-bar" x-show="equityAlert" x-text="equityAlert"></div>
 
       <section class="content">
-
-
-        <!-- 总览（10 §5.1、§6；布局以 docs/dashboard-overview.svg 为准） -->
         <div class="page overview" x-show="page === 'overview'">
           <div class="kpis">
             <article class="card kpi">
               <div class="kpi-label">权益</div>
               <div class="kpi-value"><span x-text="fmtMoney(kpis.equity.value)"></span>
                 <span class="unit">USDT</span></div>
-              <div class="kpi-sub" :class="sign(kpis.equity.change)" x-text="equitySubLabel"></div>
+              <div class="kpi-sub" x-text="equitySubLabel"></div>
               <svg class="spark" viewBox="0 0 240 32" preserveAspectRatio="none" aria-hidden="true">
                 <polyline :points="sparkPoints" fill="none" stroke="currentColor"
                           stroke-width="2" stroke-linejoin="round"></polyline>
@@ -94,8 +88,7 @@
             </article>
             <article class="card kpi">
               <div class="kpi-label">今日盈亏</div>
-              <div class="kpi-value" :class="sign(kpis.today_pnl.value)"
-                   x-text="fmtMoney(kpis.today_pnl.value)"></div>
+              <div class="kpi-value" x-text="fmtMoney(kpis.today_pnl.value)"></div>
               <div class="kpi-sub" x-text="todayPnlSubLabel"></div>
             </article>
             <article class="card kpi kpi-ring">
@@ -126,365 +119,336 @@
             <section class="card scan-card">
               <div class="card-head">
                 <div>
-                  <h2 class="card-title">全市场扫描</h2>
+                  <h2 class="card-title">调仓目标</h2>
                   <div class="card-sub" x-text="scanRangeLabel"></div>
                 </div>
-                <div class="scan-legend">
-                  <span><i class="dot blue"></i>预过滤</span>
-                  <span><i class="dot green"></i>信号</span>
-                  <span><i class="dot ring-green"></i>持仓</span>
-                  <span><i class="dot orange"></i>跳过/观察</span>
-                </div>
-              </div>
-              <div class="scan-stats" x-text="scanStatsLabel"></div>
-              <div class="scan-progress">
-                <div class="scan-progress-fill" :style="scanProgressStyle"></div>
+                <span class="chip" x-text="scanSummary"></span>
               </div>
               <div class="scan-grid">
-                <template x-for="(cell, index) in scanCells" :key="cell.symbol + cell.open_time">
-                  <div class="scan-cell" :class="cellClass(cell)" :style="cellStyle(cell, index)">
-                    <span class="scan-ring" :style="cellRingStyle(cell)"></span>
-                    <span class="scan-symbol" x-text="cell.alias || shortSymbol(cell.symbol)"></span>
-                    <span class="scan-tag" x-show="cell.status === 'watching'">观察中</span>
+                <template x-for="(cell, index) in scanCells" :key="cell.symbol">
+                  <div class="scan-cell" :class="{ lit: index < litCount }" :style="cellStyle(index)">
+                    <span class="scan-symbol" x-text="cell.symbol"></span>
+                    <span class="scan-state" x-text="cell.label"></span>
                   </div>
+                </template>
+              </div>
+              <p class="empty" x-show="!scanCells.length">等待引擎写入调仓记录。</p>
+            </section>
 
             <section class="card equity-card">
               <div class="card-head">
                 <h2 class="card-title">权益曲线</h2>
                 <div class="range-tabs">
-                  <template x-for="rangeKey in ['1D', '1W', '1M', 'all']" :key="rangeKey">
-                    <button class="range-tab" :class="{ active: equityRange === rangeKey }"
-                            @click="setEquityRange(rangeKey)" x-text="rangeLabel(rangeKey)"></button>
+                  <template x-for="key in ['1D', '1W', '1M', 'all']" :key="key">
+                    <button class="range-tab" :class="{ active: equityRange === key }"
+                            @click="setEquityRange(key)" x-text="key"></button>
                   </template>
                 </div>
               </div>
-              <div class="equity-number">
-                <span class="kpi-value" x-text="fmtMoney(kpis.equity.value)"></span>
-                <span class="unit">USDT</span>
-              </div>
-              <div class="equity-sub" :class="sign(kpis.equity.change)"
-                   x-text="equityCurveSubLabel"></div>
-              <div class="equity-chart" x-ref="overviewEquity"></div>
-              <p class="empty" x-show="!equityPoints.length">暂无权益快照。</p>
+              <div class="chart" x-ref="overviewEquity"></div>
+              <p class="empty" x-show="pnlHidden">虚拟收益在最终检验通过前不展示（盈亏遮蔽）。</p>
             </section>
 
+
             <section class="card positions-card">
-              <div class="card-head">
-                <h2 class="card-title">当前持仓</h2>
-                <span class="card-sub"
-                      x-text="kpis.positions.count + ' / ' + fmt(kpis.positions.max_positions)"></span>
+              <h2 class="card-title">当前持仓</h2>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead>
+                    <tr><th>币种</th><th>方向</th><th>数量</th><th>入场价</th><th>止损价</th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="item in overview.positions" :key="item.symbol">
+                      <tr>
+                        <td x-text="item.symbol"></td>
+                        <td x-text="Number(item.qty) >= 0 ? '多' : '空'"></td>
+                        <td x-text="fmt(item.qty)"></td>
+                        <td x-text="fmt(item.entry_price)"></td>
+                        <td x-text="fmt(item.stop_price)"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
               </div>
-              <p class="empty" x-show="!overview.positions.length">当前无持仓。</p>
-              <template x-for="pos in overview.positions" :key="pos.position_id">
-                <article class="position-row">
-                  <div class="position-head">
-                    <span class="position-symbol" x-text="pos.symbol"></span>
-                    <span class="badge green" x-text="'多 ' + fmt(pos.leverage) + 'x'"></span>
-                    <span class="badge blue" x-text="stopKindLabel(pos.stop_kind)"></span>
-                    <span class="position-r" :class="sign(pos.mfe_r)"
-                          x-text="'最高 ' + fmtR(pos.mfe_r)"></span>
-                  </div>
-                  <div class="position-prices">
-                    <span>入场 <b x-text="fmtPrice(pos.entry_price)"></b></span>
-                    <span>止损 <b x-text="fmtPrice(pos.stop_price)"></b></span>
-                    <span>封顶 <b x-text="fmtPrice(pos.cap_price)"></b></span>
-                  </div>
-                  <div class="position-foot">
-                    <span class="muted"
-                          x-text="'持仓 ' + pos.held_minutes + ' / ' + fmt(pos.h_max) + ' 分钟'"></span>
-                    <div class="mini-progress">
-                      <div class="mini-progress-fill"
-                           :style="'transform: scaleX(' + (pos.progress || 0) + ')'"></div>
-                    </div>
-                  </div>
-                </article>
-              </template>
+              <p class="empty" x-show="!overview.positions.length">暂无持仓。</p>
             </section>
 
             <section class="card orders-card">
-              <div class="card-head">
-                <h2 class="card-title">挂单</h2>
-                <span class="card-sub" x-text="ordersSummary"></span>
+              <h2 class="card-title">挂单</h2>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>状态</th></tr></thead>
+                  <tbody>
+                    <template x-for="item in overview.orders" :key="item.client_id">
+                      <tr>
+                        <td x-text="item.symbol"></td>
+                        <td x-text="item.side"></td>
+                        <td x-text="item.type"></td>
+                        <td x-text="fmt(item.price)"></td>
+                        <td x-text="item.status"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
               </div>
-              <p class="empty" x-show="!overview.orders.length">当前无挂单。</p>
-              <template x-for="order in overview.orders" :key="order.client_id">
-                <div class="order-row">
-                  <div class="order-main">
-                    <span class="order-title"
-                          x-text="shortSymbol(order.symbol) + ' · ' + orderTypeLabel(order.type)"></span>
-                    <span class="order-sub"
-                          x-text="orderSideLabel(order) + ' · ' + fmtPrice(order.price)"></span>
-                  </div>
-                  <span class="badge" :class="order.valid ? 'green' : 'red'"
-                        x-text="order.valid ? '有效' : '异常'"></span>
-                </div>
-              </template>
-              <div class="card-foot">来源：用户数据流推送 · 60 秒对账一次</div>
+              <p class="empty" x-show="!overview.orders.length">暂无挂单。</p>
             </section>
 
             <section class="card events-card">
-              <div class="card-head">
-                <h2 class="card-title">事件</h2>
-                <span class="badge green" x-show="overview.events.some(e => e.notified)">
-                  已推送微信</span>
-              </div>
-              <p class="empty" x-show="!overview.events.length">暂无事件。</p>
-              <template x-for="event in overview.events" :key="event.id">
+              <h2 class="card-title">事件</h2>
+              <template x-for="item in overview.events" :key="item.id">
                 <div class="event-row">
-                  <span class="event-dot" :class="eventLevelClass(event.level)"></span>
-                  <div class="event-body">
-                    <div class="event-text">
-                      <span x-text="event.symbol ? shortSymbol(event.symbol) + ' ' : ''"></span>
-                      <span x-text="event.event"></span>
-                      <span class="event-notified" x-show="event.notified">· 微信</span>
-                    </div>
-                    <div class="event-meta" x-text="event.time_local + ' · ' + eventMeta(event)"></div>
-                  </div>
+                  <span class="event-time" x-text="item.time_local"></span>
+                  <span class="event-text" x-text="item.event"></span>
                 </div>
               </template>
+              <p class="empty" x-show="!overview.events.length">暂无事件。</p>
             </section>
           </div>
         </div>
 
+        <div class="page" x-show="page === 'positions'">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">持仓与交易所止损</h2>
+              <span class="chip" x-text="candidateLabel"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead>
+                  <tr><th>币种</th><th>方向</th><th>数量</th><th>入场价</th><th>止损价</th><th>止损单</th></tr>
+                </thead>
+                <tbody>
+                  <template x-for="item in positionsRows" :key="item.symbol">
+                    <tr>
+                      <td x-text="item.symbol"></td>
+                      <td x-text="item.side_label"></td>
+                      <td x-text="fmt(item.qty)"></td>
+                      <td x-text="fmt(item.entry_price)"></td>
+                      <td x-text="fmt(item.stop_price)"></td>
+                      <td :class="{ danger: !item.stop_ok }" x-text="item.stop_ok ? '有效' : '缺失/方向异常'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <p class="empty" x-show="!positionsRows.length">暂无持仓。</p>
+          </div>
+        </div>
+
+
+        <div class="page" x-show="page === 'rebalances'">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">调仓记录</h2>
+              <span class="chip" x-text="candidateLabel"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead>
+                  <tr><th>时间</th><th>权益</th><th>多名义</th><th>空名义</th>
+                    <th>实际成本 bp</th><th>估计成本 bp</th><th>目标数</th><th>成交笔数</th></tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in rebalances" :key="row.open_time">
+                    <tr>
+                      <td x-text="row.open_time_local"></td>
+                      <td x-text="fmtMoney(row.equity)"></td>
+                      <td x-text="fmt(row.long_notional)"></td>
+                      <td x-text="fmt(row.short_notional)"></td>
+                      <td x-text="fmtBp(row.cost_bp)"></td>
+                      <td x-text="fmtBp(row.est_cost_bp)"></td>
+                      <td x-text="row.n_targets"></td>
+                      <td x-text="row.n_orders"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <p class="empty" x-show="!rebalances.length">暂无调仓记录。</p>
+            <template x-for="row in rebalances.slice(0, 3)" :key="'d' + row.open_time">
+              <pre class="raw" x-text="'目标仓位：' + JSON.stringify(row.detail && row.detail.targets)"></pre>
+            </template>
+          </div>
+        </div>
+
+        <div class="page" x-show="page === 'consistency'">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">一致性比对</h2>
+              <span class="chip" x-text="candidateLabel"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>时间</th><th>类型</th><th>一致率</th><th>明细</th></tr></thead>
+                <tbody>
+                  <template x-for="row in consistency" :key="row.ts_ms + row.kind">
+                    <tr>
+                      <td x-text="row.time_local"></td>
+                      <td x-text="row.kind"></td>
+                      <td x-text="row.agree_ratio === null ? '—' : fmtPct(row.agree_ratio)"></td>
+                      <td x-text="row.detail ? JSON.stringify(row.detail) : '—'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <p class="empty" x-show="!consistency.length">暂无一致性记录。</p>
+          </div>
+        </div>
 
         <div x-show="page === 'research'" class="page research">
           <div class="tabs">
-            <button class="tab" :class="{ active: researchTab === 'reports' }"
-                    @click="researchTab = 'reports'">回测报告</button>
+            <button class="tab" :class="{ active: researchTab === 'ledger' }"
+                    @click="setResearchTab('ledger')">轮次与窗口</button>
             <button class="tab" :class="{ active: researchTab === 'data' }"
                     @click="setResearchTab('data')">数据与模型</button>
           </div>
-          <div x-show="researchTab === 'reports'">
-            <div class="panel" x-show="!reports.length">
-              <p class="empty">暂无回测报告。运行 <code>scripts/backtest.py</code> 后，
-              产物将出现在 <code>artifacts/reports/&lt;run_id&gt;</code>。</p>
-            </div>
-            <div class="report-layout" x-show="reports.length">
-              <div class="report-list">
-                <template x-for="r in reports" :key="r.run_id">
-                  <button class="report-item"
-                          :class="{ active: selectedReport && selectedReport.run_id === r.run_id }"
-                          @click="selectReport(r.run_id)">
-                    <span class="report-id" x-text="r.run_id"></span>
-                    <span class="badge" x-show="r.final">final</span>
-                    <span class="report-meta muted" x-text="formatMtime(r.mtime_ms)"></span>
-                  </button>
-                </template>
-              </div>
-              <div class="report-detail" x-show="selectedReport">
-                <template x-if="selectedReport">
-                  <div>
-                    <div class="card">
-                      <h2 class="card-title" x-text="selectedReport.run_id"></h2>
-                      <p class="muted" x-text="'数据来源：' + (selectedReport.source || '未知')"></p>
-                      <pre class="raw" x-show="selectedReport.gate"
-                           x-text="JSON.stringify(selectedReport.gate, null, 2)"></pre>
-                    </div>
-                    <div class="card">
-                      <h3 class="card-title">指标（summary.json）</h3>
-                      <table class="data">
-                        <thead><tr><th>情景</th><th>运行</th><th>净收益</th>
-                        <th>净收益率</th><th>PF</th><th>笔数</th></tr></thead>
-                        <tbody>
-                          <template x-for="row in reportRows" :key="row.scenario + row.run">
-                            <tr>
-                              <td x-text="row.scenario"></td>
-                              <td x-text="row.run"></td>
-                              <td x-text="fmtMoney(row.metrics.net_return_usdt)"></td>
-                              <td x-text="fmtPct(row.metrics.net_return_pct)"></td>
-                              <td x-text="fmt(row.metrics.profit_factor)"></td>
-                              <td x-text="fmt(row.metrics.n_trades)"></td>
-                            </tr>
-                          </template>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="card">
-                      <h3 class="card-title">权益曲线</h3>
-                      <div x-ref="equityChart" class="chart" x-show="selectedReport.equity.length"></div>
-                      <p class="empty" x-show="!selectedReport.equity.length">无权益曲线数据。</p>
-                    </div>
-                    <div class="card" x-show="selectedReport.trades.length">
-                      <h3 class="card-title">交易明细（前 2000 笔）</h3>
-                      <table class="data trades">
-                        <thead><tr><th>币</th><th>出场类型</th><th>入场价</th>
-                        <th>出场价</th><th>净盈亏</th><th>MFE R</th></tr></thead>
-                        <tbody>
-                          <template x-for="t in selectedReport.trades" :key="t.signal_time + t.symbol">
-                            <tr>
-                              <td x-text="t.symbol"></td>
-                              <td x-text="t.exit_type"></td>
-                              <td x-text="fmtMoney(t.entry_price)"></td>
-                              <td x-text="fmtMoney(t.exit_price)"></td>
-                              <td :class="t.net_pnl >= 0 ? 'pos' : 'neg'" x-text="fmtMoney(t.net_pnl)"></td>
-                              <td x-text="fmt(t.mfe_r)"></td>
-                            </tr>
-                          </template>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="card" x-show="selectedReport.report_md">
-                      <h3 class="card-title">报告原文（report.md）</h3>
-                      <pre class="raw" x-text="selectedReport.report_md"></pre>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
 
-          <div x-show="researchTab === 'data'" class="data-tab">
+          <div x-show="researchTab === 'ledger'">
             <div class="card">
-              <div class="card-head">
-                <h2 class="card-title">交易范围快照</h2>
-                <span class="badge" :class="universeReviewed ? 'green' : 'orange'"
-                      x-text="universeReviewed ? '规则已审阅 reviewed: true' : '规则未审阅'"></span>
-              </div>
-              <div class="universe-controls">
-                <label>月份
-                  <select x-model="universeMonth" @change="loadUniverse(universeMonth)">
-                    <template x-for="month in universeMonths" :key="month">
-                      <option :value="month" x-text="month"></option>
+              <h2 class="card-title">试验预算与轮次</h2>
+              <p class="empty" x-text="ledgerSummary"></p>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>轮次</th><th>方向</th><th>状态</th><th>试验</th><th>结论</th></tr></thead>
+                  <tbody>
+                    <template x-for="row in ledgerRounds" :key="row.id">
+                      <tr>
+                        <td x-text="row.id"></td>
+                        <td x-text="row.family"></td>
+                        <td x-text="row.status"></td>
+                        <td x-text="row.trials"></td>
+                        <td x-text="row.conclusion || row.result"></td>
+                      </tr>
                     </template>
-                  </select>
-                </label>
-                <span class="muted" x-text="universeSummary"></span>
+                  </tbody>
+                </table>
               </div>
-              <p class="empty" x-show="!universeMonths.length">
-                暂无交易范围快照（<code>data/universe/YYYY-MM.json</code>）。
-              </p>
-              <div class="split" x-show="universeMonths.length">
-                <div>
-                  <table class="data">
-                    <thead><tr><th>#</th><th>币</th><th>别名</th><th>角色</th>
-                    <th>30 天日成交额中位数</th></tr></thead>
-                    <tbody>
-                      <template x-for="coin in universeCoins" :key="coin.symbol">
-                        <tr>
-                          <td x-text="coin.rank"></td>
-                          <td x-text="coin.symbol"></td>
-                          <td x-text="coin.alias"></td>
-                          <td x-text="roleLabel(coin.role)"></td>
-                          <td x-text="fmtMoney(coin.daily_quote_median)"></td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <h3 class="card-title">规则参数</h3>
-                  <table class="kv" x-show="universeRule">
-                    <tbody>
-                      <tr><th>top_n</th><td x-text="universeRule?.rule?.top_n"></td></tr>
-                      <tr><th>上线天数</th><td x-text="universeRule?.rule?.min_listing_days"></td></tr>
-                      <tr><th>成交额下限</th>
-                          <td x-text="fmtMoney(universeRule?.rule?.min_daily_quote_median)"></td></tr>
-                      <tr><th>留出组取模</th>
-                          <td x-text="(universeRule?.roles?.holdout_mod ?? '—') + ' / 余 '
-                                     + (universeRule?.roles?.holdout_rem ?? '—')"></td></tr>
-                    </tbody>
-                  </table>
-                  <h3 class="card-title">各月进出</h3>
-                  <table class="data">
-                    <thead><tr><th>月份</th><th>数量</th><th>进入</th><th>退出</th></tr></thead>
-                    <tbody>
-                      <template x-for="change in universeChanges" :key="change.month">
-                        <tr>
-                          <td x-text="change.month"></td>
-                          <td x-text="change.n_coins"></td>
-                          <td x-text="change.entered.length"></td>
-                          <td x-text="change.exited.length"></td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <details x-show="universeReport">
-                <summary>universe_report.md 原文</summary>
-                <pre class="raw" x-text="universeReport"></pre>
-              </details>
-
-            <div class="card">
-              <div class="card-head">
-                <h2 class="card-title">数据质量（30 天窗口）</h2>
-                <span class="muted" x-text="qualitySummary"></span>
-              </div>
-              <p class="empty" x-show="!quality">暂无质量缓存
-                （<code>artifacts/quality/quality_cache.parquet</code>）。</p>
-              <table class="data" x-show="quality">
-                <thead><tr><th>币</th><th>窗口终点</th><th>K 线缺失</th>
-                <th>逐笔缺失</th><th>一致性误差</th><th>合格</th></tr></thead>
-                <tbody>
-                  <template x-for="row in qualityRows" :key="row.symbol + row.window_end_ms">
-                    <tr>
-                      <td x-text="row.symbol"></td>
-                      <td x-text="fmtTime(row.window_end_ms)"></td>
-                      <td x-text="fmtPct(row.kline_missing_ratio)"></td>
-                      <td x-text="fmtPct(row.aggtrades_missing_ratio)"></td>
-                      <td x-text="fmtPct(row.consistency_error_median)"></td>
-                      <td :class="row.qualified ? 'pos' : 'neg'"
-                          x-text="row.qualified ? '合格' : '不合格'"></td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
+              <p class="empty" x-show="!ledgerRounds.length">暂无总账。</p>
             </div>
+            <div class="card">
+              <h2 class="card-title">候选与最终检验窗口</h2>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>窗口</th><th>起止</th><th>可运行日期</th><th>状态</th><th>候选</th></tr></thead>
+                  <tbody>
+                    <template x-for="row in windowRows" :key="row.id">
+                      <tr>
+                        <td x-text="row.id"></td>
+                        <td x-text="row.start + ' ~ ' + row.end"></td>
+                        <td x-text="row.available_after"></td>
+                        <td x-text="row.status"></td>
+                        <td x-text="row.candidate || '—'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
 
+
+          <div x-show="researchTab === 'data'">
+            <div class="card">
+              <h2 class="card-title">交易范围快照</h2>
+              <select class="select" x-model="universeMonth" @change="loadUniverse(universeMonth)">
+                <template x-for="month in universeMonths" :key="month">
+                  <option :value="month" x-text="month"></option>
+                </template>
+              </select>
+              <p class="empty" x-text="universeSummary"></p>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>月份</th><th>币种</th><th>角色</th><th>排名</th><th>30 天成交额中位数</th></tr></thead>
+                  <tbody>
+                    <template x-for="coin in universeRows" :key="coin.month + coin.symbol">
+                      <tr>
+                        <td x-text="coin.month"></td>
+                        <td x-text="coin.symbol"></td>
+                        <td x-text="coin.role"></td>
+                        <td x-text="coin.rank"></td>
+                        <td x-text="fmtMoney(coin.daily_quote_median)"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <p class="empty" x-show="!universeRows.length">暂无交易范围快照。</p>
+            </div>
+            <div class="card">
+              <h2 class="card-title">数据质量（30 天窗口）</h2>
+              <p class="empty" x-text="qualitySummary"></p>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>币种</th><th>K 线缺失率</th><th>逐笔缺失率</th><th>一致性误差</th><th>合格</th></tr></thead>
+                  <tbody>
+                    <template x-for="row in qualityRows" :key="row.symbol">
+                      <tr>
+                        <td x-text="row.symbol"></td>
+                        <td x-text="fmtPct(row.kline_missing_ratio)"></td>
+                        <td x-text="fmtPct(row.aggtrades_missing_ratio)"></td>
+                        <td x-text="fmtPct(row.consistency_error_median)"></td>
+                        <td x-text="row.qualified ? '是' : '否'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <div class="card">
               <h2 class="card-title">数据集</h2>
-              <p class="empty" x-show="!datasets.length">暂无数据集 manifest。</p>
-              <table class="data" x-show="datasets.length">
-                <thead><tr><th>run_id</th><th>标签</th><th>币数</th><th>样本</th>
-                <th>保留率均值</th><th>正样本率均值</th><th>特征哈希</th></tr></thead>
-                <tbody>
-                  <template x-for="dataset in datasets" :key="dataset.run_id">
-                    <tr>
-                      <td x-text="dataset.run_id"></td>
-                      <td x-text="dataset.label_mode"></td>
-                      <td x-text="dataset.n_coins"></td>
-                      <td x-text="dataset.n_samples"></td>
-                      <td x-text="fmtPct(dataset.retention_mean)"></td>
-                      <td x-text="fmtPct(dataset.positive_rate_mean)"></td>
-                      <td class="mono" x-text="shortHash(dataset.feature_hash)"></td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="card">
-              <h2 class="card-title">模型</h2>
-              <p class="empty" x-show="!models.length">暂无模型产物。</p>
-              <template x-for="m in models" :key="m.model_id">
-                <div class="model-row">
-                  <h3 class="card-title" x-text="m.model_id"></h3>
-                  <pre class="raw" x-text="JSON.stringify(m.meta, null, 2)" x-show="m.meta"></pre>
-                  <p class="empty" x-show="!m.meta">无 model_meta.json。</p>
-                </div>
-              </template>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>数据集</th><th>标签模式</th><th>币种数</th><th>样本</th></tr></thead>
+                  <tbody>
+                    <template x-for="item in datasets" :key="item.run_id">
+                      <tr>
+                        <td x-text="item.run_id"></td>
+                        <td x-text="item.label_mode"></td>
+                        <td x-text="item.n_coins"></td>
+                        <td x-text="item.n_samples"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <p class="empty" x-show="!datasets.length">暂无数据集。</p>
             </div>
           </div>
         </div>
+
+        <div class="page" x-show="page === 'control'">
+          <div class="card">
+            <h2 class="card-title">控制（PIN 二次确认）</h2>
+            <p class="empty" x-text="controlSummary"></p>
+            <div class="field">
+              <label>候选</label>
+              <input class="input" x-model="candidate" readonly />
+            </div>
+            <div class="field">
+              <label>PIN</label>
+              <input class="input" type="password" x-model="pin" autocomplete="current-password" />
+            </div>
+            <div class="field">
+              <label>risk_per_trade（0.005 ~ 0.01）</label>
+              <input class="input" x-model="riskInput" inputmode="decimal" />
+            </div>
+            <div class="actions">
+              <button class="btn" @click="controlAction('pause_open')">暂停开仓</button>
+              <button class="btn" @click="controlAction('resume_open')">恢复开仓</button>
+              <button class="btn" @click="controlAction('set_risk')">调整单笔风险</button>
+              <button class="btn danger" @click="controlAction('flatten')">全部平仓</button>
+            </div>
+            <p class="empty" x-text="actionMessage"></p>
+            <p class="empty">停机标志只能由人工在服务器执行
+              <code>python scripts/live_runner.py --clear-halt</code> 清除。</p>
+          </div>
+        </div>
+
       </section>
     </main>
   </div>
 </body>
 </html>
 
-            </div>
-
-          </div>
-
-        <div class="page placeholder" x-show="isLivePlaceholder">
-          <h1 class="page-title" x-text="pageTitle"></h1>
-          <div class="panel">
-            <p class="empty">本页依赖 P5 实盘引擎与状态库（T6-5 / T6-6），暂不实施。</p>
-          </div>
-        </div>
-
-                </template>
-              </div>
-              <p class="empty" x-show="!scanCells.length">
-                等待交易进程写入 <code>scan_state</code>（T5-12）。当前显示空网格。
-              </p>
-            </section>

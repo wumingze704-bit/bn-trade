@@ -272,3 +272,101 @@ def _with_drawdown(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         drawdown = (peak - equity) / peak if peak > 0 else 0.0
         output.append({**point, "drawdown": drawdown})
     return output
+
+
+# ---- 低频引擎页面（docs/10 §5.1~§5.6）----
+
+
+def query_engine_list(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """读取全部候选的引擎心跳（总览顶栏与候选选择器）。"""
+    if not has_table(connection, "engine_status"):
+        return []
+    rows = connection.execute(
+        "SELECT candidate, mode, pid, started_ms, heartbeat_ms, last_rebalance_ms, "
+        "next_rebalance_ms, version, note FROM engine_status ORDER BY heartbeat_ms DESC"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def query_engine(connection: sqlite3.Connection, candidate: str) -> dict[str, Any] | None:
+    """读取某候选的引擎状态（不存在返回 None）。"""
+    if not has_table(connection, "engine_status"):
+        return None
+    row = connection.execute(
+        "SELECT candidate, mode, pid, started_ms, heartbeat_ms, last_rebalance_ms, "
+        "next_rebalance_ms, version, note FROM engine_status WHERE candidate = ?",
+        (candidate,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def query_rebalances(
+    connection: sqlite3.Connection, candidate: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """读取调仓记录（目标、成本与订单数；docs/10 §5.3）。"""
+    if not has_table(connection, "rebalance_log"):
+        return []
+    rows = connection.execute(
+        "SELECT open_time, finished_ms, equity, long_notional, short_notional, cost_bp, "
+        "est_cost_bp, n_targets, n_orders, detail_json FROM rebalance_log "
+        "WHERE candidate = ? ORDER BY open_time DESC LIMIT ?",
+        (candidate, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def query_consistency(
+    connection: sqlite3.Connection, candidate: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """读取一致性比对结果（shadow 与回放、live 与 shadow；docs/10 §5.4）。"""
+    if not has_table(connection, "consistency_log"):
+        return []
+    rows = connection.execute(
+        "SELECT kind, ts_ms, agree_ratio, detail_json FROM consistency_log "
+        "WHERE candidate = ? ORDER BY ts_ms DESC LIMIT ?",
+        (candidate, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def query_halt(connection: sqlite3.Connection, candidate: str) -> dict[str, Any] | None:
+    """读取停机标志（按模式分别记录，任一模态停机都会展示）。"""
+    if not has_table(connection, "halt_flags"):
+        return None
+    row = connection.execute(
+        "SELECT candidate, mode, halted, reason, updated_ms FROM halt_flags "
+        "WHERE candidate = ? AND halted = 1 ORDER BY updated_ms DESC LIMIT 1",
+        (candidate,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def query_control(connection: sqlite3.Connection, candidate: str) -> dict[str, Any]:
+    """读取控制标志与 risk_per_trade 覆盖（docs/10 §5.6）。"""
+    pause = 0
+    flatten = 0
+    updated_ms = 0
+    if has_table(connection, "control_flags"):
+        row = connection.execute(
+            "SELECT pause_open, flatten_requested, updated_ms FROM control_flags "
+            "WHERE candidate = ?",
+            (candidate,),
+        ).fetchone()
+        if row is not None:
+            pause = int(row["pause_open"])
+            flatten = int(row["flatten_requested"])
+            updated_ms = int(row["updated_ms"])
+    risk_per_trade = None
+    if has_table(connection, "runtime_overrides"):
+        row = connection.execute(
+            "SELECT value FROM runtime_overrides WHERE key = 'risk_per_trade'"
+        ).fetchone()
+        if row is not None:
+            risk_per_trade = row["value"]
+    return {
+        "candidate": candidate,
+        "pause_open": bool(pause),
+        "flatten_requested": bool(flatten),
+        "risk_per_trade": risk_per_trade,
+        "updated_ms": updated_ms,
+    }

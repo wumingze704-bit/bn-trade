@@ -1,0 +1,11 @@
+[Unit]
+Description=每 5 分钟运行 trade 引擎看门狗
+Requires=trade-watchdog.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=trade-watchdog.service
+
+[Install]
+WantedBy=timers.target

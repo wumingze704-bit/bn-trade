@@ -121,7 +121,7 @@ def endpoints_for(env: EnvName) -> Endpoints:
     """按运行环境返回端点（09 §2）。
 
     Args:
-        env: `testnet`（paper 模式）或 `mainnet`（shadow/live 模式）。
+        env: `testnet`（旧测试网）或 `mainnet`（shadow/live 模式）。
 
     Returns:
         对应环境的端点配置。
@@ -138,4 +138,21 @@ def endpoints_for(env: EnvName) -> Endpoints:
         ws_public_base="wss://fstream.binance.com/public",
         ws_market_base="wss://fstream.binance.com/market",
         ws_private_base="wss://fstream.binance.com/private",
+    )
+
+
+def demo_endpoints() -> Endpoints:
+    """paper 模式使用的币安模拟盘端点（09 §2）。
+
+    REST 为 `https://demo-fapi.binance.com`，WebSocket 为
+    `wss://fstream-demo.binance.com`（按 public / market / private 路由拆分）。
+
+    Returns:
+        demo 环境的端点配置。
+    """
+    return Endpoints(
+        rest_base="https://demo-fapi.binance.com",
+        ws_public_base="wss://fstream-demo.binance.com/public",
+        ws_market_base="wss://fstream-demo.binance.com/market",
+        ws_private_base="wss://fstream-demo.binance.com/private",
     )

@@ -7,14 +7,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
+import json
+import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+import yaml
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from trade.common.config import load_config
 from trade.common.exits import ExitConfig
@@ -34,19 +40,43 @@ from trade.dashboard.security import validate_host_header, validate_origin_heade
 from trade.dashboard.state_db import (
     open_state_db_readonly,
     query_closed_fills,
+    query_consistency,
+    query_control,
+    query_engine_list,
     query_equity_curve,
     query_events,
+    query_halt,
     query_latest_cycle,
     query_latest_equity,
     query_orders,
     query_positions,
+    query_rebalances,
     query_risk_state,
     query_scan_states,
     query_status,
     state_db_exists,
 )
+from trade.live.control import (
+    ControlError,
+    request_flatten,
+    set_pause_open,
+    set_risk_per_trade,
+)
+from trade.live.store import Store
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+_PIN_FAILURES: dict[str, int] = {}
+_PIN_LOCKED_UNTIL: dict[str, float] = {}
+_LOCK_KEY = "dashboard"
+
+
+class ControlRequest(BaseModel):
+    """控制请求（docs/10 §5.6）：全部操作都需要 PIN 二次确认。"""
+
+    candidate: str = Field(min_length=1, max_length=64)
+    action: Literal["pause_open", "resume_open", "flatten", "risk_per_trade"]
+    pin: str = Field(min_length=1, max_length=128)
+    value: float | None = None
 
 
 def create_app(config: DashboardConfig) -> FastAPI:
@@ -79,17 +109,41 @@ def create_app(config: DashboardConfig) -> FastAPI:
         return build_status(config)
 
     @app.get("/api/overview")
-    async def overview() -> dict[str, Any]:
-        return build_overview(config, now_ms=_now_ms())
+    async def overview(candidate: str | None = None) -> dict[str, Any]:
+        data = build_overview(config, now_ms=_now_ms())
+        if candidate and _hide_pnl(config, candidate):
+            data["pnl_hidden"] = True
+            if isinstance(data.get("kpis"), dict):
+                data["kpis"]["equity"] = {
+                    "value": None,
+                    "initial": None,
+                    "change": None,
+                    "change_pct": None,
+                    "spark": [],
+                    "ts_ms": None,
+                }
+                data["kpis"]["today_pnl"] = {
+                    "value": None,
+                    "pct": None,
+                    "daily_loss_stop": None,
+                    "stop_usdt": None,
+                    "remaining_usdt": None,
+                }
+        return data
 
     @app.get("/api/scan")
     async def scan() -> dict[str, Any]:
         return build_scan(config)
 
     @app.get("/api/equity")
-    async def equity(range_key: str = Query(default="all", alias="range")) -> dict[str, Any]:
+    async def equity(
+        range_key: str = Query(default="all", alias="range"),
+        candidate: str | None = None,
+    ) -> dict[str, Any]:
         if range_key not in {"1D", "1W", "1M", "all"}:
             raise HTTPException(status_code=422, detail="range 只能是 1D / 1W / 1M / all")
+        if candidate and _hide_pnl(config, candidate):
+            return {"range": range_key, "points": [], "pnl_hidden": True}
         return build_equity(config, range_key=range_key, now_ms=_now_ms())
 
     @app.get("/api/positions")
@@ -149,6 +203,118 @@ def create_app(config: DashboardConfig) -> FastAPI:
         if data is None:
             raise HTTPException(status_code=404, detail="模型不存在")
         return data
+
+    @app.get("/api/engine")
+    async def engine() -> dict[str, Any]:
+        """引擎列表与总账摘要（总览顶栏、研究页与候选选择器）。"""
+        ledger = read_ledger_summary(config)
+        engines: list[dict[str, Any]] = []
+        if state_db_exists(config.paths.state_db):
+            connection = open_state_db_readonly(config.paths.state_db)
+            try:
+                engines = query_engine_list(connection)
+            finally:
+                connection.close()
+        return {
+            "live_available": state_db_exists(config.paths.state_db),
+            "engines": engines,
+            "ledger": ledger,
+        }
+
+    @app.get("/api/rebalances")
+    async def rebalances(
+        candidate: str, limit: int = Query(default=50, ge=1, le=500)
+    ) -> dict[str, Any]:
+        """调仓记录（目标、成本对比与过滤原因，docs/10 §5.3）。"""
+        if not state_db_exists(config.paths.state_db):
+            return {"live_available": False, "candidate": candidate, "rows": []}
+        connection = open_state_db_readonly(config.paths.state_db)
+        try:
+            rows = query_rebalances(connection, candidate, limit=limit)
+            halt = query_halt(connection, candidate)
+            control = query_control(connection, candidate)
+        finally:
+            connection.close()
+        return {
+            "live_available": True,
+            "candidate": candidate,
+            "rows": [_rebalance_row(row, tz=config.display.tz) for row in rows],
+            "halt": halt,
+            "control": control,
+        }
+
+    @app.get("/api/consistency")
+    async def consistency(
+        candidate: str, limit: int = Query(default=50, ge=1, le=500)
+    ) -> dict[str, Any]:
+        """一致性比对结果（docs/10 §5.4）。"""
+        if not state_db_exists(config.paths.state_db):
+            return {"live_available": False, "candidate": candidate, "rows": []}
+        connection = open_state_db_readonly(config.paths.state_db)
+        try:
+            rows = query_consistency(connection, candidate, limit=limit)
+        finally:
+            connection.close()
+        return {
+            "live_available": True,
+            "candidate": candidate,
+            "rows": [_consistency_row(row, tz=config.display.tz) for row in rows],
+        }
+
+    @app.get("/api/control")
+    async def control_state(candidate: str) -> dict[str, Any]:
+        """读取控制状态（暂停开仓、平仓请求、risk_per_trade 覆盖）。"""
+        if not state_db_exists(config.paths.state_db):
+            return {"live_available": False, "candidate": candidate}
+        connection = open_state_db_readonly(config.paths.state_db)
+        try:
+            state = query_control(connection, candidate)
+            halt = query_halt(connection, candidate)
+        finally:
+            connection.close()
+        return {
+            "live_available": True,
+            "candidate": candidate,
+            "control": state,
+            "halt": halt,
+            "control_enabled": config.control.enabled,
+        }
+
+    @app.post("/api/control")
+    async def control(request: ControlRequest) -> dict[str, Any]:
+        """控制操作：PIN 二次确认后写状态库标志（由引擎下一轮巡检读取）。"""
+        _check_pin(config, request.pin)
+        if not state_db_exists(config.paths.state_db):
+            raise HTTPException(status_code=404, detail="状态库不存在")
+        store = Store(config.paths.state_db)
+        try:
+            if request.action == "pause_open":
+                set_pause_open(store, candidate=request.candidate, paused=True, source="dashboard")
+            elif request.action == "resume_open":
+                set_pause_open(store, candidate=request.candidate, paused=False, source="dashboard")
+            elif request.action == "flatten":
+                request_flatten(store, candidate=request.candidate, source="dashboard")
+            else:
+                if request.value is None:
+                    raise HTTPException(status_code=422, detail="risk_per_trade 需要 value")
+                try:
+                    set_risk_per_trade(
+                        store,
+                        candidate=request.candidate,
+                        value=request.value,
+                        source="dashboard",
+                    )
+                except ControlError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from error
+        finally:
+            store.close()
+        connection = open_state_db_readonly(config.paths.state_db)
+        try:
+            state = query_control(connection, request.candidate)
+            halt = query_halt(connection, request.candidate)
+        finally:
+            connection.close()
+        return {"ok": True, "candidate": request.candidate, "control": state, "halt": halt}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
@@ -448,3 +614,143 @@ def _day_start_ms(now_ms: int, tz: str) -> int:
     local = datetime.fromtimestamp(now_ms / 1000, tz=UTC).astimezone(ZoneInfo(tz))
     start = datetime.combine(local.date(), datetime.min.time(), tzinfo=ZoneInfo(tz))
     return int(start.astimezone(UTC).timestamp() * 1000)
+
+
+def _check_pin(config: DashboardConfig, pin: str) -> None:
+    """校验控制 PIN（失败计数与锁定，docs/10 §8）。"""
+    if not config.control.enabled:
+        raise HTTPException(status_code=403, detail="看板控制已关闭")
+    expected = os.environ.get(config.control.pin_env, "")
+    if not expected:
+        raise HTTPException(status_code=503, detail=f"未设置环境变量 {config.control.pin_env}")
+    now = time.monotonic()
+    locked_until = _PIN_LOCKED_UNTIL.get(_LOCK_KEY, 0.0)
+    if now < locked_until:
+        raise HTTPException(status_code=423, detail="PIN 失败次数过多，已临时锁定")
+    if not hmac.compare_digest(pin, expected):
+        failures = _PIN_FAILURES.get(_LOCK_KEY, 0) + 1
+        _PIN_FAILURES[_LOCK_KEY] = failures
+        if failures >= config.control.max_pin_failures:
+            _PIN_LOCKED_UNTIL[_LOCK_KEY] = now + config.control.lock_minutes * 60.0
+            _PIN_FAILURES[_LOCK_KEY] = 0
+        raise HTTPException(status_code=403, detail="PIN 错误")
+    _PIN_FAILURES.pop(_LOCK_KEY, None)
+    _PIN_LOCKED_UNTIL.pop(_LOCK_KEY, None)
+
+
+def read_ledger_summary(config: DashboardConfig) -> dict[str, Any] | None:
+    """读取总账与各轮结论（研究页；只读，文件缺失返回 None）。"""
+    ledger_path = config.paths.ledger
+    research_dir = config.paths.research_dir
+    if ledger_path is None and research_dir is not None:
+        ledger_path = research_dir / "ledger.yaml"
+    if ledger_path is None or not ledger_path.is_file():
+        return None
+    try:
+        values = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(values, dict):
+        return None
+    rounds = values.get("rounds", [])
+    conclusions: dict[str, str] = {}
+    if research_dir is not None and (research_dir / "rounds").is_dir():
+        for path in sorted((research_dir / "rounds").glob("*.md")):
+            first = path.read_text(encoding="utf-8").splitlines()[0].strip()
+            conclusions[path.stem] = first
+    return {
+        "trials_used": values.get("trials_used"),
+        "global_trial_budget": values.get("global_trial_budget"),
+        "qualified_pool": values.get("qualified_pool", []),
+        "rounds": [
+            {
+                "id": item.get("id"),
+                "family": item.get("family"),
+                "status": item.get("status"),
+                "trials": item.get("trials"),
+                "result": item.get("result"),
+                "conclusion": conclusions.get(str(item.get("id")), ""),
+            }
+            for item in rounds
+            if isinstance(item, dict)
+        ],
+        "candidates": values.get("candidates", []),
+        "final_windows": values.get("final_windows", []),
+    }
+
+
+def _rebalance_row(row: dict[str, Any], *, tz: str) -> dict[str, Any]:
+    """调仓记录展示字段：本地时间与明细（观察期不展示收益）。"""
+    detail = _parse_json(row.get("detail_json"))
+    return {
+        **row,
+        "detail": detail,
+        "detail_json": None,
+        "open_time_local": _local_time(int(row["open_time"]), tz),
+        "finished_local": _local_time(int(row["finished_ms"]), tz),
+        "cost_bp": row.get("cost_bp"),
+        "est_cost_bp": row.get("est_cost_bp"),
+    }
+
+
+def _consistency_row(row: dict[str, Any], *, tz: str) -> dict[str, Any]:
+    """一致性记录展示字段：本地时间与明细。"""
+    return {
+        **row,
+        "detail": _parse_json(row.get("detail_json")),
+        "detail_json": None,
+        "time_local": _local_time(int(row["ts_ms"]), tz),
+    }
+
+
+def _parse_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def _local_time(ts_ms: int, tz: str) -> str:
+    local = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).astimezone(ZoneInfo(tz))
+    return local.strftime("%m-%d %H:%M:%S")
+
+
+def _hide_pnl(config: DashboardConfig, candidate: str) -> bool:
+    """盈亏遮蔽：shadow / paper 且候选最终检验未通过时不展示虚拟收益（docs/07 §6.11）。"""
+    if not candidate:
+        return False
+    hide = True
+    if config.paths.live_config is not None and config.paths.live_config.is_file():
+        try:
+            values = yaml.safe_load(config.paths.live_config.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            values = None
+        if isinstance(values, dict):
+            engine = values.get("engine")
+            if isinstance(engine, dict) and "hide_pnl_until_final" in engine:
+                hide = bool(engine["hide_pnl_until_final"])
+    if not hide:
+        return False
+    summary = read_ledger_summary(config)
+    if summary is None:
+        return False
+    final = "pending"
+    for item in summary.get("candidates", []):
+        if isinstance(item, dict) and item.get("id") == candidate:
+            final = str(item.get("final", "pending"))
+            break
+    if final not in {"pending", "running"}:
+        return False
+    if state_db_exists(config.paths.state_db):
+        connection = open_state_db_readonly(config.paths.state_db)
+        try:
+            engines = query_engine_list(connection)
+        finally:
+            connection.close()
+        for item in engines:
+            if item.get("candidate") == candidate and item.get("mode") in {"shadow", "paper"}:
+                return True
+        return False
+    return True

@@ -8,6 +8,9 @@ paths:
   live_dir: ./artifacts/live
   reports_dir: ./artifacts/reports
   models_dir: ./artifacts/models
+  ledger: ./docs/research/ledger.yaml # 研究页：轮次、试验预算、候选与窗口
+  research_dir: ./docs/research # 研究页：rounds/ 结论、final/、shadow/
+  live_config: ./configs/live.yaml # 读取 hide_pnl_until_final（盈亏遮蔽）
   # 研究页只读输入（10 §5.5）；文件不存在时页面显示占位，不影响实盘页面
   data_dir: ./data
   quality_cache: ./artifacts/quality/quality_cache.parquet

@@ -1,0 +1,13 @@
+[Unit]
+Description=trade 引擎看门狗（检查心跳，必要时重启一次）
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/trade
+ExecStart=/home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_watchdog.py --config configs/live.yaml
+MemoryMax=200M
+NoNewPrivileges=true
+PrivateTmp=true
