@@ -33,3 +33,7 @@
 新会话收到本指令时：先读本文件与 `ledger.yaml`，从“下一步”继续。服务器上的研究报告在
 `~/trade/artifacts/reports/<轮次>/grid.json`，试验登记 `~/trade/artifacts/reports/EXPERIMENTS.log`；
 代码同步用 tar（排除 `docs/research/ledger.yaml`，避免覆盖服务器上的研究状态）。
+
+提交状态：本次提交 `182a877`（feat(research): 建立研究框架并完成 R1~R5 首轮网格）已创建；
+推送到 `origin/develop` 时本机到 GitHub 的连接被重置（`Recv failure: Connection was reset`），
+重试 3 次仍未成功，**未推送**。下一次先执行 `git push origin develop`。
