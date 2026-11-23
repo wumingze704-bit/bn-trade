@@ -11,6 +11,10 @@
   空头 +8.73 USDT，与假设方向相反。FAILED，见 `rounds/R7.md`。
 - R8 `vol_timed_momentum`（波动率择时动量，周频）：6 组，选中组训练期停机、验证折无交易；
   σ_target 0.5 两组自身拼接日频夏普 +0.031/+0.022；`nohalt` 净 −0.14%。FAILED，见 `rounds/R8.md`。
+- R9 `btc_hedged_momentum`（BTC 对冲单边动量，周频）：4 组，拼接夏普 −0.317、回撤 19.5%；
+  多头 −19.05、空头 +5.30；2022-08-19 触发 R8 停机。FAILED，见 `rounds/R9.md`。
+- R10 `liquidity_tiered_momentum`（流动性分层动量，周频）：4 组，拼接夏普 −0.180、回撤 29.4%；
+  多头 −25.76、空头 +14.26。FAILED，见 `rounds/R10.md`。
 
 ## 正在进行
 
