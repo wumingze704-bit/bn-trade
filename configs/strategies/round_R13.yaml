@@ -1,0 +1,12 @@
+# R13 波动率择时的横截面动量网格（第二轮；docs/13 §5；指令第八部分 R11~R14）
+# 动量选币 + 按组合波动估计缩放暴露（weight = min(1, σ_target / σ_hat)）；周频调仓。
+round: R13
+family: vol_timed_momentum
+exposure: neutral
+params:
+  - {lookback_days: 14, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168}

@@ -1,6 +1,9 @@
 version: 2
 global_trial_budget: 200
 trials_used: 65
+# 风险包络第二轮（使用者批准）：R11~R14 使用新阈值 daily_loss_halt 0.10、
+# max_drawdown_halt 0.25、max_risk_per_trade 0.03、halt_mode reset（7 天）；
+# R1~R10 为旧包络下的结果，只作诊断参考。
 research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
 research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
 rounds:
@@ -14,6 +17,10 @@ rounds:
   - {id: R8, family: ai_proposed_3, status: failed, trials: 6, result: "波动率择时动量：选中组训练期 2021-10-07 触发 R6 停机，验证折无交易；σ0.5 组自身拼接日频夏普最高 +0.031；nohalt 净 -0.14%；见 rounds/R8.md"}
   - {id: R9, family: ai_proposed_4, status: failed, trials: 4, result: "BTC 对冲单边动量：拼接夏普 -0.317；多头 -19.05、空头 +5.30；2022-08-19 触发 R8 停机；见 rounds/R9.md"}
   - {id: R10, family: ai_proposed_5, status: failed, trials: 4, result: "流动性分层动量：拼接夏普 -0.180；最大回撤 29.4%；多头 -25.76、空头 +14.26；见 rounds/R10.md"}
+  - {id: R11, family: xs_momentum_ls, status: pending, trials: 0, result: null}
+  - {id: R12, family: funding_adj_momentum, status: pending, trials: 0, result: null}
+  - {id: R13, family: vol_timed_momentum, status: pending, trials: 0, result: null}
+  - {id: R14, family: btc_hedged_momentum, status: pending, trials: 0, result: null}
 qualified_pool: []
 candidates: []
 final_windows:

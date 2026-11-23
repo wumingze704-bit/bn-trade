@@ -547,8 +547,8 @@ function dashboard() {
       };
       if (action === "set_risk") {
         const value = Number(this.riskInput);
-        if (!Number.isFinite(value) || value < 0.005 || value > 0.01) {
-          this.actionMessage = "risk_per_trade 必须在 [0.005, 0.01]。";
+        if (!Number.isFinite(value) || value < 0.01 || value > 0.03) {
+          this.actionMessage = "risk_per_trade 必须在 [0.01, 0.03]。";
           return;
         }
         payload.value = value;
