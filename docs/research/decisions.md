@@ -222,16 +222,3 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 发现但未修改：服务器 `data/universe_hist` 只到 `2026-07.json`，当前月份没有选币快照；引擎 `View.universe_symbols()` 会抛带上下文的 `KeyError`（符合红线 12），启动 shadow 前需补齐当月快照。
 - 部署：服务器 `sudo -n` 可用，已安装单元并启动看板与看门狗；未创建任何交易实例（总账无候选）。看板 `curl` 返回 200，`/api/status` 显示 `live_available=false`。
 
-
-## 2026-11-23 风险包络第二轮（使用者批准）
-
-使用者看完 R1~R10 报告后批准“调整风险包络并允许 halt_mode: reset”，要求按 Agent 方案执行。具体改动（均属红线 5 的“使用者决定”项，由使用者本次授权后实施）：
-
-- `configs/sizing_research.yaml`：`risk_per_trade` 0.0075 → 0.015（冻结候选时在 {0.01, 0.015, 0.02} 中选）；`max_risk_per_trade` 0.025 → 0.03；`daily_loss_halt` 0.08 → 0.10；`max_drawdown_halt` 0.20 → 0.25；`daily_loss_stop` 0.05、`max_consecutive_losses` 6、`leverage` 5、`position_frac` 0.08、`max_positions` 10、`liq_cap` 0.005 不变。
-- `configs/backtest.yaml`：`halt_mode: strict → reset`、`halt_reset_days: 1 → 7`。研究期 R6/R8 触发后停 7 天继续，避免一个坏日子把整条验证折永久置零；实盘仍以停机标志为准，只能人工清除（runner 每次调仓前读取 `halt_flags`，不会因 reset 自动恢复）。
-- 达标条件中的最大回撤上限同步从 20% 放宽到 25%（研究 §七、最终检验 §六、docs/00、docs/13）。
-- 原因：R1~R10 的诊断显示 8% 日亏损熔断 + 20% 回撤 + strict 让 R6/R8 在训练期直接停机、验证折无交易；0.75% 风险在 15% 止损下名义价值接近最小下单额，宽止损仓位被丢弃。提高单笔风险与放松熔断阈值能让策略的止损宽度与仓位规模匹配，同时仍保留 5% 日停止开仓与 10% 日熔断。
-- 新增第二轮网格 R11~R14（分别复用 R1/R6/R8/R9 的机制与网格），登记为 pending；R1~R10 结果不参与第二轮选参与判定，避免用旧结果挑参数。试验预算 65/200，R11~R14 合计 31 组，剩余预算充足。
-- 同步修改指令（本地 `指令/自动多轮/`，不进入 git）：`1_自动研究循环.txt` 的风险包络、最大回撤条件、冻结仓位选择与 R11~R14 网格；`2_最终检验.txt` 的回撤条件；`3_实盘工程与看板.txt` 的运行中 risk_per_trade 区间 [0.01, 0.03]。
-- 本轮未运行 R11~R14：本次只落实使用者批准的风险包络与指令修改；下一次收到研究循环指令时从 R11 开始（进度已写入 progress_research.md）。
-

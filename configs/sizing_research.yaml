@@ -8,11 +8,11 @@ position_frac: 0.08 # 每仓保证金上限 = 权益 × 8%（fixed_risk 下为�
 leverage: 5
 max_positions: 10 # 0.08 × 10 = 0.80 ≤ 0.95
 base: equity # 按当前权益复利
-risk_per_trade: 0.015 # 默认每笔风险；冻结候选时在 {0.01, 0.015, 0.02} 中选
-max_risk_per_trade: 0.03 # 单笔止损亏损硬上限（占权益）
+risk_per_trade: 0.0075 # 默认每笔风险；冻结候选时在 {0.005, 0.0075, 0.01} 中选
+max_risk_per_trade: 0.025 # 单笔止损亏损硬上限（占权益）
 daily_loss_stop: 0.05 # 当日亏损达权益 5% 停止开仓
-daily_loss_halt: 0.10 # 当日亏损达 10% 全平并停机
-max_drawdown_halt: 0.25 # 从峰值回撤 25% 停机
+daily_loss_halt: 0.08 # 当日亏损达 8% 全平并停机
+max_drawdown_halt: 0.20 # 从峰值回撤 20% 停机
 max_consecutive_losses: 6
 consecutive_loss_pause_min: 120 # 连续止损后暂停开仓分钟数
 liq_cap: 0.005 # 单币名义 ≤ 0.5% × 该币 24 小时成交额 / 24

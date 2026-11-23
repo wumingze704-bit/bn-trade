@@ -128,8 +128,8 @@ def effective_sizing_from_store(store: Store, sizing: SizingConfig) -> SizingCon
 
 # ---- 低频引擎控制（docs/07 §6.8、§8；看板与 set_sizing.py 共用）----
 
-_RISK_PER_TRADE_MIN = 0.01
-_RISK_PER_TRADE_MAX = 0.03
+_RISK_PER_TRADE_MIN = 0.005
+_RISK_PER_TRADE_MAX = 0.01
 
 
 def set_pause_open(store: Store, *, candidate: str, paused: bool, source: str) -> None:

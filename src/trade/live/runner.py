@@ -476,11 +476,6 @@ class Runner:
         blocked_reason = self._risk.open_blocked_reason(now_ms)
         if control["pause_open"]:
             blocked_reason = "控制页暂停开仓"
-        halt_row = self._store.get_engine_halt(
-            candidate=self.candidate.candidate_id, mode=self.mode
-        )
-        if halt_row is not None and bool(halt_row["halted"]):
-            blocked_reason = f"停机标志（{halt_row['reason'] or 'manual'}）"
         if blocked_reason is not None:
             self._store.insert_event(
                 level="warn",
