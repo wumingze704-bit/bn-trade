@@ -1,39 +1,43 @@
 # 自动研究循环进度（进行中）
 
-状态：首次运行，2026-11-23 开始（UTC）。执行文件：`指令/自动多轮/1_自动研究循环.txt`。
+状态：第二次运行，2026-11-23 21:30 UTC 起（R6 起）。执行文件：`指令/自动多轮/1_自动研究循环.txt`。
 
 ## 已完成
 
-1. `docs/research/ledger.yaml`：version 2，10 轮，预算 200，research_start 2021-02-01，research_end 2026-07-31。
-2. 历史数据下载（服务器）：`scripts/fetch_history.py`，2020-10 ~ 2026-07 的 1h/1d K 线与资金费，
-   59,703 个文件、约 834 MB，0 缺失、0 失败（`data/history/manifest.json`）。
-3. 选币快照：`scripts/build_universe_hist.py`，70 个月写入 `data/universe_hist/`；
-   各月入选数与缺失规则币名单见 `docs/research/decisions.md`。
-4. 研究框架：`src/trade/research/`（数据层、View、组合层、执行模拟、滚动验证、指标、守卫、流水线）、
-   `src/trade/strategies/`（R1~R5）、`scripts/portfolio_backtest.py`、`tests/research/`、`tests/strategies/`。
-5. 设计书：`docs/13-研究框架.md` 首次写入（只写规格）。
-6. 研究位置：东京服务器（峰值内存 630 MB、单组 R1 耗时 8.8 秒）。
+- R1~R5：首轮网格全部不达标（数字见 `rounds/R1.md` ~ `R5.md`）。
+- R6 `funding_adj_momentum`（资金费调整的截面动量，周频）：9 组，拼接夏普 0.000；选中组训练期内
+  2021-10-07 触发 R6 单日亏损停机，验证折无交易；`nohalt` 年化 0.124、回撤 41.6%。FAILED，见 `rounds/R6.md`。
+- R7 `xs_low_vol_ls`（低波动异常，周频）：6 组，拼接夏普 −0.026、回撤 22.4%；多头 −16.69 USDT、
+  空头 +8.73 USDT，与假设方向相反。FAILED，见 `rounds/R7.md`。
+- R8 `vol_timed_momentum`（波动率择时动量，周频）：6 组，选中组训练期停机、验证折无交易；
+  σ_target 0.5 两组自身拼接日频夏普 +0.031/+0.022；`nohalt` 净 −0.14%。FAILED，见 `rounds/R8.md`。
 
 ## 正在进行
 
-- 首轮 R1~R5 已完成，全部未达标（拼接年化夏普：R1 −0.470、R2 −0.607、R3 无法选参、R4 −0.939、
-  R5 −1.078）；逐组数字、诊断与判定见 `docs/research/rounds/R1.md` ~ `R5.md`。
-- `trials_used` 36 / 200；`qualified_pool` 为空；没有候选，因此不涉及冻结。
+- 无。R1~R10 全部结束，`qualified_pool` 为空。
+
+## 结论
+
+- 10 轮全部 FAILED：拼接年化夏普 R1 −0.470、R2 −0.607、R3 无法选参、R4 −0.939、R5 −1.078、
+  R6 0.000（训练期停机）、R7 −0.026、R8 0.000（训练期停机）、R9 −0.317、R10 −0.180。
+- `trials_used` 65 / 200；没有候选，因此不涉及冻结、最终检验、影子盘与实盘。
+- 结构性约束（使用者确定，Agent 不得修改）：`daily_loss_halt = 8%`、`max_drawdown_halt = 20%` 与
+  `halt_mode: strict` 会让一次坏日子永久停止该参数的交易，验证折被置零；100 USDT × 0.75% 风险与
+  最小下单额 5 × 1.1 让宽止损仓位被丢弃。
 
 ## 下一步
 
-- R6~R10（ai_proposed）：按第八部分要求，每轮先在 `rounds/<轮次>.md` 写明机制、文献/市场结构依据、
-  与前四个方向的区别，再建网格（每轮 ≤ 10 组）并运行。
-- 已发现的硬约束：100 USDT × 0.75% 风险 ÷ 15% 止损 ≈ 4.9 USDT 名义，低于最小下单额 5 × 1.1；
-  宽止损策略会被大量丢弃。新方向必须优先设计止损较紧、换手较低的方向，或明确说明丢弃仓位的影响。
-- 每轮完成后同步更新 `ledger.yaml` 与 `rounds/<轮次>.md`，并提交推送。
+- 按第十二部分第 3 条报告“在当前市场与数据上未找到合格策略”并给出建议；若使用者调整风险包络或
+  允许 `halt_mode: reset`，需要使用者本人决定后重新下达指令。
 
 ## 断点续跑说明
 
-新会话收到本指令时：先读本文件与 `ledger.yaml`，从“下一步”继续。服务器上的研究报告在
+新会话收到本指令时：先读本文件与 `ledger.yaml`，从“正在进行 / 下一步”继续。服务器报告在
 `~/trade/artifacts/reports/<轮次>/grid.json`，试验登记 `~/trade/artifacts/reports/EXPERIMENTS.log`；
-代码同步用 tar（排除 `docs/research/ledger.yaml`，避免覆盖服务器上的研究状态）。
+代码同步用 tar（`src/trade/strategies/`、`configs/strategies/`），不覆盖服务器上的 `docs/research/ledger.yaml`。
 
-提交状态：本次提交 `182a877`（feat(research): 建立研究框架并完成 R1~R5 首轮网格）已创建；
-推送到 `origin/develop` 时本机到 GitHub 的连接被重置（`Recv failure: Connection was reset`），
-重试 3 次仍未成功，**未推送**。下一次先执行 `git push origin develop`。
+## 推送状态
+
+本地提交与推送状态见文末记录：本机到 GitHub 的推送多次失败（`Empty reply from server` /
+`Recv failure: Connection was reset`），每次重试仍失败时在报告中记录提交哈希与未推送原因。
+

@@ -1,0 +1,15 @@
+# R6 资金费调整的横截面动量网格（docs/13 §5；指令第八部分 R6~R10）
+# score = z(动量 t 统计量) − λ × z(过去 D 天平均小时化资金费)；周频调仓。
+round: R6
+family: funding_adj_momentum
+exposure: neutral
+params:
+  - {lookback_days: 14, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
