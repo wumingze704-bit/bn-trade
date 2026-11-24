@@ -7,7 +7,7 @@
 | :-- | :-- | :-- |
 | M1 服务器改为 git 副本 | 完成 | `816c31b` |
 | M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成 | `35ee65a` |
-| M3 数据补充与防幸存者偏差 | 进行中 | — |
+| M3 数据补充与防幸存者偏差 | 完成 | `18cbdee` |
 | M4 研究框架修复（D1~D7）与可信度测试 | 未开始 | — |
 | M5 仓位模式 B 与 β 中性 | 未开始 | — |
 | M6 实盘安全修复（D8~D11）与引擎对齐 | 未开始 | — |
@@ -15,13 +15,15 @@
 
 ## 当前状态
 
-- 当前子步骤：M3 进行中。`scripts/fetch_history.py` 已支持 `flow` / `premium` / `mark` 三类补充数据
-  （独立目录与 manifest、`flow` 逐行核对 `open_time`）；新增 `src/trade/data/rules_research.py` 与
-  `scripts/build_universe_hist.py` 的规则来源顺序（exchange → snapshot → synthetic）与
-  `rules_source.json` / `summary.json`。服务器上正在下载 2020-10~2026-07 的补充数据
-  （`systemd-run` 单元 `m3-fetch`，MemoryMax=1500M、nice 10）。
-- 下一步：下载完成后备份→重生成 2021-01~2026-07 选币快照，写入新旧对比与最小下单额统计，再更新
-  `docs/03`、`docs/13` 并在服务器上做最小规模验证。
+- 当前子步骤：M3 已完成（代码 `44f21cd` / `75448fb`，结果提交 `18cbdee`，文档 `f73aa7f`）。
+  服务器补充数据：`flow` 20207、`premium` 19320、`mark` 20488 个文件，全部 `ok`、失败 0；
+  选币快照 70 个月按新规则来源重生成（exchange 897 + synthetic 31，TradFi 241 排除），
+  入选「币·月」3348，`research_start` 保持 2021-02-01；最小下单额预检 0/3337 被丢弃。
+  下载与快照统计见 `decisions.md`。
+- 下一步：M4（研究框架修复 D1~D7 与结果可信度测试）。
+- 未推送提交（本地 develop，网络无法访问 GitHub）：`44f21cd`、`75448fb`、`f73aa7f`、`18cbdee`
+  及 M3 完成记录提交；恢复网络后按顺序 `git push origin develop`。
+
 
 
 ## M3 前置事实（2026-11-24 核查，只读）
