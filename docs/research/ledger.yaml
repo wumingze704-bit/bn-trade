@@ -6,7 +6,7 @@ research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检�
 rounds:
   - id: R1
     family: xs_momentum_ls
-    status: pending
+    status: researching
     trials: 0
     result: null
     void: {status: failed, trials: 12, result: "拼接夏普 -0.470；成本/毛收益 1.42；R8 停机；见 rounds/R1.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}

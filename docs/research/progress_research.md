@@ -3,8 +3,8 @@
 ## 本次运行状态（2026-11-24 第三次运行：迁移后重跑）
 
 状态判断（1 号第六部分）：第五部分已完成（`SETUP_DONE.md` DONE、M1~M7 完成、`data/` 三类补充数据与
-`universe_hist` 就绪）；冻结点未到（`qualified_pool` 为空）；R1~R10 均为 `pending`（首次判定已作废），
-R11、R12 已按第六部分第 1b 条追加为 `pending`。
+`universe_hist` 就绪）；冻结点未到（`qualified_pool` 为空）；R3 已 FAILED，R1 为 `researching`（服务器运行中，
+代码 HEAD `93d1b87`），R2、R4~R10 为 `pending`（首次判定已作废），R11、R12 已按第六部分第 1b 条追加为 `pending`。
 
 - 执行顺序（0 号调度第六部分 M7 第 3 条）：R3 → R1 → R2 → R4 → R5 → R6~R10 → R11、R12。
 - 网格：R1 24、R2 12、R3 16、R4 12、R5 8、R6 18、R7 12、R8 12、R9 8、R10 8 组（原网格 × 仓位模式 {A, B}）。
