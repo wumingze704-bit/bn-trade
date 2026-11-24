@@ -71,8 +71,9 @@ def test_sudoers只允许重启trade_runner实例() -> None:
     assert len(lines) == 1, lines
     rule = lines[0]
     assert rule.startswith("ubuntu ALL=(root) NOPASSWD:")
-    assert "/bin/systemctl restart trade-runner@*.service" in rule
-    assert "/bin/systemctl restart trade-runner-live@*.service" in rule
+    assert "/usr/bin/systemctl restart trade-runner@*.service" in rule
+    assert "/usr/bin/systemctl restart trade-runner-live@*.service" in rule
+
     assert rule.count("systemctl") == 2
     for forbidden in ("stop", "rm ", "sh ", "bash", "/bin/sh"):
         assert forbidden not in rule, f"sudoers 规则不应包含 {forbidden}"
