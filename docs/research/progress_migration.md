@@ -6,7 +6,7 @@
 | 步骤 | 状态 | 提交 |
 | :-- | :-- | :-- |
 | M1 服务器改为 git 副本 | 完成 | `816c31b` |
-| M2 配置（risk / equity / 风险档位 / 500 USDT） | 未开始 | — |
+| M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成 | `35ee65a` |
 | M3 数据补充与防幸存者偏差 | 未开始 | — |
 | M4 研究框架修复（D1~D7）与可信度测试 | 未开始 | — |
 | M5 仓位模式 B 与 β 中性 | 未开始 | — |
@@ -15,10 +15,12 @@
 
 ## 当前状态
 
-- 当前子步骤：M1 已完成并提交（`816c31b`），服务器 `~/trade` 已是 git 副本且 HEAD 与本地位于同一提交。
-- 下一步：M2（按 1 号底线改配置与 pydantic 模型：`configs/research.yaml` 的 risk / equity 节、
-  `configs/sizing_research.yaml` 的 500 USDT 与 3.0 / 1.5 上限与三档 risk_tiers、
-  `configs/live.yaml` 的 `live_capital_cap` 500、ledger 的 `global_trial_budget` 400）。
+- 当前子步骤：M2 已完成并提交（`35ee65a`）：`configs/research.yaml` 增加 `risk`（reset / 7 天）与 `equity`
+  （10000 / 500），组合上限改为 3.0 / 1.5；`configs/sizing_research.yaml` 初始权益 500 并新增三档 `risk_tiers`；
+  `configs/live.yaml` 资金上限 500（范围 (0, 1000]）；`global_trial_budget` 400；
+  研究与最终检验读 research 的 risk 节，实盘 / 测试网 / 影子盘固定 strict（新增测试）。
+- 下一步：M3（数据补充与防幸存者偏差：在服务器下载主动买入成交、溢价指数、标记价格，
+  重新生成 2021-01~2026-07 每月选币快照并按规则顺序补齐下架合约交易规则，统计写入 decisions.md）。
 
 ## M1 记录
 

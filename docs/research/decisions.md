@@ -257,3 +257,27 @@ tmux 会话 `trade` 只有一个空闲 bash）：
   依据迁移指令自行决定：服务器 `.git/info/exclude` 追加上述遗留路径，使 `git status` 干净，
   不影响仓库内容与其他机器。
 - 看板与看门狗：转换前均 active；转换后 `curl 127.0.0.1:8501` 返回 200，未重启。
+
+
+## 2026-11-24 迁移 M2：配置（停机方式、两种权益口径、风险档位）
+
+- 指令内部冲突处理：M2 第 1 条写“equity 节（signal: 10000、exec: 100）”且“sizing_research 的 initial_equity 保持 100”，
+  第 4 条写“initial_equity 改为 500”。按第 4 条与使用者决定（可执行口径 500 USDT）执行：
+  `equity.signal: 10000`、`equity.exec: 500`、`initial_equity: 500`。
+- 模型：新增 `trade.research.config.ResearchSizingConfig`（继承 `SizingConfig`，加 `tier` 与 `risk_tiers` 三档），
+  不改 `SizingConfig` 本身，避免影响 `configs/sizing.yaml`、旧回测与 rotation 路径；
+  `with_tier()` 把选中档位的 `risk_per_trade`、`max_risk_per_trade = max(0.025, disaster_loss_cap)` 与 R5~R8 阈值应用为纯 `SizingConfig`。
+  三个加载点（`scripts/portfolio_backtest.py`、`scripts/live_runner.py`、`scripts/check_live_env.py`）改为 `load_research_sizing(...).with_tier()`。
+- 停机：研究与最终检验改读 `configs/research.yaml: risk`（`reset`、7 天），不再读 `configs/backtest.yaml`；
+  实盘 / 测试网 / 影子盘固定 `strict`（`trade.live.runner.LIVE_HALT_MODE`，`load_risk_limits(sizing, mode)`），
+  新增 `tests/live/test_runner_halt.py` 断言三种模式都是 strict 且未知模式抛错。
+- 组合上限：`configs/research.yaml: portfolio` 改为 `total_notional_cap: 3.0`、`net_exposure_cap: 1.5`。
+- 实盘资金：`configs/live.yaml` 的 `live_capital_cap: 500`，pydantic 范围改为 `(0, 1000]`。
+- 总账：`global_trial_budget` 200 → 400（`trials_used` 仍为 65）。
+- 测试夹具：`tests/research/helpers.py` 的 `make_research_config` 补上新增的 `risk` / `equity` 必填节与新的组合上限，
+  断言未改动、未跳过任何测试（配置模型新增必填字段属于规格变更，不是放宽容差）。
+- 文档同步：`docs/00-当前目标.md` §1/§2（起始资金、两种权益口径、三档风险、总名义 3 倍与净敞口 1.5 倍、reset / strict 停机、
+  月化是期望不是达标项）；`docs/13-研究框架.md` §2（sizing_research 的档位与 with_tier 语义、research.yaml 的 risk / equity、停机来源）。
+- 校验：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
+  `mypy src/trade/dashboard`、`python scripts/check_docs_sections.py` 全部通过；`pytest -q` 为
+  `1 failed, 785 passed, 3 skipped`，唯一失败是与 SETUP_DONE 基线一致的 `tests/models/test_dataset.py::test_pinned_cpu_placement`（本机无 CUDA，未修改测试）。
