@@ -244,3 +244,31 @@
   “delay1 ≤ base + 0.10”。当前不影响 R1~R10（不适用该例外），R11/R12 开跑前需按登记口径改为可配置。
 - 结论：**符合**（观察项 1 项，不影响本轮执行）。
 
+## 2026-11-24 17:20 UTC 缺陷 D19、D20 登记与修复（R3 重跑中发现）
+
+复核对象：`src/trade/common/risk_rules.py`（`5381f16`）、`src/trade/research/pipeline.py`（`5c3b674`）。
+发现方式：R3 重跑（服务器 HEAD `ee6f1e5`）的拼接路径在第 1 折之后完全没有交易，
+`artifacts/reports/R3/grid.json` 的 `selected_metrics` 显示 `trades=80`、`annualized_sharpe=-0.7998`，
+分折 `fold1 net=-0.1745`、`fold2~5 net=0.0000 trades=0`；用同一参数、同一折单独复算拼接路径得到
+`risk events 227`，其中 `R8:flatten_all` 每 7 天一次（`1649286000000` = 2022-04-07 起连续出现）。
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :--- | :--- | :--- | :--- | :--- |
+| D19 | CLOSED | 1 号第二部分第 3 条（`halt_mode: reset` 停 7 个自然日后“以当时权益继续”） | `risk_rules.risk_step` 在停机到期时执行 `peak_equity = max(peak_equity, equity)`，峰值仍为停机前高点 → 回撤始终 ≥ `max_drawdown_halt` → 每次到期立刻再触发 R8，每 7 天循环一次，路径永久停摆 | 任何在路径内触发 R8 的轮次，其后各折全部无交易、收益记 0，判定与试验登记全部失真 |
+| D20 | CLOSED | 1 号第三部分第 5 条与 B 第 13 条（`code_hash` 不一致必须整轮重跑） | `pipeline.compute_hashes` 只哈希 `src/trade/research`、`src/trade/strategies` 与 `scripts/portfolio_backtest.py`，不含共享风控 / 仓位模块 `src/trade/common`；修 D19 后哈希不变，断点续跑会静默复用缺陷结果 | 修复后仍复用旧组结果，等于把修复作废；同口径风险在后续任何 `trade.common` 改动时都会重现 |
+
+修复（`src/trade/common/risk_rules.py`、`src/trade/research/pipeline.py`）：
+- D19：reset 模式到期恢复时 `state.peak_equity = equity`（按恢复时刻权益重设回撤基准），strict 模式仍用 `_NEVER_MS` 不再恢复。
+- D20：`code_hash` 覆盖 `src/trade/common/**/*.py`；`docs/13` §4（reset 停机语义）与 §8（试验记录字段）同步。
+
+复现测试（修复前失败、修复后通过）：
+- `tests/common/test_risk_rules.py::test_reset模式停机到期后按恢复时权益继续`（修复前在到期时刻返回 `flatten`、`halted_until_ms` 再次被推后 7 天）；
+- `tests/common/test_risk_rules.py::test_strict模式停机后不再恢复`；
+- `tests/research/test_records.py::test_代码哈希覆盖共享风控与仓位模块`（修复前两个 `code_hash` 相同）。
+
+质量命令：`ruff format --check .`（376 files）、`ruff check .`、`mypy --strict`（56 files）、`mypy dashboard`（8 files）通过；
+`pytest -q` = `1 failed, 865 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。未修改任何既有测试断言。
+
+处理：R3 的第一次重跑结果与判定作废（试验次数照常计入），修复后重跑整轮（1 号第三部分第 8 条）；
+R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19_fix.json`（服务器）。
+

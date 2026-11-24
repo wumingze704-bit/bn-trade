@@ -129,8 +129,9 @@ def risk_step(state: RiskState, *, ts_ms: int, equity: float, limits: RiskLimits
     if state.halted_until_ms:
         if ts_ms < state.halted_until_ms:
             return None  # 停机中：不交易、不平仓
-        # reset 模式到期恢复：峰值按恢复时权益重设，避免立刻再次触发 R8
-        state.peak_equity = max(state.peak_equity, equity)
+        # reset 模式到期恢复：峰值重设为恢复时刻的权益，否则按停机前的高点算回撤会立刻再触发 R8，
+        # 于是每 7 天再停一次、路径永久不再交易（docs/13 §4）。
+        state.peak_equity = equity
         state.halted_until_ms = 0
         state.halt_reason = None
     if state.day != day:

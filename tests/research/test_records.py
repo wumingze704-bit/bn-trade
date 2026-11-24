@@ -86,6 +86,25 @@ def test_哈希随代码与配置变化(tmp_path, monkeypatch) -> None:
         compute_hashes(config=config, root=tmp_path, grid_path=grid)
 
 
+def test_代码哈希覆盖共享风控与仓位模块(tmp_path, monkeypatch) -> None:
+    """code_hash 必须覆盖 `src/trade/common`：风控与仓位是研究、影子盘、实盘共用的执行口径。
+
+    修复前 `compute_hashes` 只看 `src/trade/research`、`src/trade/strategies` 与
+    `scripts/portfolio_backtest.py`，改共享风控后断点续跑仍复用旧结果，旧结果被静默当成新口径。
+    """
+    grid = _tree(tmp_path)
+    common = tmp_path / "src" / "trade" / "common"
+    common.mkdir(parents=True)
+    (common / "risk_rules.py").write_text("HALT = 'reset'\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    config = _config(tmp_path)
+    first = compute_hashes(config=config, root=tmp_path, grid_path=grid)
+    (common / "risk_rules.py").write_text("HALT = 'strict'\n", encoding="utf-8")
+    second = compute_hashes(config=config, root=tmp_path, grid_path=grid)
+    assert second.code_hash != first.code_hash
+    assert second.data_hash == first.data_hash
+
+
 def test_网格评估写出记录与逐组文件并可断点续跑(tmp_path, monkeypatch) -> None:
     """evaluate_grid 写 grid.json、groups/*.json 与两类试验记录；再次运行不重复登记 tuning。"""
     grid_path = _tree(tmp_path)

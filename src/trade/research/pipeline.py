@@ -289,6 +289,9 @@ def compute_hashes(
     code_files = [
         *(root / "src" / "trade" / "research").rglob("*.py"),
         *(root / "src" / "trade" / "strategies").rglob("*.py"),
+        # 风控（R5~R8）与仓位（取整、最小下单额）是研究、最终检验、影子盘与实盘共用的执行口径
+        # （AGENTS.md 红线 4）：改动它们同样改变结果，因此必须进入 code_hash。
+        *(root / "src" / "trade" / "common").rglob("*.py"),
         root / "scripts" / "portfolio_backtest.py",
     ]
     manifest = root / config.paths.data_root / "history" / "manifest.json"
