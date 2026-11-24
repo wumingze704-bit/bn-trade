@@ -19,7 +19,8 @@
 
 - 连接：`ssh tokyo`（本地 `~/.ssh/config` 已配置，仅密钥登录）。密钥内容严禁写入任何文件、代码、日志、报告或通知。
 - 服务器：腾讯云东京 CVM，Ubuntu 26.04，2 核 / 3.6 GB，仅开放 22 端口。项目位于 `~/trade`，虚拟环境 `~/trade-venv`（uv Python 3.13，含 numpy/pandas/pyarrow/numba）。
-- 授权与原则：Agent 可以直接在服务器执行：数据下载、聚合、基准测试、只读查询、运行本仓库 `scripts/` 下的脚本、rsync 同步。修改服务器系统配置、安装或升级系统软件、重启服务、覆盖 `data/` 下已有月文件，必须先获得使用者确认；删除 `data/` 与 `artifacts/` 下的文件一律按 §6 红线 13 与指令列出的清单执行。服务器上的任何操作都不放宽 §6 红线。
+- 代码同步：`~/trade` 是本仓库的 git 副本，代码只通过 git 同步——本地 `git bundle create <bundle> develop` → `scp` 上传 → 服务器 `git fetch <bundle> develop` 后 `git checkout --detach <本地已提交哈希>`（服务器能直连 GitHub 时也可直接 `git fetch`）；运行前核对 `git rev-parse HEAD` 与本地一致。**禁止在服务器执行 `git clean`**：它会删除被忽略的 `data/`、`artifacts/` 与密钥文件；服务器上不提交代码，也不接受 tar/rsync 覆盖代码与 `docs/`。
+- 授权与原则：Agent 可以直接在服务器执行：数据下载、聚合、基准测试、只读查询、运行本仓库 `scripts/` 下的脚本、rsync 拉取数据。修改服务器系统配置、安装或升级系统软件、重启服务、覆盖 `data/` 下已有月文件，必须先获得使用者确认；删除 `data/` 与 `artifacts/` 下的文件一律按 §6 红线 13 与指令列出的清单执行。服务器上的任何操作都不放宽 §6 红线。
 
 ## 2. 每次任务的工作流程
 

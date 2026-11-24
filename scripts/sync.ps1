@@ -37,7 +37,19 @@ function Invoke-Rsync {
 
 switch ($Action) {
     "push-code" {
-        git push $Remote main
+        # 服务器 ~/trade 是 git 副本，代码只通过 git 同步（docs/02 §5.8）：
+        # 本地 bundle → scp → 服务器 fetch → checkout --detach；
+        # 服务器上不提交代码、不执行 git clean（会删除被忽略的 data/、artifacts/ 与密钥文件）。
+        $hash = (git rev-parse HEAD).Trim()
+        $bundle = Join-Path ([System.IO.Path]::GetTempPath()) "trade-$hash.bundle"
+        git bundle create $bundle develop
+        scp -q $bundle "${Remote}:/tmp/trade.bundle"
+        $remoteHead = ssh $Remote "cd ~/$RemoteDir && git fetch -q /tmp/trade.bundle develop:refs/heads/develop && git checkout -f --detach $hash >/dev/null 2>&1 && git rev-parse HEAD"
+        Remove-Item -LiteralPath $bundle -ErrorAction SilentlyContinue
+        if ($remoteHead.Trim() -ne $hash) {
+            throw "服务器 HEAD（$remoteHead）与本地提交（$hash）不一致：拒绝继续"
+        }
+        Write-Output "服务器 HEAD = $hash（与本地一致）"
     }
     "pull-data" {
         # 封存集 M23~M24 的分钟数据只在服务器保留、不拉到本地（03 §6、AGENTS.md §6 红线 2）。

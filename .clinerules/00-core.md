@@ -62,6 +62,7 @@ pytest -q
 
 - 本地 Windows + PowerShell；命令用 PowerShell 语法书写，路径用绝对路径。
 - 东京服务器用 `ssh tokyo`（仅密钥登录）；密钥内容严禁写入任何文件、代码、日志、报告或通知。
+- 服务器 `~/trade` 是 git 副本，代码只通过 git 同步（bundle → `git fetch` → `git checkout --detach <本地提交哈希>`）；运行前核对 `git rev-parse HEAD` 与本地一致；禁止在服务器执行 `git clean`（会删除被忽略的 `data/`、`artifacts/` 与密钥文件）。
 - 凡需访问币安的步骤（REST、WebSocket、data.binance.vision）只在东京服务器执行，不在本地实现代理或隧道（红线 9）。
 
 ## 任务来源

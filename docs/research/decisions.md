@@ -222,3 +222,38 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 发现但未修改：服务器 `data/universe_hist` 只到 `2026-07.json`，当前月份没有选币快照；引擎 `View.universe_symbols()` 会抛带上下文的 `KeyError`（符合红线 12），启动 shadow 前需补齐当月快照。
 - 部署：服务器 `sudo -n` 可用，已安装单元并启动看板与看门狗；未创建任何交易实例（总账无候选）。看板 `curl` 返回 200，`/api/status` 显示 `live_available=false`。
 
+
+
+## 2026-11-24 迁移 M1：服务器改为 git 副本
+
+- 使用者决定：研究与最终检验的 R6/R8 停机改为 reset 模式停 7 天、实盘与影子盘保持 strict；研究达标判定用 10,000 USDT 信号口径并另加 500 USDT 可执行性检查；新增仓位模式 B（按波动率分配权重 + 15% 防灾止损，target_vol 默认 0.20），与模式 A 并行检验；中性策略改为 β 中性；实盘策略权益按 `live_capital_cap` 封顶计算；实盘资金 500 USDT 起步、可执行口径 500 USDT；新增标准 / 进取 / 激进三个风险档位（研究与达标用标准档，冻结时按 1 号第九部分第 2 条选档）；总名义上限改为权益 × 3、净敞口上限改为权益 × 1.5；方向侧重主流币、截面类新方向限定成交额前 30、不交易 TradFi 合约；实盘停机回撤线与 90 天评估改为与研究基准对照；`global_trial_budget` 改为 400；月化约 10% 只作期望、不是达标项（0 号调度第六部分）。
+- 备份：服务器 `~/trade` 除 `data/`、`artifacts/` 以外全部文件打成
+  `artifacts/server_backup/20261124T104404Z.tar.zst`，552 个文件、1.79 MB；
+  服务器 `data/` 现有 klines_1h 551 MB、klines_1d 162 MB、funding 121 MB、daily 55 MB、
+  universe_hist 1.3 MB，磁盘剩余 37 GB。
+- 差异核对（服务器 552 个文件 vs 本地 develop `b59c437`，用 bundle + 临时 git 目录逐文件比对，
+  未改动 `~/trade`）：共 25 处差异，**没有服务器独有的较新代码**，无需把服务器文件提交回本地。
+  - 服务器缺少（本地较新）：`docs/archive/07-实盘与风控.md`、`docs/archive/10-可视化看板.md`、
+    `docs/research/rounds/R6.md`、`R7.md`、`R8.md`、`R9.md`、`R10.md`、
+    `tests/dashboard/test_engine_api.py`、`tests/live/test_candidate.py`、`test_execution.py`、
+    `test_feed.py`、`test_killswitch.py`、`test_riskguard.py`、`test_stops.py`、`test_targets.py`。
+  - 内容不同（服务器为旧版，差异仅 UTF-8 BOM 或格式/节缺失）：`scripts/__init__.py`、
+    `src/trade/__init__.py`、`src/trade/common/logging.py`、`src/trade/live/__init__.py`、
+    `src/trade/models/__init__.py`、`tests/common/test_latency_probe.py`、`tests/common/test_logging.py`
+    （以上仅 BOM）、`tests/research/helpers.py`（旧排版）、
+    `tests/strategies/test_round_strategies.py`（旧版只有 R1~R4 用例）、
+    `docs/research/p5p6_backlog.md`（缺“新方案与旧清单的对照”一节）。
+  - 服务器独有、不属于仓库的遗留文件（转换后保持不动，加入服务器 `.git/info/exclude`）：
+    `.bak-code/`、`bak-code/`、`tmp_deploy/`、`.claude/`、`.github/`、`src/trade.egg-info/`、
+    根目录 `_*.py` / `_*.sh` 临时脚本、`scripts/run_live.py`、`tmp_train_lgbm.yaml` 与各类 `.log`。
+- `docs/research/` 交接文件以本地 git 为准；`ledger.trials_used = 65` 与服务器
+  `artifacts/reports/EXPERIMENTS.log` 中 `kind: tuning` 记录数 65 一致。
+- 转换：服务器 `~/trade` 执行 `git init`、从 `git bundle` fetch、`git checkout -f --detach b59c437`；
+  `git rev-parse HEAD` 与本地一致；`data/history/manifest.json` SHA256 前后均为
+  `bcb2dca37c5581416d5ceaaf17c3d40d98b5c9b6b75739dc4030a11cf27840ee`；服务器没有 `.env.*` 与私钥文件，
+  `~/.ssh/authorized_keys` 已是 600（无权限需要修改）；全程未执行 `git clean`。
+- 同步规则改为 1 号第十部分的 git 方式：`scripts/sync.ps1 push-code` 改为
+  bundle → scp → `git fetch` → `git checkout --detach <本地提交>` 并核对服务器 HEAD。
+  依据迁移指令自行决定：服务器 `.git/info/exclude` 追加上述遗留路径，使 `git status` 干净，
+  不影响仓库内容与其他机器。
+- 看板与看门狗：转换前均 active；转换后 `curl 127.0.0.1:8501` 返回 200，未重启。
