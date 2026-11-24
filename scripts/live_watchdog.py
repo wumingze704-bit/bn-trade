@@ -169,6 +169,31 @@ def _load_state(path: Path) -> dict[str, int]:
     return restarts
 
 
+def decide(
+    *,
+    stale: bool,
+    halt_flag: bool,
+    enabled: bool,
+    active: str,
+    result: str,
+    last_restart_ms: int | None,
+    now_ms: int,
+    cooldown_ms: int = _RESTART_COOLDOWN_MS,
+) -> str:
+    """判定一次心跳超时的处理方式（`restart` / `alert` / `skip`）。"""
+    if not stale:
+        return "skip"
+    if halt_flag:
+        return "alert"
+    if not enabled:
+        return "alert"
+    if active not in {"active", "activating", "reloading"} and result == "success":
+        return "alert"
+    if last_restart_ms is not None and now_ms - last_restart_ms < cooldown_ms:
+        return "alert"
+    return "restart"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="引擎看门狗")
     parser.add_argument("--config", default="configs/live.yaml")
@@ -245,28 +270,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-def decide(
-    *,
-    stale: bool,
-    halt_flag: bool,
-    enabled: bool,
-    active: str,
-    result: str,
-    last_restart_ms: int | None,
-    now_ms: int,
-    cooldown_ms: int = _RESTART_COOLDOWN_MS,
-) -> str:
-    """判定一次心跳超时的处理方式（`restart` / `alert` / `skip`）。"""
-    if not stale:
-        return "skip"
-    if halt_flag:
-        return "alert"
-    if not enabled:
-        return "alert"
-    if active not in {"active", "activating", "reloading"} and result == "success":
-        return "alert"
-    if last_restart_ms is not None and now_ms - last_restart_ms < cooldown_ms:
-        return "alert"
-    return "restart"
