@@ -7,7 +7,7 @@
 | :-- | :-- | :-- |
 | M1 服务器改为 git 副本 | 完成 | `816c31b` |
 | M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成 | `35ee65a` |
-| M3 数据补充与防幸存者偏差 | 未开始 | — |
+| M3 数据补充与防幸存者偏差 | 进行中 | — |
 | M4 研究框架修复（D1~D7）与可信度测试 | 未开始 | — |
 | M5 仓位模式 B 与 β 中性 | 未开始 | — |
 | M6 实盘安全修复（D8~D11）与引擎对齐 | 未开始 | — |
@@ -15,11 +15,14 @@
 
 ## 当前状态
 
-- 当前子步骤：M2 已完成并提交（`35ee65a`）：`configs/research.yaml` 增加 `risk`（reset / 7 天）与 `equity`
-  （10000 / 500），组合上限改为 3.0 / 1.5；`configs/sizing_research.yaml` 初始权益 500 并新增三档 `risk_tiers`；
-  `configs/live.yaml` 资金上限 500（范围 (0, 1000]）；`global_trial_budget` 400；
-  研究与最终检验读 research 的 risk 节，实盘 / 测试网 / 影子盘固定 strict（新增测试）。
-- 下一步：M3（数据补充与防幸存者偏差，全部在服务器执行）。
+- 当前子步骤：M3 进行中。`scripts/fetch_history.py` 已支持 `flow` / `premium` / `mark` 三类补充数据
+  （独立目录与 manifest、`flow` 逐行核对 `open_time`）；新增 `src/trade/data/rules_research.py` 与
+  `scripts/build_universe_hist.py` 的规则来源顺序（exchange → snapshot → synthetic）与
+  `rules_source.json` / `summary.json`。服务器上正在下载 2020-10~2026-07 的补充数据
+  （`systemd-run` 单元 `m3-fetch`，MemoryMax=1500M、nice 10）。
+- 下一步：下载完成后备份→重生成 2021-01~2026-07 选币快照，写入新旧对比与最小下单额统计，再更新
+  `docs/03`、`docs/13` 并在服务器上做最小规模验证。
+
 
 ## M3 前置事实（2026-11-24 核查，只读）
 

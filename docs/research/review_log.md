@@ -31,4 +31,30 @@
 - 结果：研究与最终检验读 `configs/research.yaml: risk`（reset、7 天）；实盘 / 测试网 / 影子盘固定 strict
   且有测试（`tests/live/test_runner_halt.py`）；两种权益口径 10000 / 500；组合上限 3.0 / 1.5；
   实盘资金上限 500（范围 (0, 1000]）；`global_trial_budget` 400 → **符合**。
+## 2026-11-24 11:35 UTC 会话级一致性检查（0 号调度第五部分第 1 条）
+
+- 总账：`docs/research/ledger.yaml` 的 `trials_used = 65`；rounds 的 trials 之和
+  12+6+8+6+4+9+6+6+4+4 = 65；`qualified_pool` 为空；服务器 `artifacts/reports/EXPERIMENTS.log`
+  中 `kind=tuning` 记录数 65（另有 5 条 `kind` 为空的历史记录）→ **符合**。
+- 候选与窗口：`candidates` 为空，三个窗口均 `unused`、`candidate: null` → **符合**。
+- 服务器进程：无 `trade-runner@*` 实例；服务器 HEAD `5a34586` 与本地一致 → **符合**。
+- 结论：全部符合。执行对象：一次性迁移 M3（`progress_migration.md` 中 M3 未开始）。
+
+## 2026-11-24 11:40 UTC M3 前置复核（前一步 M2 的配置产物）
+
+- 复核对象：`configs/research.yaml`、`configs/sizing_research.yaml`、`configs/live.yaml`、
+  `src/trade/research/config.py`、`tests/live/test_runner_halt.py`（M2 提交 `35ee65a`）。
+- 结果：`risk.halt_mode=reset` / `halt_reset_days=7`、`equity.signal=10000` / `equity.exec=500`、
+  `portfolio.total_notional_cap=3.0` / `net_exposure_cap=1.5`、`live_capital_cap=500`（范围 (0,1000]）、
+  `global_trial_budget=400`、实盘 / 测试网 / 影子盘 fixed strict 的测试存在 → **符合**。
+- 数据前置（只读）：`data/klines_1h` 828 币、`data/klines_1d` 828 币、`data/funding` 121 MB、
+  `data/universe_hist` 72 个条目；`data/klines_1h_flow`、`data/premium_1h`、`data/mark_1h` 尚不存在；
+  `artifacts/exchange_info/` 有 1 个 exchangeInfo 快照（2026-10-31，942 个合约，含 TradFi 与
+  SETTLING / PENDING_TRADING 状态）与 `rules.json`（缺 181 个币：150 个 TradFi 在快照中、
+  31 个已下架加密合约完全不在快照中）→ 与本轮 M3 的目标一致。
+- 发现的文档缺陷：`docs/design.md` §4 关键决策速查仍写“初始 100 USDT、总名义 ≤ 权益 × 2、
+  净敞口 ≤ 权益 × 1”，与 `configs/sizing_research.yaml` / `configs/research.yaml` 的当前值
+  （500 USDT 可执行口径、3 倍、1.5 倍）不一致 → 按第五部分第 5 条 a 款以配置为准修正文档，
+  不涉及代码与判定。
+
 - 待办：缺陷 D1~D11 尚未登记，按迁移 M4（D1~D7）与 M6（D8~D11）执行时登记为 OPEN。
