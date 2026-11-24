@@ -9,25 +9,38 @@
 | M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成 | `35ee65a` |
 | M3 数据补充与防幸存者偏差 | 完成 | `18cbdee` |
 | M4 研究框架修复（D1~D7、D12、D13）与可信度测试 | 完成 | `9c82edc`、`a2bafb4` |
-| M5 仓位模式 B 与 β 中性 | 未开始 | — |
+| M5 仓位模式 B 与 β 中性 | 完成 | `5381f16` |
 | M6 实盘安全修复（D8~D11）与引擎对齐 | 未开始 | — |
 | M7 旧判定作废并准备重跑 | 未开始 | — |
 
 ## 当前状态
 
-- M4 已完成（代码 `9c82edc`、`a2bafb4`）：
-  - D1~D7、D12、D13 全部修复并在 `review_log.md` 改为 CLOSED；改动同步 `docs/13`（§1 数据层与资金费缺失、
-    §3 组合层资金费与统计口径、§4 执行模拟、§5 R5 逐折成分、§6 滚动验证、§7 指标与达标项 i、§8 试验登记）。
-  - 结果可信度测试 `tests/research/test_credibility.py`（a~h）与记录测试 `tests/research/test_records.py` 全部通过；
-    `tests/research` 共 36 项通过。
-  - 服务器 `HEAD = a2bafb4` 与本地一致；最小规模运行（R4 第 1 组参数 × 研究窗口最后 3 个月）：
-    信号口径 448 笔、最小下单额丢弃 0、年化夏普 -2.157；可执行口径 445 笔、丢弃 3/448 = 0.67%、年化夏普 -1.777；
-    `funding_estimated 28`、`funding_missing 0`、`mark_fallback 128`；记录字段 `kind=tuning`（10000）
-    与 `kind=exec`（500）都写出，结果文件 `artifacts/reports/smoke/20261124T131257Z.json`。
-- 下一步（M5）：实现仓位模式 B（`vol_target`）与 β 中性、指标增加实现 β 与 alpha 夏普、达标项 j 款、
-  B 第 14 条 h 款的模式 B / β 中性测试，然后做模式 A、B 各一次的最小规模运行。
-- 未推送提交（本地 develop，GitHub 网络不可达）：`44f21cd`、`75448fb`、`f73aa7f`、`18cbdee`、`13d8113`、
-  `b885a3d`、`9c82edc`、`93e50b9`、`a2bafb4` 与本次文档提交；恢复网络后按顺序 `git push origin develop`。
+- M5 已完成（代码 `5381f16`）：
+  - 仓位模式 B（`vol_target`）：按过去 `vol_lookback_days` 天日收益标准差的倒数分配权重，用过去
+    `cov_lookback_days` 天日收益协方差的组合事前波动缩放到 `target_vol`；防灾止损固定 `execution.stop_max`，
+    单仓名义 ≤ 权益 × `max_risk_per_trade` ÷ `stop_max`；中性策略按 60 天 β 调整两边名义，保证组合事前
+    |β| ≤ `beta_abs_max` 且多头总名义 ÷ 空头总名义在 `ls_ratio_range` 内。
+  - 配置项 `sizing_mode`、`target_vol`、`vol_lookback_days: 30`、`cov_lookback_days: 60`、`beta_lookback_days: 60`、
+    `beta_abs_max: 0.10`、`ls_ratio_range: [0.5, 2.0]` 进入 `SizingConfig`（默认保持模式 A）与
+    `configs/sizing_research.yaml`；`with_tier()` 用选中档位的 `target_vol` 覆盖。删除不再使用的 `portfolio.neutral_max_gap`。
+  - 指标新增实现 β 与 alpha 夏普，达标项新增 j 款（中性策略 |β| ≤ 0.30 且 alpha 夏普 ≥ 0.8）。
+  - 测试：`tests/research` 50 项全通过（新增 `test_metrics.py`、模式 B 手算 / 单仓上限 / β 中性 / β 样本不足、
+    `test_h5_引擎按段使用模式B`、`test_h6_中性策略的β调整在引擎中生效`、配置项校验、取整状态一致性）；
+    `pytest -q` = `1 failed, 826 passed, 3 skipped`，唯一失败为本机无 CUDA 的
+    `tests/models/test_dataset.py::test_pinned_cpu_placement`（准备阶段既有失败，未修改测试）。
+  - 服务器 `HEAD = 5381f16` 与本地一致；最小规模运行（R4 第 1 组参数 × 研究窗口最后 3 个月，模式 A、B 各一次）：
+    - 模式 A（`fixed_risk`）：信号口径 448 笔、丢弃 0、年化夏普 -2.618、实现 β 0.086、alpha 夏普 -2.188；
+      可执行口径 414 笔、应开仓 452、丢弃 38（8.4%）、年化夏普 -3.387、实现 β 0.082。
+      结果文件 `artifacts/reports/smoke/20261124T144439Z.json`。
+    - 模式 B（`vol_target`）：信号口径 442 笔、应开仓 445、丢弃 3（0.67%）、年化夏普 -1.178、实现 β 0.008、
+      alpha 夏普 -1.118；可执行口径 371 笔、应开仓 464、丢弃 93（20.04%）、年化夏普 -0.632、实现 β 0.017。
+      结果文件 `artifacts/reports/smoke/20261124T144647Z.json`。
+    - 两次运行的 `funding_estimated` 分别为 28 / 4，`funding_missing 0`，`mark_fallback` 128 / 104；
+      均未写 `EXPERIMENTS.log`（`kind=tuning` 仍为 65 条）。
+- 下一步（M6）：实盘安全修复 D8~D11 与引擎对齐（紧急停机顺序、看门狗、专用账户与密钥文件权限、systemd 加固，
+  引擎复用研究框架与模式 B / β 中性，实时数据视图含 `mark_1h` / flow / premium）。
+- 推送：`origin/develop` 已到 `5381f16`，无未推送提交。
+
 
 ## M4 前置事实（2026-11-24 核查）
 
