@@ -4,9 +4,15 @@ round: R8
 family: vol_timed_momentum
 exposure: neutral
 params:
-  - {lookback_days: 14, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 14, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 14, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, target_annual_vol: 0.5, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 14, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, target_annual_vol: 0.8, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 14, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, target_annual_vol: 1.2, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}

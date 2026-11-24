@@ -4,12 +4,21 @@ round: R6
 family: funding_adj_momentum
 exposure: neutral
 params:
-  - {lookback_days: 14, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 56, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 14, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 56, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 14, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 56, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 0.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 1.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 56, funding_days: 7, funding_weight: 2.0, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}

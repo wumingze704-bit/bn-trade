@@ -4,7 +4,11 @@ round: R10
 family: liquidity_tiered_momentum
 exposure: neutral
 params:
-  - {lookback_days: 14, top_k: 3, rebalance_hours: 168}
-  - {lookback_days: 14, top_k: 5, rebalance_hours: 168}
-  - {lookback_days: 28, top_k: 3, rebalance_hours: 168}
-  - {lookback_days: 28, top_k: 5, rebalance_hours: 168}
+  - {lookback_days: 14, top_k: 3, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, top_k: 3, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 14, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 14, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, top_k: 3, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, top_k: 3, rebalance_hours: 168, sizing_mode: vol_target}
+  - {lookback_days: 28, top_k: 5, rebalance_hours: 168, sizing_mode: fixed_risk}
+  - {lookback_days: 28, top_k: 5, rebalance_hours: 168, sizing_mode: vol_target}

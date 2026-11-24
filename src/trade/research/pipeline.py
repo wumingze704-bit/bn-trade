@@ -647,6 +647,43 @@ def run_selected_path(
     return engine.run_path(list(segments), int(end_ms))
 
 
+def _component_param_sets(
+    root: Path, mapping: Mapping[str, object]
+) -> dict[str, list[dict[str, object]]]:
+    """读取 R5 成分网格的参数集合（去掉 `sizing_mode` 维度并去重）。
+
+    1 号第八部分开头要求 R1~R10 的网格乘以仓位模式 {A, B}；R5 的仓位模式由 R5 自己的网格决定，
+    成分方向只提供信号参数，因此这里的 `sizing_mode` 不参与逐折选参。
+
+    Args:
+        root: 仓库根目录（解析 `component_grids` 的相对路径）。
+        mapping: `{family: 网格文件相对路径}`。
+
+    Returns:
+        `{family: [参数字典, ...]}`，顺序与网格文件一致（去重后）。
+
+    Raises:
+        ValueError: 网格缺少 `params`。
+    """
+    params_by_family: dict[str, list[dict[str, object]]] = {}
+    for family, path in mapping.items():
+        component_grid = load_grid(root / str(path))
+        raw = component_grid.get("params")
+        if not isinstance(raw, list):
+            raise ValueError(f"成分网格缺少 params：{path}")
+        cleaned: list[dict[str, object]] = []
+        seen: set[tuple[tuple[str, object], ...]] = set()
+        for item in raw:
+            params = {key: value for key, value in dict(item).items() if key != "sizing_mode"}
+            signature = tuple(sorted(params.items()))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            cleaned.append(params)
+        params_by_family[str(family)] = cleaned
+    return params_by_family
+
+
 def component_params_by_fold(
     *,
     grid: Mapping[str, Any],
@@ -677,13 +714,11 @@ def component_params_by_fold(
     mapping = grid.get("component_grids")
     if not isinstance(mapping, Mapping) or not mapping:
         return None
-    params_by_family: dict[str, list[dict[str, object]]] = {}
+    params_by_family = _component_param_sets(root, mapping)
     pairs: list[tuple[str, Mapping[str, object]]] = []
-    for family, path in mapping.items():
-        component_grid = load_grid(root / str(path))
-        params_list = [dict(item) for item in component_grid["params"]]
-        params_by_family[str(family)] = params_list
-        pairs.extend((str(family), params) for params in params_list)
+    for family, params_list in params_by_family.items():
+        pairs.extend((family, params) for params in params_list)
+
     groups = ensure_groups(
         market=market,
         config=config,

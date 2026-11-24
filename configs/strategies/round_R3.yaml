@@ -3,11 +3,19 @@ round: R3
 family: ts_trend
 exposure: directional
 params:
-  - {lookback_days: 10, btc_filter: 1}
-  - {lookback_days: 10, btc_filter: 0}
-  - {lookback_days: 20, btc_filter: 1}
-  - {lookback_days: 20, btc_filter: 0}
-  - {lookback_days: 40, btc_filter: 1}
-  - {lookback_days: 40, btc_filter: 0}
-  - {lookback_days: 80, btc_filter: 1}
-  - {lookback_days: 80, btc_filter: 0}
+  - {lookback_days: 10, btc_filter: 1, sizing_mode: fixed_risk}
+  - {lookback_days: 10, btc_filter: 1, sizing_mode: vol_target}
+  - {lookback_days: 10, btc_filter: 0, sizing_mode: fixed_risk}
+  - {lookback_days: 10, btc_filter: 0, sizing_mode: vol_target}
+  - {lookback_days: 20, btc_filter: 1, sizing_mode: fixed_risk}
+  - {lookback_days: 20, btc_filter: 1, sizing_mode: vol_target}
+  - {lookback_days: 20, btc_filter: 0, sizing_mode: fixed_risk}
+  - {lookback_days: 20, btc_filter: 0, sizing_mode: vol_target}
+  - {lookback_days: 40, btc_filter: 1, sizing_mode: fixed_risk}
+  - {lookback_days: 40, btc_filter: 1, sizing_mode: vol_target}
+  - {lookback_days: 40, btc_filter: 0, sizing_mode: fixed_risk}
+  - {lookback_days: 40, btc_filter: 0, sizing_mode: vol_target}
+  - {lookback_days: 80, btc_filter: 1, sizing_mode: fixed_risk}
+  - {lookback_days: 80, btc_filter: 1, sizing_mode: vol_target}
+  - {lookback_days: 80, btc_filter: 0, sizing_mode: fixed_risk}
+  - {lookback_days: 80, btc_filter: 0, sizing_mode: vol_target}

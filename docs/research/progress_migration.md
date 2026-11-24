@@ -11,7 +11,8 @@
 | M4 研究框架修复（D1~D7、D12、D13）与可信度测试 | 完成 | `9c82edc`、`a2bafb4` |
 | M5 仓位模式 B 与 β 中性 | 完成 | `5381f16` |
 | M6 实盘安全修复（D8~D11）与引擎对齐 | 完成 | `982df27` |
-| M7 旧判定作废并准备重跑 | 未开始 | — |
+| M7 旧判定作废并准备重跑 | 完成 | `（本次提交）` |
+
 
 
 ## 当前状态
@@ -26,7 +27,7 @@
   - **测试**：新增 `test_killswitch.py`（顺序）、`test_watchdog.py`、`test_runner_equity.py`、`test_deploy_units.py`、`test_feed_parity.py`、`test_runner_alignment.py`；修复前在 `51e3af8` 工作树复现 17 项失败（killswitch 9、watchdog 7、deploy 5 中的 4 项）与 `check_secret_permissions` 导入失败。
   - **质量命令**：`ruff format --check .`（374 files）、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`（56 files）、`mypy src/trade/dashboard`（8 files）通过；`pytest -q` = `1 failed, 861 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。`scripts/check_docs_sections.py` 通过（基线已有失效引用 20 条）。
   - **服务器部署（`HEAD = 982df27`）**：看板 active、`curl 127.0.0.1:8501` = 200、ExecStart 为直接调用 python；看门狗 timer active；`visudo` 解析 OK；白名单脚本拒绝非 trade-runner 单元。engine.md 已更新文件清单与 SHA256。
-- 下一步（M7）：作废 R1~R10 旧判定并准备重跑（ledger `void` 字段、rounds 顶部标记、按 R3 优先顺序重跑）。
+- 下一步：M1~M7 全部完成，R1~R10 按“普通研究轮次”重跑（第四部分第 8 条 a），顺序 R3 → R1 → R2 → R4 → R5 → R6~R10（0 号调度第六部分 M7 第 3 条）。
 - 推送：本地 `develop` 已到 `982df27`（代码/部署），M6 交接文档另行提交。
 
 - M5 已完成（代码 `5381f16`）：
@@ -86,3 +87,14 @@
   转换后 `curl 127.0.0.1:8501` 返回 200，无需重启。
 - 服务器 `.git/info/exclude` 追加历史遗留目录与临时脚本（`.bak-code/`、`tmp_deploy/`、`_*.py` 等），
   保证服务器工作区 `git status` 干净；未执行任何 `git clean`。
+
+## M7 记录（2026-11-24）
+
+- `ledger.yaml`：R1~R10 的 `status` 改回 `pending`、`trials` 改为 0、`result: null`；原判定整体移入 `void`（含原 status / trials / result 与 reason）；`trials_used` 保持 65、`global_trial_budget` 400；`qualified_pool` / `candidates` 仍为空。
+- `rounds/R1.md` ~ `R10.md`：顶部加“首次判定已作废（迁移 M1~M7）”，文末新增“重跑（迁移后）”一节（当前写“未运行”）；原内容保留。
+- 网格：`configs/strategies/round_R1.yaml` ~ `round_R10.yaml` 的每个参数组乘 `sizing_mode ∈ {fixed_risk, vol_target}`（1 号第八部分开头），组数 24/12/16/12/8/18/12/12/8/8 = 130 组（原 65 组 × 2）；未增删其他参数、方向、规则或选币范围。
+- R5 的成分网格：`component_params_by_fold` 读取成分参数时去掉 `sizing_mode` 并去重（R5 的仓位模式由 R5 自己的网格决定），新增 `tests/research/test_component_params.py`。
+- 一致性检查口径（M7 后）：`trials_used = Σ rounds[].trials + Σ rounds[].void.trials + 冻结仓位选择的试验`（M7 规定 trials_used 不清零）；当前 0 + 65 + 0 = 65，与服务器 `EXPERIMENTS.log` 的 `kind=tuning` 65 条一致。
+- 风险包络只按使用者决定（M2~M5）；杠杆 5x、逐仓、单向、position_frac、max_positions、R7 规则与 liq_cap 未改。
+- 质量命令：`ruff format --check .`（375 files）、`ruff check .`、`mypy --strict`（56 files）与 `tests/research`（51 passed）通过；全量 `pytest` 结果见提交前记录。
+

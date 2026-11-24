@@ -4,16 +4,67 @@ trials_used: 65
 research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
 research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
 rounds:
-  - {id: R1, family: xs_momentum_ls, status: failed, trials: 12, result: "拼接夏普 -0.470；成本/毛收益 1.42；R8 停机；见 rounds/R1.md"}
-  - {id: R2, family: funding_carry_ls, status: failed, trials: 6, result: "拼接夏普 -0.607；最大回撤 24.5%；见 rounds/R2.md"}
-  - {id: R3, family: ts_trend, status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md"}
-  - {id: R4, family: xs_reversal_ls, status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md"}
-  - {id: R5, family: ensemble, status: failed, trials: 4, result: "拼接夏普 -1.078；成分均不达标；见 rounds/R5.md"}
-  - {id: R6, family: ai_proposed_1, status: failed, trials: 9, result: "资金费调整动量：训练期内 2021-10-07 单日亏损 8% 触发 R6 停机，验证折无交易，拼接夏普 0.000；nohalt 年化 0.124、回撤 41.6%；见 rounds/R6.md"}
-  - {id: R7, family: ai_proposed_2, status: failed, trials: 6, result: "低波动异常：拼接夏普 -0.026；多头（低波动）净 -16.69、空头 +8.73，方向与假设相反；最大回撤 22.4%；见 rounds/R7.md"}
-  - {id: R8, family: ai_proposed_3, status: failed, trials: 6, result: "波动率择时动量：选中组训练期 2021-10-07 触发 R6 停机，验证折无交易；σ0.5 组自身拼接日频夏普最高 +0.031；nohalt 净 -0.14%；见 rounds/R8.md"}
-  - {id: R9, family: ai_proposed_4, status: failed, trials: 4, result: "BTC 对冲单边动量：拼接夏普 -0.317；多头 -19.05、空头 +5.30；2022-08-19 触发 R8 停机；见 rounds/R9.md"}
-  - {id: R10, family: ai_proposed_5, status: failed, trials: 4, result: "流动性分层动量：拼接夏普 -0.180；最大回撤 29.4%；多头 -25.76、空头 +14.26；见 rounds/R10.md"}
+  - id: R1
+    family: xs_momentum_ls
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 12, result: "拼接夏普 -0.470；成本/毛收益 1.42；R8 停机；见 rounds/R1.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R2
+    family: funding_carry_ls
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 6, result: "拼接夏普 -0.607；最大回撤 24.5%；见 rounds/R2.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R3
+    family: ts_trend
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R4
+    family: xs_reversal_ls
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R5
+    family: ensemble
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 4, result: "拼接夏普 -1.078；成分均不达标；见 rounds/R5.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R6
+    family: ai_proposed_1
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 9, result: "资金费调整动量：训练期内 2021-10-07 单日亏损 8% 触发 R6 停机，验证折无交易，拼接夏普 0.000；nohalt 年化 0.124、回撤 41.6%；见 rounds/R6.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R7
+    family: ai_proposed_2
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 6, result: "低波动异常：拼接夏普 -0.026；多头（低波动）净 -16.69、空头 +8.73，方向与假设相反；最大回撤 22.4%；见 rounds/R7.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R8
+    family: ai_proposed_3
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 6, result: "波动率择时动量：选中组训练期 2021-10-07 触发 R6 停机，验证折无交易；σ0.5 组自身拼接日频夏普最高 +0.031；nohalt 净 -0.14%；见 rounds/R8.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R9
+    family: ai_proposed_4
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 4, result: "BTC 对冲单边动量：拼接夏普 -0.317；多头 -19.05、空头 +5.30；2022-08-19 触发 R8 停机；见 rounds/R9.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R10
+    family: ai_proposed_5
+    status: pending
+    trials: 0
+    result: null
+    void: {status: failed, trials: 4, result: "流动性分层动量：拼接夏普 -0.180；最大回撤 29.4%；多头 -25.76、空头 +14.26；见 rounds/R10.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+
 qualified_pool: []
 candidates: []
 final_windows:

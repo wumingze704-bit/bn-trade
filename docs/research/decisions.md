@@ -405,3 +405,13 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 看板控制 PIN 改从 `configs/dashboard.yaml: control.pin_file` 读取：systemd 直接调用 python 后不能再经 `bash -lc` 导出环境变量；文件不存在时控制接口返回 503，不提供默认 PIN。
 - 部署文件改用 LF：Windows 工作区的 CRLF 会让 sudoers / systemd 解析失败（实测 “garbage at end of line”）。
 
+
+## 2026-11-24 M7 旧判定作废与重跑准备（取舍记录）
+
+- ledger 采用 `void` 子字段保存原判定（status / trials / result / reason），不删除原数字；`trials_used` 保持 65，`EXPERIMENTS.log` 全部保留并继续计入 Deflated Sharpe（0 号调度第六部分 M7 第 1 条）。
+- 一致性检查口径改为：`trials_used = Σ rounds[].trials + Σ rounds[].void.trials + 冻结仓位选择的试验`；M7 后当前为 0 + 65 + 0 = 65。
+- 网格按 1 号第八部分开头在 `configs/strategies/round_R*.yaml` 内显式乘 `sizing_mode ∈ {fixed_risk, vol_target}`（R1~R10 共 130 组），不改其他参数、方向、规则与选币范围。
+- R5 成分网格的 `sizing_mode` 不参与成分选参：`component_params_by_fold` 读取时去掉该键并去重，R5 的组合层模式由 R5 自己的网格决定；新增 `tests/research/test_component_params.py` 固定这一行为。
+- 重跑顺序按 M7 第 3 条：R3 最先，然后 R1、R2、R4、R5、R6~R10；只调整执行顺序，网格与判定规则不变。
+- rounds/*.md 保留首次判定原文，顶部加作废标记，重跑结果写在新加的“重跑（迁移后）”一节。
+

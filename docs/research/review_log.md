@@ -196,3 +196,15 @@
 - `tests/live/test_killswitch.py`：既有用例改为传入 `stop_runner`（保持原断言），并新增顺序 / 拒绝 / 心跳 / 保留止损用例。
 - 服务器实测中的临时实例 `trade-runner@SMOKE-shadow`、override、心跳、`watchdog.json` 与停机标志均已清理；服务器无 `trade-runner@*` 实例。
 
+
+## 2026-11-24 16:40 UTC M7 完成（旧判定作废与重跑准备）
+
+- `docs/research/ledger.yaml`：R1~R10 均 `status: pending`、`trials: 0`、`result: null`，原判定移入 `void`（含 status / trials / result / reason）；
+  `trials_used = 65` 未清零、`global_trial_budget = 400`；`qualified_pool` / `candidates` 为空 → 符合 M7 第 1 条。
+- 一致性：Σ trials（0）+ Σ void.trials（65）+ 冻结仓位试验（0）= 65 = `trials_used`；服务器 `EXPERIMENTS.log` 的 `kind=tuning` 仍为 65 条（本次未新增试验）→ 符合。
+- `docs/research/rounds/R1.md` ~ `R10.md`：顶部已加“首次判定已作废（迁移 M1~M7）”，文末新增“重跑（迁移后）”一节（当前未运行）；原内容保留 → 符合 M7 第 2 条。
+- 网格：`configs/strategies/round_R1.yaml` ~ `round_R10.yaml` 的每组参数乘 `sizing_mode ∈ {fixed_risk, vol_target}`，组数 24/12/16/12/8/18/12/12/8/8（130 组）；未改其他参数、方向、规则与选币范围 → 符合 M7 第 3 条。
+- R5 成分选参：`component_params_by_fold` 读取成分网格时去掉 `sizing_mode` 并去重；新增 `tests/research/test_component_params.py`，`tests/research` 51 项通过。
+- 质量命令：`ruff format --check .`（375 files）、`ruff check .`、`mypy --strict`（56 files）、`mypy dashboard`（8 files）通过；`pytest -q` = `1 failed, 862 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。
+- 结论：M7 全部符合；下一步按 R3 → R1 → R2 → R4 → R5 → R6~R10 重跑。
+

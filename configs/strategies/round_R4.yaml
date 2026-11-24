@@ -3,9 +3,15 @@ round: R4
 family: xs_reversal_ls
 exposure: neutral
 params:
-  - {lookback_days: 1, top_k: 3}
-  - {lookback_days: 1, top_k: 5}
-  - {lookback_days: 2, top_k: 3}
-  - {lookback_days: 2, top_k: 5}
-  - {lookback_days: 3, top_k: 3}
-  - {lookback_days: 3, top_k: 5}
+  - {lookback_days: 1, top_k: 3, sizing_mode: fixed_risk}
+  - {lookback_days: 1, top_k: 3, sizing_mode: vol_target}
+  - {lookback_days: 1, top_k: 5, sizing_mode: fixed_risk}
+  - {lookback_days: 1, top_k: 5, sizing_mode: vol_target}
+  - {lookback_days: 2, top_k: 3, sizing_mode: fixed_risk}
+  - {lookback_days: 2, top_k: 3, sizing_mode: vol_target}
+  - {lookback_days: 2, top_k: 5, sizing_mode: fixed_risk}
+  - {lookback_days: 2, top_k: 5, sizing_mode: vol_target}
+  - {lookback_days: 3, top_k: 3, sizing_mode: fixed_risk}
+  - {lookback_days: 3, top_k: 3, sizing_mode: vol_target}
+  - {lookback_days: 3, top_k: 5, sizing_mode: fixed_risk}
+  - {lookback_days: 3, top_k: 5, sizing_mode: vol_target}
