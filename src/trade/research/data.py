@@ -129,6 +129,23 @@ class FundingSeries:
             raise ValueError(f"{self.symbol} 的资金费结算间隔非法：{value}（红线 12）")
         return value
 
+    def typical_gap_hours(self) -> float:
+        """正常结算间隔的上限：相邻结算间隔的 99 分位（夹在 1~24 小时之间）。
+
+        部分币的结算周期会在 1h / 4h / 8h 之间切换；用中位数会把正常的 8h 间隔误判为断档，
+        因此断档判定以 99 分位为基准（docs/13 §1）。
+        """
+        if self.calc_time.size >= 2:
+            gaps = np.diff(self.calc_time) / HOUR_MS
+            value = float(np.quantile(gaps, 0.99))
+        elif self.interval_hours.size:
+            value = float(np.max(self.interval_hours))
+        else:
+            raise ValueError(f"{self.symbol} 的资金费序列为空（红线 12）")
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{self.symbol} 的资金费结算间隔非法：{value}（红线 12）")
+        return min(max(value, 1.0), 24.0)
+
 
 class UniverseHistory:
     """月度选币快照（`data/universe_hist/{YYYY-MM}.json`）。"""

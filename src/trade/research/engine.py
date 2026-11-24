@@ -485,8 +485,11 @@ class Engine:
         lookback_ms = _FUNDING_FALLBACK_DAYS * DAY_MS
         if series is not None:
             last = series.last_calc_time(ts)
-            interval = series.median_interval_hours()
-            if last is not None and ts - last <= interval * _FUNDING_GAP_MULTIPLIER:
+            normal_gap = (
+                last is not None
+                and ts - last <= series.typical_gap_hours() * HOUR_MS * _FUNDING_GAP_MULTIPLIER
+            )
+            if normal_gap:
                 return None
             recent = series.mean_between(ts - lookback_ms, ts)
             if recent is not None:
