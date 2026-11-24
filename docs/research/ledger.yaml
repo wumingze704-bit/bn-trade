@@ -1,6 +1,6 @@
 version: 2
 global_trial_budget: 400
-trials_used: 65
+trials_used: 97
 research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
 research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
 rounds:
@@ -18,9 +18,9 @@ rounds:
     void: {status: failed, trials: 6, result: "拼接夏普 -0.607；最大回撤 24.5%；见 rounds/R2.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
   - id: R3
     family: ts_trend
-    status: pending
-    trials: 0
-    result: null
+    status: failed
+    trials: 32
+    result: "拼接夏普 0.070、最大回撤 59.89%、DSR 0.054；5 折仅 2 折为正；可执行口径丢弃 45.7%；见 rounds/R3.md（含第 1 次重跑因 D19 作废）"
     void: {status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
   - id: R4
     family: xs_reversal_ls
