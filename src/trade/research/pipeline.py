@@ -803,6 +803,27 @@ def _fold_stats(
     return stats
 
 
+def _delay1_max_excess(grid: Mapping[str, Any]) -> float:
+    """读取网格的 delay1 容忍度（docs/13 §7；1 号第八部分 R11/R12）。
+
+    默认 0 表示 g 款的严格要求 `delay1 年化夏普 < base`；正数表示按登记的例外口径
+    `delay1 年化夏普 ≤ base + 容忍度`（R11、R12 登记为 0.10）。
+
+    Args:
+        grid: 网格配置。
+
+    Returns:
+        非负容忍度（年化夏普）。
+
+    Raises:
+        ValueError: 字段不是非负数。
+    """
+    value = grid.get("delay1_max_excess", 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0.0:
+        raise ValueError(f"网格 delay1_max_excess 必须是非负数：{grid.get('round')} {value!r}")
+    return float(value)
+
+
 def _checks(
     *,
     exposure: str,
@@ -811,8 +832,14 @@ def _checks(
     fold_stats: list[dict[str, Any]],
     scenario_stats: Mapping[str, Mapping[str, float]],
     exec_stats: Mapping[str, float],
+    delay1_max_excess: float = 0.0,
 ) -> dict[str, bool]:
-    """达标项 a~h 与 j 判定（第七部分第 5 条，信号口径），返回逐项布尔值。"""
+    """达标项 a~h 与 j 判定（第七部分第 5 条，信号口径），返回逐项布尔值。
+
+    Args:
+        delay1_max_excess: delay1 容忍度（年化夏普），0 表示要求低于 base。
+    """
+    delay1_sharpe = scenario_stats.get("delay1", {}).get("annualized_sharpe", 1.0)
     checks: dict[str, bool] = {
         "sharpe_ge_1": base_sharpe >= 1.0,
         "folds_positive_ge_4": sum(1 for item in fold_stats if item["net_return"] > 0.0) >= 4,
@@ -821,8 +848,11 @@ def _checks(
         "cost2x_positive": scenario_stats.get("cost2x", {}).get("net_return", -1.0) > 0.0,
         "mdd_le_020": float(metrics["max_drawdown"]) <= 0.20,
         "shuffle_le_03": scenario_stats.get("shuffle", {}).get("annualized_sharpe", 1.0) <= 0.3,
-        "delay1_lt_base": scenario_stats.get("delay1", {}).get("annualized_sharpe", 1.0)
-        < base_sharpe,
+        "delay1_lt_base": (
+            delay1_sharpe <= base_sharpe + delay1_max_excess
+            if delay1_max_excess > 0.0
+            else delay1_sharpe < base_sharpe
+        ),
     }
     if exposure == "neutral":
         checks["side_condition"] = (
@@ -1202,6 +1232,7 @@ def _evaluate_selected(
     )
     fold_stats = _fold_stats(signal_path, folds, choices)
     exec_stats = _block_metrics(exec_path)
+    delay1_max_excess = _delay1_max_excess(grid)
     checks = _checks(
         exposure=exposure,
         base_sharpe=float(metrics["annualized_sharpe"]),
@@ -1209,6 +1240,7 @@ def _evaluate_selected(
         fold_stats=fold_stats,
         scenario_stats=scenario_stats,
         exec_stats=exec_stats,
+        delay1_max_excess=delay1_max_excess,
     )
     checks.update(_executable_checks(signal_metrics=metrics, exec_stats=exec_stats))
     append_experiments(
@@ -1238,6 +1270,7 @@ def _evaluate_selected(
         "generated_at": datetime.now(UTC).isoformat(),
         "hashes": hashes.as_dict(),
         "equity_basis": {"signal": config.equity.signal, "exec": config.equity.exec},
+        "delay1_max_excess": delay1_max_excess,
         "folds": [
             {
                 "index": fold.index + 1,

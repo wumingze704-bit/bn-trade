@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from trade.research.metrics import alpha_sharpe, annualized_sharpe, realized_beta
-from trade.research.pipeline import _checks
+from trade.research.pipeline import _checks, _delay1_max_excess
 
 _INDEX = pd.date_range("2024-01-01", periods=240, freq="D", tz="UTC")
 
@@ -77,3 +77,53 @@ def test_达标项j只对中性策略判定() -> None:
     directional = _checks(exposure="directional", metrics=_metrics(0.05, 1.0), **base)
     assert "beta_abs_le_030" not in directional
     assert "alpha_sharpe_ge_08" not in directional
+
+
+def test_delay1条件在容忍度为0时要求严格低于base() -> None:
+    """未登记例外的轮次沿用 g 款的严格口径（docs/13 §7）。"""
+    scenarios = _scenarios()
+    scenarios["delay1"] = {"annualized_sharpe": 0.55}
+    checks = _checks(
+        exposure="directional",
+        base_sharpe=0.5,
+        metrics=_metrics(0.05, 1.0),
+        fold_stats=_fold_stats(),
+        scenario_stats=scenarios,
+        exec_stats={},
+    )
+    assert checks["delay1_lt_base"] is False
+
+
+def test_delay1条件按网格容忍度判定() -> None:
+    """R11、R12 登记 delay1 ≤ base + 0.10（1 号第八部分）。"""
+    scenarios = _scenarios()
+    scenarios["delay1"] = {"annualized_sharpe": 0.55}
+    passing = _checks(
+        exposure="directional",
+        base_sharpe=0.5,
+        metrics=_metrics(0.05, 1.0),
+        fold_stats=_fold_stats(),
+        scenario_stats=scenarios,
+        exec_stats={},
+        delay1_max_excess=0.10,
+    )
+    assert passing["delay1_lt_base"] is True
+    scenarios["delay1"] = {"annualized_sharpe": 0.65}
+    failing = _checks(
+        exposure="directional",
+        base_sharpe=0.5,
+        metrics=_metrics(0.05, 1.0),
+        fold_stats=_fold_stats(),
+        scenario_stats=scenarios,
+        exec_stats={},
+        delay1_max_excess=0.10,
+    )
+    assert failing["delay1_lt_base"] is False
+
+
+def test_网格delay1容忍度必须是非负数() -> None:
+    """非法容忍度直接抛错，不静默回退（红线 12）。"""
+    with pytest.raises(ValueError, match="delay1_max_excess"):
+        _delay1_max_excess({"round": "R11", "delay1_max_excess": -0.1})
+    assert _delay1_max_excess({"round": "R11", "delay1_max_excess": 0.1}) == pytest.approx(0.1)
+    assert _delay1_max_excess({"round": "R1"}) == 0.0

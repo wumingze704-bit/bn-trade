@@ -277,3 +277,61 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
 `trade.common.risk_rules`，无需更新。观察项：建议 3 号下次复核时把 `trade.common.risk_rules`、`trade.common.sizing`
 纳入 engine.md 的 SHA256 清单（它们是实盘与影子盘共用的执行口径）。
 
+
+## 2026-11-24 23:08 UTC 会话级一致性检查与执行 1 号前的前置复核（R1 运行中）
+
+- 会话级总账一致性（0 号调度第五部分第 1 条）：`trials_used = 97`；Σ rounds[].trials = 32（R3 的两次重跑）+ Σ rounds[].void.trials = 65 + 冻结仓位选择的试验 0 = 97 **符合**。
+  服务器 `artifacts/reports/EXPERIMENTS.log` 的 `"kind": "tuning"` 共 97 条（R1 12、R2 6、R3 40、R4 6、R5 4、R6 9、R7 6、R8 6、R9 4、R10 4；
+  R3 的 40 = 作废首轮 8 + 第 1 次重跑 16 + D19 修复后重跑 16），另有 2 条 R3 `kind=exec` 与 5 条无 `round` / `kind` 的历史记录 **符合**。
+- 复核对象与最新提交哈希：`src/trade/research/`（`64a0dde`）、`src/trade/strategies/`（`9c82edc`）、`scripts/portfolio_backtest.py`（`5381f16`）、
+  `configs/research.yaml` 与 `configs/sizing_research.yaml`（`5381f16`）、`src/trade/common/risk_rules.py`（`64a0dde`）、`tests/research/`（`64a0dde`）、
+  `docs/research/ledger.yaml`（`58898a9`）。逐项对照 1 号第五部分 B 第 1~14 条与第三部分底线：
+  - B1 数据层：`trade.research.data` / `view` 读 `klines_1h`、`klines_1h_flow`、`premium_1h`、`mark_1h`、`funding`；资金费缺失按该币过去 7 天均值或
+    U(R) 中位数估算并计数，完全没有结算记录的币不允许开仓（D5）**符合**。
+  - B2 策略接口与 view 防未来函数：`tests/research` 的 view 系列测试通过 **符合**。B3 组合层：模式 A / B、β 中性、总名义 3 倍、净敞口 1.5 倍、
+    保证金 0.95、单币成交额与最小下单额约束 **符合**。
+  - B4 执行口径：决策在 t、成交在 `open_time = t` 的 K 线开盘、仓位权益截至 `t − 1h` 收盘（D3 修复）**符合**。
+  - B5 止损：`mark_1h` 触发、成交价含半价差与平方根冲击、取价失败抛异常（D4 / D6 / D7 修复）**符合**；B6 下架强平 **符合**。
+  - B7 风控复用 `trade.common.risk_rules`，reset 模式到期重设回撤峰值（D19 修复）**符合**；B8 七种情景 **符合**。
+  - B9 指标含实现 β、alpha 夏普与 Deflated Sharpe（`read_trial_sharpes` 读全部 `kind=tuning`）**符合**。
+  - B10 拼接曲线为连续路径（`Engine.run_path`）、折边界换参数、训练期风控不带入（D1）**符合**；B11 守卫 `stage.enforce_research` 只允许研究区间 **符合**。
+  - B12 单元测试：`pytest tests/research tests/strategies -q` → 68 passed **符合**。
+  - B13 逐组落盘与断点续跑：`ensure_groups` 在全部组的训练曲线与自身拼接曲线跑完后逐组写 `groups/<参数键哈希>.json` 并追加 `EXPERIMENTS.log`
+    （因此运行中 `groups/` 目录尚不存在属正常），脚本不写 `ledger.yaml` **符合**。
+  - B14 结果可信度测试 a~h（含 h5 / h6）：`tests/research/test_credibility.py` 全部存在并通过 **符合**。
+- 判定实现与 1 号第七部分第 5 条：`pipeline._checks` 覆盖 a~h、j，`_executable_checks` 覆盖 i 款三项（丢弃比例 ≤ 20%、净收益 > 0、夏普 ≥ 70%）
+  **符合**；发现 g 款的 R11 / R12 登记例外未实现，见下方 D21。
+- 已完成轮次的数字核对：`artifacts/reports/R3/grid.json` 的 `selected_metrics` 与 `rounds/R3.md` 第 2 次重跑一节逐项一致
+  （年化夏普 0.0702713、最大回撤 0.598931、交易 1511、成本 816.664、资金费 1484.003、多头毛 2736.925、空头毛 -2172.130、
+  DSR 0.053547、最差月 -0.158515、亏损月 32、换手 161.723、bootstrap 下限 -133.386）；`exec_metrics` 与文档一致
+  （夏普 0.0879345、净 -13.346%、交易 1414、应开仓 3298、因最小下单额丢弃 1506 = 45.7%）。
+- 服务器代码：`git rev-parse HEAD` = `93d1b87`（R1 正在该版本运行）；本地 `develop` = `58898a9`，
+  `git diff --stat 93d1b87..HEAD` 只有 `docs/research/` 三个文件（ledger / progress_research / review_log）→ 代码与运行版本一致 **符合**。
+- R1 首轮（已作废）结果留档：服务器 `artifacts/reports/R1/grid.json` 与 `selected_daily_returns.csv` 复制为
+  `grid_first_run_void.json`、`selected_daily_returns_first_run_void.csv`，避免重跑报告覆盖后作废判定的原始证据丢失（未删除任何文件）。
+
+### 缺陷登记与修复
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :--- | :--- | :--- | :--- | :--- |
+| D21 | CLOSED | 1 号第八部分 R11、R12 的登记口径“delay1 年化夏普 ≤ base + 0.10”（对这两轮替代 g 款的“低于 base”） | `pipeline._checks` 的 `delay1_lt_base` 固定为 `delay1 < base`，网格与配置文件没有可登记该例外的字段 | R11 / R12 若按登记口径本应通过 g 款，会被误判为不达标；不影响 R1~R10（未登记例外，仍为严格口径） |
+
+修复（`src/trade/research/pipeline.py`、`tests/research/test_metrics.py`、`docs/13` §7、§9）：
+- 网格可选字段 `delay1_max_excess`（非负，默认 0）：0 时保持 g 款严格口径 `delay1 < base`；正数时 `delay1 ≤ base + delay1_max_excess`；
+  非法值直接抛 `ValueError`（红线 12）；`grid.json` 记录该字段，便于复核判定依据。
+- 复现（修复前失败、修复后通过）：在 `58898a9` 的临时 worktree 上运行新测试文件 → `ImportError: cannot import name '_delay1_max_excess'`
+  （代码没有该口径）；修复后 `tests/research/test_metrics.py` 7 passed。
+- 新增测试：`test_delay1条件在容忍度为0时要求严格低于base`、`test_delay1条件按网格容忍度判定`、`test_网格delay1容忍度必须是非负数`。
+- 质量命令：`ruff format --check .`（376 files）、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`（56 files）、
+  `mypy src/trade/dashboard`（8 files）通过；`pytest -q` = `1 failed, 868 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试，未修改任何既有测试）。
+- 与 R1 的关系：R1 在服务器 `93d1b87` 上运行，报告的 `checks` 由该版本计算；R1 未登记 delay1 例外，D21 不改变其判定口径。
+  R11、R12 开跑前须在其网格写入 `delay1_max_excess: 0.10`（已记入 `progress_research.md` 的下一步）。
+
+### 观察项
+
+1. R1 于 2026-11-24 21:34 UTC 在服务器 tmux 会话 `r1` 启动（`sudo -n systemd-run --scope -p MemoryMax=2000M nice -n 10`），24 组 = 48 次全期运行；
+   逐组落盘在全部运行结束后才写入，运行期间不要重复启动（重复启动会重复登记试验）。
+2. R3 的两条 `kind=exec` 记录属同一轮第 1 次与第 2 次重跑；`equity_basis` 均为 500，不计入 Deflated Sharpe，符合 1 号第三部分第 5 条。
+
+- 结论：**符合**（新增缺陷 D21 已修复并关闭；观察项 2 项）。
+

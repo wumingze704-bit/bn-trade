@@ -1,5 +1,27 @@
 # 自动研究循环进度（进行中）
 
+## 本次运行状态（2026-11-24 第四次运行：前置复核与 R1 重跑跟踪）
+
+- 判断（0 号调度第四部分）：`SETUP_DONE.md` 第一行“结论：DONE”；`progress_migration.md` 中 M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷
+  （本次新增 D21 已修复并关闭）；`candidates` 为空、无候选需要实时运行；`engine.md` = ENGINE_READY → 按第四部分第 8 条 a 执行 1 号。
+- 前置复核：见 `review_log.md` 的“2026-11-24 23:08 UTC”一节（B1~B14 符合；R3 数字与 `grid.json` 逐项一致；
+  服务器 HEAD `93d1b87` 与本地代码一致，本地多出的提交只有 `docs/research/` 下三个文件）。会话级一致性：`trials_used` 97 =
+  Σ trials 32 + Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 97 条。
+- R1：服务器 tmux 会话 `r1`，2026-11-24 21:34 UTC 启动，代码 HEAD `93d1b87`，24 组（48 次全期运行）；按 R3 的耗时（16 组约 4 小时 10 分）
+  预计 5~6 小时。运行期间 `artifacts/reports/R1/groups/` 不存在属正常（逐组落盘在全部运行结束后写入）；**不要重复启动**。
+- 本次代码改动：`pipeline._checks` 支持网格字段 `delay1_max_excess`（R11 / R12 的登记例外；默认 0 与 R1~R10 口径相同），
+  新增 3 项测试，`docs/13` §7、§9 同步。R1 在服务器 `93d1b87` 上运行，判定口径不受影响。
+- 试验预算：97 / 400。
+- 下一步（新会话）：
+  1. `ps -ef | grep portfolio_backtest` 确认 R1 是否结束；结束则读 `artifacts/reports/R1/grid.json`（`generated_at` 应为 2026-11-24/25 的新时间），
+     核对 `hashes.code_hash` 属于 `93d1b87`、`EXPERIMENTS.log` 新增 24 条 `kind=tuning`（R1）与 1 条 `kind=exec`。
+  2. 写 `rounds/R1.md` 的“重跑（迁移后）”一节（选参、分折、情景、可执行口径、判定逐项），更新 `ledger.yaml`
+     （R1 status / trials 24 / result 与 `trials_used`），提交推送。
+  3. 启动 R2（12 组）：先把服务器切到含 D21 修复的新提交，`git rev-parse HEAD` 核对一致后用 tmux + `systemd-run` 启动。
+  4. R11 / R12 开跑前：网格写 `delay1_max_excess: 0.10`，并做 500 USDT 可执行性预检（0 号调度第七部分第 2 条 c 款）。
+- 未推送提交：无。
+
+
 ## 本次运行状态（2026-11-24 第三次运行：迁移后重跑）
 
 状态判断（1 号第六部分）：第五部分已完成（`SETUP_DONE.md` DONE、M1~M7 完成、`data/` 三类补充数据与
