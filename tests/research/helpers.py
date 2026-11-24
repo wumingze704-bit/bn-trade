@@ -151,14 +151,16 @@ def make_research_config() -> ResearchConfig:
             "stop_max": 0.15,
         },
         portfolio={
-            "total_notional_cap": 2.0,
-            "net_exposure_cap": 1.0,
+            "total_notional_cap": 3.0,
+            "net_exposure_cap": 1.5,
             "margin_cap": 0.95,
             "neutral_max_gap": 0.10,
             "liq_cap_hours": 24,
             "max_positions": 10,
         },
         quality={"missing_ratio_max": 0.01},
+        risk={"halt_mode": "reset", "halt_reset_days": 7},
+        equity={"signal": 10_000.0, "exec": 500.0},
         scenarios=["base"],
     )
 

@@ -50,7 +50,7 @@ engine:
   history_days_hourly: 45
   history_days_daily: 120
   funding_limit: 1000
-  live_capital_cap: 100.0 # 真钱上限，USDT（风险包络只能由使用者决定，红线 5）
+  live_capital_cap: 500.0 # 真钱上限，USDT，允许范围 (0, 1000]（风险包络只能由使用者决定，红线 5）
   hide_pnl_until_final: true # shadow / paper 在最终检验未通过前不显示虚拟收益
   rebalance_delay_sec: 30 # 整点后多少秒拉取刚收盘的 1h K 线
   post_only_wait_sec: 45

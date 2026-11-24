@@ -58,3 +58,14 @@ def test_live_config_candidate_pool_defaults() -> None:
 def test_load_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         load_live_config(tmp_path / "missing.yaml")
+
+
+def test_资金上限允许范围为零到一千() -> None:
+    """live_capital_cap 允许 (0, 1000]；超出范围直接报错（红线 5：由使用者决定）。"""
+    from trade.live.config import EngineConfig
+
+    assert EngineConfig(live_capital_cap=1000.0).live_capital_cap == 1000.0
+    assert EngineConfig().live_capital_cap == 500.0
+    for bad in (0.0, 1000.01):
+        with pytest.raises(ValidationError):
+            EngineConfig(live_capital_cap=bad)

@@ -100,7 +100,7 @@ class EngineConfig(BaseModel):
     history_days_daily: int = Field(default=120, ge=35, le=800)
     funding_limit: int = Field(default=1000, ge=10, le=1000)
     # 资金与运行参数
-    live_capital_cap: float = Field(default=100.0, gt=0.0)
+    live_capital_cap: float = Field(default=500.0, gt=0.0, le=1000.0)
     hide_pnl_until_final: bool = True
     rebalance_delay_sec: int = Field(default=30, ge=0, le=600)
     post_only_wait_sec: int = Field(default=45, ge=1, le=600)

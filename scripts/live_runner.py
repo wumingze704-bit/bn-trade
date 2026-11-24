@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from trade.common.config import BaseConfig, load_config
-from trade.common.sizing import SizingConfig
 from trade.live import candidate as cand
 from trade.live.candidate import CandidateSpec
 from trade.live.config import LiveConfig, load_live_config
@@ -38,7 +37,7 @@ from trade.live.notifier.dispatcher import NotifierDispatcher
 from trade.live.riskguard import RiskGuard
 from trade.live.runner import Runner, load_risk_limits
 from trade.live.store import Store
-from trade.research.config import load_research_config
+from trade.research.config import load_research_config, load_research_sizing
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,9 +131,9 @@ async def _run(mode: str, candidate_id: str, config_path: Path, i_understand: bo
         )
         research = load_research_config(_resolve(engine.research))
         base = load_config(BaseConfig, _resolve(engine.base))
-        sizing = load_config(SizingConfig, _resolve(engine.sizing_research))
+        sizing = load_research_sizing(_resolve(engine.sizing_research)).with_tier()
         risk = RiskGuard(
-            limits=load_risk_limits(sizing, _resolve(engine.backtest)),
+            limits=load_risk_limits(sizing, mode),
             net_exposure_cap=engine.net_exposure_cap,
             net_exposure_grace_min=engine.net_exposure_grace_min,
             clock_drift_limit_ms=engine.clock_drift_ms,

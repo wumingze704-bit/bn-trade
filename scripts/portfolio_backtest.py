@@ -13,12 +13,10 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
-
 from trade.common.config import BaseConfig, load_config
 from trade.common.risk_rules import RiskLimits
 from trade.common.sizing import SizingConfig
-from trade.research.config import load_research_config
+from trade.research.config import ResearchConfig, load_research_config, load_research_sizing
 from trade.research.pipeline import evaluate_grid, load_grid
 from trade.research.stage import enforce_research, read_ledger
 
@@ -42,19 +40,16 @@ def _default_workers() -> int:
     return max(1, min((os.cpu_count() or 2) - 1, 4))
 
 
-def _risk_limits(base: BaseConfig, sizing: SizingConfig, backtest_path: Path) -> RiskLimits:
-    values = yaml.safe_load(backtest_path.read_text(encoding="utf-8"))
-    risk = values.get("risk") if isinstance(values, dict) else None
-    if not isinstance(risk, dict):
-        raise ValueError(f"backtest 配置缺少 risk 段：{backtest_path}")
+def _risk_limits(config: ResearchConfig, sizing: SizingConfig) -> RiskLimits:
+    """由研究配置的 risk 节与（已按档位取值的）仓位配置构造风控参数（docs/13 §2）。"""
     return RiskLimits(
         daily_loss_stop=sizing.daily_loss_stop,
         daily_loss_halt=sizing.daily_loss_halt,
         max_drawdown_halt=sizing.max_drawdown_halt,
         max_consecutive_losses=sizing.max_consecutive_losses,
         consecutive_loss_pause_min=sizing.consecutive_loss_pause_min,
-        halt_mode=str(risk["halt_mode"]),
-        halt_reset_days=int(risk["halt_reset_days"]),
+        halt_mode=config.risk.halt_mode,
+        halt_reset_days=config.risk.halt_reset_days,
     )
 
 
@@ -93,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default="configs/base.yaml")
     parser.add_argument("--research", default="configs/research.yaml")
     parser.add_argument("--sizing", default="configs/sizing_research.yaml")
-    parser.add_argument("--backtest", default="configs/backtest.yaml")
     parser.add_argument("--ledger", default="docs/research/ledger.yaml")
     parser.add_argument("--workers", type=int, default=None, help="并行进程数，默认按平台")
     parser.add_argument("--no-scenarios", action="store_true", help="跳过压力情景（调试用）")
@@ -101,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
 
     base = load_config(BaseConfig, _resolve(args.base))
     config = load_research_config(_resolve(args.research))
-    sizing = load_config(SizingConfig, _resolve(args.sizing))
+    sizing = load_research_sizing(_resolve(args.sizing)).with_tier()
     grid = load_grid(_resolve(args.grid))
     round_id = str(args.round or grid.get("round") or _resolve(args.grid).stem)
     ledger_path = _resolve(args.ledger)
@@ -111,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     start_ms = _day_ms(research_start)
     end_ms = _day_ms(research_end) + _MS_PER_DAY
     enforce_research(ledger_path=ledger_path, start_ms=start_ms, end_ms=end_ms)
-    risk = _risk_limits(base, sizing, _resolve(args.backtest))
+    risk = _risk_limits(config, sizing)
     workers = args.workers if args.workers is not None else _default_workers()
     out_dir = _ROOT / config.paths.artifacts / "reports"
     log_path = _ROOT / config.paths.experiments_log

@@ -1,5 +1,5 @@
 version: 2
-global_trial_budget: 200
+global_trial_budget: 400
 trials_used: 65
 research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
 research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日

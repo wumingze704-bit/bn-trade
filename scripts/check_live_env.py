@@ -11,12 +11,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from trade.common.config import load_config
-from trade.common.sizing import SizingConfig
 from trade.live.candidate import CandidateError, load_candidate
 from trade.live.config import load_live_config
 from trade.live.feed import load_universe_history
 from trade.live.runner import load_risk_limits, load_strategy
+from trade.research.config import load_research_sizing
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,8 +64,8 @@ def main() -> None:
             )
             load_strategy(spec, stop_max=0.5)
             load_risk_limits(
-                load_config(SizingConfig, _resolve(engine.sizing_research)),
-                _resolve(engine.backtest),
+                load_research_sizing(_resolve(engine.sizing_research)).with_tier(),
+                "shadow",
             )
         except CandidateError as error:
             problems.append(str(error))

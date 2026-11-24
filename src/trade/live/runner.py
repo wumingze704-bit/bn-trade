@@ -20,9 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from trade.common.risk_rules import RiskLimits
+from trade.common.risk_rules import HALT_STRICT, RiskLimits
 from trade.common.sizing import SizingConfig
 from trade.live.candidate import CandidateSpec
 from trade.live.control import effective_sizing_from_store
@@ -52,28 +50,43 @@ _MS_PER_MINUTE = 60_000
 _BP = 1e-4
 _VERSION = "p5-1"
 
+# 实盘 / 测试网 / 影子盘的停机方式固定 strict（docs/07 §6）；reset 只用于研究与最终检验。
+LIVE_HALT_MODE = HALT_STRICT
+# strict 下停机不再恢复，重置天数不被使用；保留字段以复用 RiskLimits。
+LIVE_HALT_RESET_DAYS = 1
+_RUN_MODES = ("shadow", "paper", "live")
+
 
 class RunnerError(RuntimeError):
     """引擎启动条件不满足或运行中出现不可恢复错误。"""
 
 
-def load_risk_limits(sizing: SizingConfig, backtest_path: Path) -> RiskLimits:
-    """从 sizing 与 backtest.yaml 的 risk 段构造风控参数（docs/13 §2）。"""
-    try:
-        values = yaml.safe_load(backtest_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as error:
-        raise RunnerError(f"无法读取 {backtest_path}: {error}") from error
-    risk = values.get("risk") if isinstance(values, dict) else None
-    if not isinstance(risk, dict):
-        raise RunnerError(f"backtest 配置缺少 risk 段：{backtest_path}")
+def load_risk_limits(sizing: SizingConfig, mode: str) -> RiskLimits:
+    """构造实盘 / 影子盘的风控参数（docs/07 §6、docs/13 §2）。
+
+    停机方式固定为 `strict`：实盘、测试网与影子盘触发 R6/R8 后停机，由使用者复核再恢复；
+    `reset` 只用于研究与最终检验（`configs/research.yaml: risk`）。
+
+    Args:
+        sizing: 候选的风险包络（已按风险档位取值的 `SizingConfig`）。
+        mode: `shadow` / `paper` / `live`。
+
+    Returns:
+        RiskLimits，`halt_mode` 恒为 `strict`。
+
+    Raises:
+        RunnerError: `mode` 不在三种运行模式内。
+    """
+    if mode not in _RUN_MODES:
+        raise RunnerError(f"未知运行模式：{mode}")
     return RiskLimits(
         daily_loss_stop=sizing.daily_loss_stop,
         daily_loss_halt=sizing.daily_loss_halt,
         max_drawdown_halt=sizing.max_drawdown_halt,
         max_consecutive_losses=sizing.max_consecutive_losses,
         consecutive_loss_pause_min=sizing.consecutive_loss_pause_min,
-        halt_mode=str(risk["halt_mode"]),
-        halt_reset_days=int(risk["halt_reset_days"]),
+        halt_mode=LIVE_HALT_MODE,
+        halt_reset_days=LIVE_HALT_RESET_DAYS,
     )
 
 
