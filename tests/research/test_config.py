@@ -100,3 +100,51 @@ def test_缺少档位或档位缺失时报错(tmp_path: Path) -> None:
     path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
     with pytest.raises(ConfigError):
         load_research_sizing(path)
+
+
+def test_风险包络含模式B与β中性参数() -> None:
+    """sizing_research.yaml 的 sizing_mode / target_vol / 回看窗口 / β 上限与多空比区间。"""
+    cfg = load_research_sizing(SIZING_YAML)
+    assert cfg.sizing_mode == "fixed_risk"
+    assert cfg.vol_lookback_days == 30
+    assert cfg.cov_lookback_days == 60
+    assert cfg.beta_lookback_days == 60
+    assert cfg.beta_abs_max == pytest.approx(0.10)
+    assert cfg.ls_ratio_range == (0.5, 2.0)
+    standard = cfg.with_tier()
+    assert standard.target_vol == pytest.approx(0.20)
+    assert standard.sizing_mode == "fixed_risk"
+    assert standard.ls_ratio_range == (0.5, 2.0)
+
+
+def test_多空名义比区间必须包含1(tmp_path: Path) -> None:
+    """ls_ratio_range 下限必须 ≤ 1 ≤ 上限（13 §3 的多空名义比约束）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        values["ls_ratio_range"] = [2.0, 0.5]
+
+    path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
+    with pytest.raises(ConfigError):
+        load_research_sizing(path)
+
+
+def test_仓位模式只接受两种取值(tmp_path: Path) -> None:
+    """sizing_mode 拼错时拒绝加载（红线 12）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        values["sizing_mode"] = "voltarget"
+
+    path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
+    with pytest.raises(ConfigError):
+        load_research_sizing(path)
+
+
+def test_切档同时改模式B的目标波动(tmp_path: Path) -> None:
+    """with_tier() 用选中档位的 target_vol 覆盖配置默认值（13 §2）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        values["tier"] = "aggressive"
+
+    path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
+    applied = load_research_sizing(path).with_tier()
+    assert applied.target_vol == pytest.approx(0.40)

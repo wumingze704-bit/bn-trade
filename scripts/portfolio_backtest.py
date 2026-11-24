@@ -77,6 +77,7 @@ def _single_run(
     params: dict,
     start_ms: int,
     end_ms: int,
+    sizing_mode: str,
 ) -> RunResult:
     """单策略、单区间的连续运行（最小规模运行使用）。"""
     engine = Engine(
@@ -89,6 +90,7 @@ def _single_run(
         risk_limits=risk,
         options=ScenarioOptions(),
         seed=config.bootstrap.seed,
+        sizing_mode=sizing_mode,
     )
     return engine.run(start_ms, end_ms)
 
@@ -105,6 +107,7 @@ def _smoke(
     start_month: str,
     end_month: str,
     months: int,
+    sizing_mode: str,
 ) -> int:
     """最小规模运行：1 个方向 × 1 组参数 × `months` 个月，核对两种口径与记录字段。
 
@@ -113,6 +116,7 @@ def _smoke(
     """
     family = str(grid["family"])
     params = dict(grid["params"][0])
+    params["sizing_mode"] = sizing_mode
     window_start_ms = int(
         _shift_months(datetime.fromtimestamp(end_ms // 1000, tz=UTC), -months).timestamp() * 1000
     )
@@ -127,6 +131,7 @@ def _smoke(
         "generated_at": datetime.now(UTC).isoformat(),
         "family": family,
         "params": params,
+        "sizing_mode": sizing_mode,
         "window": {"start_ms": window_start_ms, "end_ms": end_ms, "months": months},
         "signal_basis": config.equity.signal,
         "exec_basis": config.equity.exec,
@@ -144,6 +149,7 @@ def _smoke(
             params=params,
             start_ms=window_start_ms,
             end_ms=end_ms,
+            sizing_mode=sizing_mode,
         )
         metrics = summarize(result, bootstrap=config.bootstrap, trial_sharpes=[])
         report[f"{label}_metrics"] = {
@@ -163,10 +169,11 @@ def _smoke(
             "short_gross": metrics["short_gross"],
         }
         print(
-            f"{label}: 交易 {metrics['trades']}，应开仓 {metrics['attempted']}，"
+            f"[{sizing_mode}] {label}: 交易 {metrics['trades']}，应开仓 {metrics['attempted']}，"
             f"最小下单额丢弃 {metrics['dropped_min_notional']}，"
             f"资金费估算 {metrics['funding_estimated']} / 中位数 {metrics['funding_missing']}，"
-            f"标记价退回 {metrics['mark_fallback']}"
+            f"标记价退回 {metrics['mark_fallback']}，实现 β {metrics['realized_beta']:.3f}，"
+            f"alpha 夏普 {metrics['alpha_sharpe']:.3f}"
         )
         records.append(
             {
@@ -215,13 +222,29 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="最小规模运行：只用 1 组参数跑最近 N 个月，核对两种口径与记录字段",
     )
+    parser.add_argument(
+        "--smoke-sizing-mode",
+        default=None,
+        choices=("fixed_risk", "vol_target"),
+        help="最小规模运行的仓位模式（模式 A / B 各跑一次时分别指定）",
+    )
     args = parser.parse_args(argv)
 
     base = load_config(BaseConfig, _resolve(args.base))
     config = load_research_config(_resolve(args.research))
-    sizing = load_research_sizing(_resolve(args.sizing)).with_tier()
+    research_sizing = load_research_sizing(_resolve(args.sizing))
+    sizing = research_sizing.with_tier()
     grid_path = _resolve(args.grid)
     grid = load_grid(grid_path)
+    # 网格参数里的 sizing_mode 是仓位模式维度；未写明时取配置默认值（13 §3）。
+    default_mode = research_sizing.sizing_mode
+    grid = {
+        **grid,
+        "params": [
+            {**dict(params), "sizing_mode": str(params.get("sizing_mode", default_mode))}
+            for params in grid["params"]
+        ],
+    }
     round_id = str(args.round or grid.get("round") or grid_path.stem)
     ledger_path = _resolve(args.ledger)
     ledger = read_ledger(ledger_path)
@@ -243,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             start_month=research_start[:7],
             end_month=research_end[:7],
             months=args.smoke_months,
+            sizing_mode=args.smoke_sizing_mode or research_sizing.sizing_mode,
         )
     workers = args.workers if args.workers is not None else _default_workers()
     out_dir = _ROOT / config.paths.artifacts / "reports"

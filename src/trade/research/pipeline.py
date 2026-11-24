@@ -118,6 +118,7 @@ def run_param(
     strategy = build_strategy(
         family, dict(params), stop_max=config.execution.stop_max, components=components
     )
+    sizing_mode = str(params.get("sizing_mode", "fixed_risk"))
     engine = Engine(
         market=market,
         strategy=strategy,
@@ -128,6 +129,7 @@ def run_param(
         risk_limits=risk_limits,
         options=options or ScenarioOptions(),
         seed=config.bootstrap.seed,
+        sizing_mode=sizing_mode,
     )
     return _to_param_run(params, engine.run(start_ms, end_ms))
 
@@ -601,9 +603,10 @@ def build_segments(
     segments: list[Segment] = []
     for index, (fold, choice) in enumerate(zip(folds, choices, strict=True)):
         components = None if components_by_fold is None else components_by_fold[index]
+        params = dict(params_by_key[choice.params_key])
         strategy = build_strategy(
             family,
-            dict(params_by_key[choice.params_key]),
+            params,
             stop_max=config.execution.stop_max,
             components=components,
         )
@@ -613,6 +616,7 @@ def build_segments(
                 end_ms=fold.end_ms,
                 strategy=strategy,
                 label=choice.params_key,
+                sizing_mode=str(params.get("sizing_mode", "fixed_risk")),
             )
         )
     return segments
@@ -770,7 +774,7 @@ def _checks(
     scenario_stats: Mapping[str, Mapping[str, float]],
     exec_stats: Mapping[str, float],
 ) -> dict[str, bool]:
-    """达标项 a~h 判定（第七部分第 5 条，信号口径），返回逐项布尔值。"""
+    """达标项 a~h 与 j 判定（第七部分第 5 条，信号口径），返回逐项布尔值。"""
     checks: dict[str, bool] = {
         "sharpe_ge_1": base_sharpe >= 1.0,
         "folds_positive_ge_4": sum(1 for item in fold_stats if item["net_return"] > 0.0) >= 4,
@@ -786,6 +790,9 @@ def _checks(
         checks["side_condition"] = (
             sum(1 for item in fold_stats if item["long_gross"] - item["short_gross"] > 0.0) >= 4
         )
+        # j 款：中性策略的实现 β 与 alpha 夏普（不能主要靠大盘涨跌）
+        checks["beta_abs_le_030"] = abs(float(metrics["realized_beta"])) <= 0.30
+        checks["alpha_sharpe_ge_08"] = float(metrics["alpha_sharpe"]) >= 0.8
     else:
         checks["side_condition"] = (
             scenario_stats.get("long_only", {}).get("net_pnl", 0.0) > 0.0

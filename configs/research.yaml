@@ -38,7 +38,6 @@ portfolio:
   total_notional_cap: 3.0 # 多 + 空总名义 ≤ 权益 × 3（使用者确定，红线 5）
   net_exposure_cap: 1.5 # 净敞口绝对值 ≤ 权益 × 1.5（使用者确定，红线 5）
   margin_cap: 0.95 # 总保证金 ≤ 权益 × 0.95
-  neutral_max_gap: 0.10 # 中性策略多空名义差 ≤ 10%
   liq_cap_hours: 24 # 流动性上限使用的成交额窗口（小时）
   max_positions: 10 # 与 sizing_research.yaml 一致
 

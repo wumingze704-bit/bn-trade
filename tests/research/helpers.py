@@ -67,6 +67,26 @@ def make_daily_bars(
     )
 
 
+def make_daily_returns_bars(symbol: str, returns: np.ndarray) -> Bars:
+    """按给定的日对数收益构造日线（收盘价复利，最后一根的 `open_time` 为 `START_MS`）。
+
+    `len(returns)` 个收益对应 `len(returns) + 1` 根日线；在 `START_MS` 附近的决策时刻，
+    这些收益全部已收盘，便于手算波动率与 β。
+    """
+    values = np.asarray(returns, dtype="float64")
+    closes = 100.0 * np.exp(np.concatenate([[0.0], np.cumsum(values)]))
+    times = START_MS - values.size * DAY_MS + np.arange(values.size + 1, dtype=np.int64) * DAY_MS
+    return Bars(
+        symbol=symbol,
+        open_time=times,
+        open=closes,
+        high=closes * 1.01,
+        low=closes * 0.99,
+        close=closes,
+        quote_volume=np.full(closes.size, 1e8, dtype="float64"),
+    )
+
+
 def make_market(
     symbols: tuple[str, ...] = ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"),
     *,
@@ -203,7 +223,6 @@ def make_research_config() -> ResearchConfig:
             "total_notional_cap": 3.0,
             "net_exposure_cap": 1.5,
             "margin_cap": 0.95,
-            "neutral_max_gap": 0.10,
             "liq_cap_hours": 24,
             "max_positions": 10,
         },

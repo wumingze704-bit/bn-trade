@@ -80,6 +80,31 @@ class View:
             return None
         return float(np.median(bars.quote_volume[count - days : count]))
 
+    def daily_returns(self, symbol: str, days: int) -> tuple[np.ndarray, np.ndarray] | None:
+        """最近 `days` 个已收盘自然日的日对数收益与对应日期（docs/13 §3）。
+
+        日线 `open_time` 为当日 00:00；只有当 `open_time + 1d <= now_ms` 的日线才视为已收盘，
+        与 1h 视角同一规则（红线 1）。
+
+        Args:
+            symbol: 币种。
+            days: 需要的收益个数（每个收益需要前一日收盘价）。
+
+        Returns:
+            (日期 open_time 数组, 日对数收益数组)；日线缺失或历史不足 `days + 1` 根时返回 None。
+        """
+        bars = self.market.daily.get(symbol)
+        if bars is None:
+            return None
+        count = int(np.searchsorted(bars.open_time, self.now_ms - DAY_MS, side="right"))
+        if count < days + 1:
+            return None
+        closes = bars.close[count - days - 1 : count]
+        if np.any(closes <= 0.0):
+            return None
+        returns = np.diff(np.log(closes))
+        return bars.open_time[count - days : count], returns
+
     def funding_hourly_mean(self, symbol: str, hours: int) -> float | None:
         """过去 `hours` 小时的平均每小时资金费率；没有结算返回 None。"""
         series = self.market.funding_series(symbol)

@@ -115,3 +115,43 @@
 
 处理方式：按 0 号调度第六部分 M4 修复，每个缺陷先写复现测试（修复前失败、修复后通过），再改代码，
 最后把状态改为 CLOSED 并写明修复提交与测试名。修复前不重跑任何轮次；R1~R10 的判定已在 M7 作废。
+
+
+## 2026-11-24 15:05 UTC 会话级一致性检查（0 号调度第五部分第 1 条）
+
+- 总账：`trials_used = 65`；rounds 的 trials 之和 12+6+8+6+4+9+6+6+4+4 = 65；`qualified_pool` 为空；
+  服务器 `artifacts/reports/EXPERIMENTS.log` 中 `kind=tuning` 记录 65 条（`kind=exec` 0 条）→ **符合**。
+- 候选与窗口：`candidates` 为空，三个窗口均 `unused`、`candidate: null` → **符合**。
+- 服务器进程：无 `trade-runner@*` 实例；`trade-dashboard` 为 active，`trade-watchdog.service` 为 inactive（timer 负责调度）
+  → 与 `ops` 全为空一致 → **符合**。
+- 服务器 HEAD `a2bafb4` 与本地代码提交一致（本地多一个文档提交 `4dd8023`，代码相同）→ **符合**。
+- 结论：全部符合。执行对象：一次性迁移 M5（`progress_migration.md` 中 M5 未开始）。
+
+## 2026-11-24 15:10 UTC M5 前置复核（前一步 M4 的研究框架）
+
+- 复核对象：`src/trade/research/{engine,rolling,pipeline,portfolio,view,data,config}.py`、
+  `src/trade/strategies/*`、`scripts/portfolio_backtest.py`、`configs/research.yaml`、`configs/sizing_research.yaml`、
+  `tests/research/*`（M4 提交 `9c82edc`、`a2bafb4`、`4dd8023`）。
+- 方法：逐条对照 1 号第五部分 B 第 1~14 条与第三部分底线；本地运行 `tests/research`（改动前 36 项全通过）与 §8 命令；
+  服务器 `HEAD = a2bafb4`；M4 最小规模运行结果见 `progress_migration.md`。
+- 结果：数据层（含资金费缺失、标记价格）、执行口径（决策在 t、成交在 `open_time = t`）、拼接路径（`run_path`）、
+  逐折选参、试验记录字段与断点续跑、两种权益口径与 i 款检查均符合；结果可信度测试 a~h 全部通过 → **符合**。
+- 发现并在 M5 实现中修复的问题（新代码缺陷，登记后已关闭）：
+  | 编号 | 状态 | 问题 | 修复与复现测试 |
+  | :--- | :--- | :--- | :--- |
+  | D14 | CLOSED | `Engine.run` 构造内部 `Segment` 时没有传入构造函数给的 `sizing_mode`，模式 B 的组仍按模式 A 开仓 | `run` 把 `self.sizing_mode` 写进 `Segment`；`test_h5_引擎按段使用模式B`（修复前实际 2396 USDT vs 期望 891） |
+  | D15 | CLOSED | β 初始化版本在 BTC 日线不足 60 天时抛错，与 1 号“样本不足 30 天取 1.0 并计数”冲突 | 改为 BTC 日线存在但样本不足/方差为 0 时全部取 1.0 并计数；`tests/research/test_portfolio.py::test_β样本不足30天时取1并计数`（修复前抛异常） |
+
+## 2026-11-24 15:30 UTC M5 完成（模式 B、β 中性、指标与达标项 j）
+
+- 代码：`src/trade/common/sizing.py`（新配置字段与 `size_from_notional`）、`src/trade/research/{config,view,portfolio,engine,metrics,pipeline}.py`、
+  `scripts/portfolio_backtest.py`；配置：`configs/sizing_research.yaml`、`configs/research.yaml`；文档：`docs/00` §2、`docs/13` §2/§3/§7。
+- 测试：`tests/research/test_metrics.py`（新增）、`test_portfolio.py`（模式 B 手算、单仓上限、β 中性、β 样本不足）、
+  `test_credibility.py::{test_h5_引擎按段使用模式B,test_h6_中性策略的β调整在引擎中生效}`、
+  `test_config.py`（新配置项与范围校验）、`tests/common/test_sizing.py`（取整状态一致性）。
+- 质量命令：`ruff format --check .`（369 files）、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`
+  （56 files）、`mypy src/trade/dashboard`（8 files）通过；`pytest -q` = `1 failed, 826 passed, 3 skipped`
+  （唯一失败为本机无 CUDA 的 `tests/models/test_dataset.py::test_pinned_cpu_placement`，准备阶段既有失败，未修改测试）；
+  `tests/research` 50 项全通过；`scripts/check_docs_sections.py` 通过（20 条基线失效引用）。
+- 结论：**符合**。最小规模运行（模式 A、B 各一次）结果见 `progress_migration.md`。
+

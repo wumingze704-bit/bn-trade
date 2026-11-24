@@ -12,12 +12,23 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from tests.research.helpers import START_MS, Bars, make_market, make_research_config
+from tests.research.helpers import (
+    START_MS,
+    Bars,
+    make_daily_returns_bars,
+    make_market,
+    make_research_config,
+)
 from trade.common.risk_rules import RiskLimits
 from trade.common.sizing import SizingConfig
 from trade.research.data import DAY_MS, HOUR_MS, MarkBars, MarketData
 from trade.research.engine import Engine, RunResult, ScenarioOptions
-from trade.research.interface import EXPOSURE_DIRECTIONAL, Decision, Target
+from trade.research.interface import (
+    EXPOSURE_DIRECTIONAL,
+    EXPOSURE_NEUTRAL,
+    Decision,
+    Target,
+)
 from trade.research.pipeline import build_segments, params_key, run_param, run_selected_path
 from trade.research.rolling import Fold, select_for_fold
 from trade.research.view import View
@@ -368,7 +379,13 @@ class _NoSignal:
 
 
 def _engine_run(
-    market: MarketData, strategy, start_ms: int, end_ms: int, *, equity: float = 10_000.0
+    market: MarketData,
+    strategy,
+    start_ms: int,
+    end_ms: int,
+    *,
+    equity: float = 10_000.0,
+    sizing_mode: str = "fixed_risk",
 ) -> RunResult:
     """单策略单区间运行（测试内部使用，与流水线口径一致）。"""
     engine = Engine(
@@ -380,6 +397,7 @@ def _engine_run(
         fee_taker=_FEE_TAKER,
         risk_limits=_risk(),
         options=ScenarioOptions(),
+        sizing_mode=sizing_mode,
     )
     return engine.run(start_ms, end_ms)
 
@@ -591,3 +609,91 @@ def test_h_口径回归测试() -> None:
 def stopped_market(market: MarketData) -> MarketData:
     """同一市场的浅拷贝（View 只读，用于在测试里取已收盘数据）。"""
     return market
+
+
+def _daily_series(seed: int, sigma: float, n: int = 60) -> np.ndarray:
+    """指定样本标准差的日对数收益（模式 B 手算与 β 测试共用）。"""
+    rng = np.random.default_rng(seed)
+    values = rng.normal(0.0, sigma, n)
+    values -= values.mean()
+    values *= sigma / float(values.std(ddof=1))
+    return values
+
+
+def _install_daily(market: MarketData, series: Mapping[str, np.ndarray]) -> None:
+    for symbol, values in series.items():
+        market.daily[symbol] = make_daily_returns_bars(symbol, values)
+
+
+class _StaticTargets:
+    """测试用：每个调仓时刻都返回固定目标（多空与止损距离固定）。"""
+
+    name = "test_static_targets"
+    rebalance_hours = 8
+
+    def __init__(self, targets: tuple[Target, ...], exposure: str) -> None:
+        self.targets = targets
+        self.exposure = exposure
+
+    def decide(self, view: View, held: Mapping[str, int]) -> Decision:
+        return Decision(self.targets, self.exposure)
+
+
+def test_h5_引擎按段使用模式B() -> None:
+    """h 款：模式 B 的目标名义按波动率倒数与 target_vol 缩放（引擎端到端一致）。"""
+    symbols = ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT")
+    series = {symbol: _daily_series(index, 0.05) for index, symbol in enumerate(symbols)}
+    series["BTCUSDT"] = _daily_series(99, 0.03)
+    market = make_market(symbols=symbols, n=120)
+    _install_daily(market, series)
+    strategy = _StaticTargets(
+        tuple(Target(symbol, 1, 0.03) for symbol in symbols), EXPOSURE_DIRECTIONAL
+    )
+    result = _engine_run(
+        market,
+        strategy,
+        START_MS + 24 * HOUR_MS,
+        START_MS + 72 * HOUR_MS,
+        sizing_mode="vol_target",
+    )
+    assert len(result.trades) == len(symbols)
+    ordered = sorted(symbols)
+    sigma = np.asarray([np.std(series[symbol][-30:], ddof=1) for symbol in ordered])
+    weights = 1.0 / sigma
+    matrix = np.column_stack([series[symbol][-60:] for symbol in ordered])
+    variance = float(weights @ np.cov(matrix, rowvar=False, ddof=1) @ weights)
+    scale = 0.20 / (np.sqrt(365.0) * np.sqrt(variance))
+    expected = {
+        symbol: 10_000.0 * scale * weight for symbol, weight in zip(ordered, weights, strict=True)
+    }
+    for trade in result.trades:
+        # 目标名义先按 stepSize 取整再成交；相对误差上界为 1 个 step 的名义 ÷ 仓位
+        assert trade.notional == pytest.approx(expected[trade.symbol], rel=1e-3)
+
+
+def test_h6_中性策略的β调整在引擎中生效() -> None:
+    """h 款：β 调整后多头总名义 ÷ 空头总名义 ∈ [0.5, 2.0]，组合实现 β 绝对值 ≤ 0.10。"""
+    btc = _daily_series(7, 0.03)
+    betas = {"AAAUSDT": 0.5, "BBBUSDT": 1.5, "CCCUSDT": 1.5, "DDDUSDT": 1.5}
+    series = {symbol: beta * btc for symbol, beta in betas.items()}
+    series["BTCUSDT"] = btc
+    market = make_market(symbols=("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"), n=120)
+    _install_daily(market, series)
+    strategy = _StaticTargets(
+        (
+            Target("AAAUSDT", 1, 0.03),
+            Target("BBBUSDT", 1, 0.03),
+            Target("CCCUSDT", -1, 0.03),
+            Target("DDDUSDT", -1, 0.03),
+        ),
+        EXPOSURE_NEUTRAL,
+    )
+    result = _engine_run(market, strategy, START_MS + 24 * HOUR_MS, START_MS + 72 * HOUR_MS)
+    assert len(result.trades) == 4
+    long_total = sum(trade.notional for trade in result.trades if trade.side > 0)
+    short_total = sum(trade.notional for trade in result.trades if trade.side < 0)
+    assert 0.5 <= long_total / short_total <= 2.0
+    beta_exposure = sum(
+        trade.side * trade.notional * betas[trade.symbol] for trade in result.trades
+    )
+    assert abs(beta_exposure) / 10_000.0 <= 0.10

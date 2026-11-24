@@ -74,7 +74,6 @@ class PortfolioConfig(BaseModel):
     total_notional_cap: float = Field(gt=0.0, le=10.0)
     net_exposure_cap: float = Field(gt=0.0, le=10.0)
     margin_cap: float = Field(gt=0.0, le=1.0)
-    neutral_max_gap: float = Field(gt=0.0, le=1.0)
     liq_cap_hours: int = Field(ge=1, le=720)
     max_positions: int = Field(ge=1, le=50)
 
@@ -213,13 +212,15 @@ class ResearchSizingConfig(SizingConfig):
         """把选中档位的仓位与停机阈值应用到风险包络，返回纯 `SizingConfig`。
 
         Returns:
-            SizingConfig，`risk_per_trade`、`max_risk_per_trade` 与 R5~R8 阈值取所选档位。
+            SizingConfig，`risk_per_trade`、`max_risk_per_trade`、`target_vol`
+            与 R5~R8 阈值取所选档位。
         """
         tier = self.selected_tier()
         values = self.model_dump(exclude={"tier", "risk_tiers"})
         values.update(
             risk_per_trade=tier.risk_per_trade,
             max_risk_per_trade=self.effective_max_risk_per_trade(),
+            target_vol=tier.target_vol,
             daily_loss_stop=tier.daily_loss_stop,
             daily_loss_halt=tier.daily_loss_halt,
             max_drawdown_halt=tier.max_drawdown_halt,

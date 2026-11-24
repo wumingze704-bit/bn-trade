@@ -2,8 +2,8 @@
 # 字段与 pydantic 模型 trade.research.config.ResearchSizingConfig 一一对应，未知字段报错。
 
 initial_equity: 500 # 可执行口径初始权益 USDT（与实盘资金一致）；信号口径 10000 见 research.yaml equity
-mode: fixed_risk # fixed_fraction | fixed_risk
-position_frac: 0.08 # 每仓保证金上限 = 权益 × 8%（fixed_risk 下为名义价值上限）
+mode: fixed_risk # fixed_fraction | fixed_risk（模式 A 的单仓名义口径）
+position_frac: 0.08 # 每仓保证金上限 = 权益 × 8%
 leverage: 5
 max_positions: 10 # 0.08 × 10 = 0.80 ≤ 0.95
 base: equity # 按当前权益复利
@@ -16,6 +16,15 @@ max_consecutive_losses: 6
 consecutive_loss_pause_min: 120 # 连续止损后暂停开仓分钟数
 liq_cap: 0.005 # 单币名义 ≤ 0.5% × 该币 24 小时成交额 / 24
 maint_margin_rate: 0.01 # 维持保证金率（保守值）
+
+# 仓位模式与中性策略调整（docs/13 §2、§3）：网格参数里的 sizing_mode 覆盖本默认值。
+sizing_mode: fixed_risk # fixed_risk（模式 A）| vol_target（模式 B）
+target_vol: 0.20 # 模式 B 的组合事前年化波动目标；with_tier() 用选中档位的值覆盖
+vol_lookback_days: 30 # 模式 B 权重用过去 30 天日收益标准差
+cov_lookback_days: 60 # 组合波动用过去 60 天日收益协方差
+beta_lookback_days: 60 # β = 过去 60 天日收益对 BTCUSDT 日收益的回归系数
+beta_abs_max: 0.10 # 中性策略组合事前 |β| ≤ 0.10
+ls_ratio_range: [0.5, 2.0] # 中性策略多头总名义 ÷ 空头总名义
 
 # 风险档位（1 号第二部分第 3 条）：研究与达标判定用 standard；冻结时在三档中选实盘档位。
 tier: standard

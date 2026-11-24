@@ -63,14 +63,27 @@ class SizingConfig(BaseModel):
     consecutive_loss_pause_min: int = Field(default=120, ge=1, le=1440)
     liq_cap: float = Field(gt=0.0)
     maint_margin_rate: float = Field(ge=0.0, lt=1.0)
+    # 仓位模式 A / B 与中性策略的 β 调整参数（13 §2、§3）；旧配置缺省时保持模式 A。
+    sizing_mode: str = Field(default="fixed_risk", pattern=r"^(fixed_risk|vol_target)$")
+    target_vol: float = Field(default=0.20, gt=0.0, le=2.0)
+    vol_lookback_days: int = Field(default=30, ge=5, le=120)
+    cov_lookback_days: int = Field(default=60, ge=20, le=365)
+    beta_lookback_days: int = Field(default=60, ge=20, le=365)
+    beta_abs_max: float = Field(default=0.10, gt=0.0, le=1.0)
+    ls_ratio_range: tuple[float, float] = (0.5, 2.0)
 
     @model_validator(mode="after")
     def _check_invariants(self) -> SizingConfig:
-        """仓位内部校验（06 §5.4 校验 1、4）。"""
+        """仓位内部校验（06 §5.4 校验 1、4；13 §3 的多空名义比区间）。"""
         if self.position_frac * self.max_positions > 0.95:
             raise ValueError("position_frac × max_positions 不得超过 0.95（06 §5.4 校验 1）")
         if self.daily_loss_stop >= self.daily_loss_halt:
             raise ValueError("daily_loss_stop 必须小于 daily_loss_halt（06 §5.4 校验 4）")
+        ratio_min, ratio_max = self.ls_ratio_range
+        if not (0.0 < ratio_min <= 1.0 <= ratio_max):
+            raise ValueError(
+                f"ls_ratio_range 必须满足 0 < 下限 ≤ 1 ≤ 上限，当前 {self.ls_ratio_range}（13 §3）"
+            )
         return self
 
 
@@ -230,6 +243,51 @@ def loss_rate(
     return sl + slip_stop + half_spread + 2.0 * fee_taker
 
 
+def size_from_notional(
+    *,
+    notional: float,
+    entry_price: float,
+    step_size: float,
+    min_notional: float,
+) -> tuple[float, str]:
+    """按 `stepSize` 向下取整并判定仓位是否可接受（06 §5.3）。
+
+    模式 B（`vol_target`）在组合层直接得到目标名义价值，需要在同一条取整规则下判断
+    是否低于最小下单额或取整损失过大；模式 A 的 `calc_notional` 使用同一实现。
+
+    Args:
+        notional: 目标名义价值，USDT。
+        entry_price: 成交价。
+        step_size: 数量步长（exchangeInfo）。
+        min_notional: 最小下单额（exchangeInfo）。
+
+    Returns:
+        (数量, 状态)；状态为 `accepted` / `below_min_notional` / `step_rounding`。
+
+    Raises:
+        ValueError: 价格或步长非正。
+    """
+    if entry_price <= 0.0 or step_size <= 0.0:
+        raise ValueError(f"非法交易规则：entry_price={entry_price}, step_size={step_size}")
+    qty, status = _round_qty_status(notional, entry_price, step_size, min_notional)
+    return qty, _STATUS_TO_STR[int(status)]
+
+
+def _round_qty_status(
+    notional: float, entry_price: float, step_size: float, min_notional: float
+) -> tuple[float, int]:
+    """按 stepSize 向下取整并返回 (数量, 状态编码)（06 §5.3）。"""
+    qty = math.floor(notional / entry_price / step_size + 1e-9) * step_size
+    qty_price = qty * entry_price
+    if qty_price < min_notional * 1.1:
+        status = _STATUS_BELOW_MIN_NOTIONAL
+    elif qty_price < 0.9 * notional:
+        status = _STATUS_STEP_ROUNDING
+    else:
+        status = _STATUS_OK
+    return qty, status
+
+
 def validate_sizing(
     cfg: SizingConfig,
     *,
@@ -296,14 +354,6 @@ def _calc_notional_py(
         notional = margin_amount
         capped = _CAP_MARGIN
 
-    qty = math.floor(notional / entry_price / step_size + 1e-9) * step_size
-    qty_price = qty * entry_price
-    if qty_price < min_notional * 1.1:
-        status = _STATUS_BELOW_MIN_NOTIONAL
-    elif qty_price < 0.9 * notional:
-        status = _STATUS_STEP_ROUNDING
-    else:
-        status = _STATUS_OK
-
+    qty, status = _round_qty_status(notional, entry_price, step_size, min_notional)
     margin = notional / leverage
     return notional, qty, margin, capped, status, notional_raw

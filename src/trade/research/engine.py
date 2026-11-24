@@ -108,6 +108,7 @@ class Segment:
     end_ms: int
     strategy: Strategy
     label: str = ""
+    sizing_mode: str = "fixed_risk"
 
 
 @dataclass
@@ -133,6 +134,9 @@ class RunResult:
     mark_fallback: int = 0
     segments: list[str] = field(default_factory=list)
     params: dict[str, float] = field(default_factory=dict)
+    # BTCUSDT 日线（β 与 alpha 夏普的基准，docs/13 §7）
+    benchmark_ts: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    benchmark_close: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
     def daily_returns(self) -> pd.Series:
         """UTC 日收益（自然日补齐，空仓日收益 0，docs/13 §7）。"""
@@ -181,6 +185,7 @@ class Engine:
         risk_limits: RiskLimits,
         options: ScenarioOptions | None = None,
         seed: int = 42,
+        sizing_mode: str = "fixed_risk",
     ) -> None:
         self.market = market
         self.strategy = strategy
@@ -191,13 +196,22 @@ class Engine:
         self.risk_limits = risk_limits
         self.options = options or ScenarioOptions()
         self.seed = seed
+        self.sizing_mode = sizing_mode
 
     def run(self, start_ms: int, end_ms: int) -> RunResult:
         """单策略连续运行 `[start_ms, end_ms)`。"""
         if self.strategy is None:
             raise ValueError("Engine.run 需要 strategy；多段路径请用 run_path")
         return self.run_path(
-            [Segment(start_ms=int(start_ms), end_ms=int(end_ms), strategy=self.strategy)], end_ms
+            [
+                Segment(
+                    start_ms=int(start_ms),
+                    end_ms=int(end_ms),
+                    strategy=self.strategy,
+                    sizing_mode=self.sizing_mode,
+                )
+            ],
+            end_ms,
         )
 
     def run_path(self, segments: list[Segment] | tuple[Segment, ...], end_ms: int) -> RunResult:
@@ -227,6 +241,7 @@ class Engine:
             while index + 1 < len(ordered) and ts >= ordered[index].end_ms:
                 index += 1
             self.strategy = ordered[index].strategy
+            self.sizing_mode = ordered[index].sizing_mode
             if not labels or labels[-1] != ordered[index].label:
                 labels.append(ordered[index].label)
             # 1) 资金费（last_funding_ts < calc_time <= ts）
@@ -250,6 +265,7 @@ class Engine:
             for position in list(self.positions.values()):
                 self._close(position, last_ts, "end")
             self.equity[-1] = self._mark_at(last_ts)
+        benchmark_ts, benchmark_close = self._benchmark_arrays(end_ms)
         return RunResult(
             trades=self.trades,
             equity_ts=np.asarray(self.equity_ts, dtype="int64"),
@@ -269,6 +285,23 @@ class Engine:
             funding_missing=self.funding_missing,
             mark_fallback=self.mark_fallback,
             segments=labels,
+            benchmark_ts=benchmark_ts,
+            benchmark_close=benchmark_close,
+        )
+
+    def _benchmark_arrays(self, end_ms: int) -> tuple[np.ndarray, np.ndarray]:
+        """BTCUSDT 日线（`open_time < end_ms`），作为 β 与 alpha 夏普的基准（docs/13 §7）。
+
+        Raises:
+            ValueError: 研究数据缺少 BTCUSDT 日线（红线 12：不得静默跳过基准）。
+        """
+        bars = self.market.daily.get("BTCUSDT")
+        if bars is None:
+            raise ValueError("研究数据缺少 BTCUSDT 日线，无法计算 β 与 alpha 夏普（红线 12）")
+        mask = bars.open_time < end_ms
+        return (
+            np.asarray(bars.open_time[mask], dtype=np.int64),
+            np.asarray(bars.close[mask], dtype="float64"),
         )
 
     def _reset_state(self, initial_equity: float) -> None:
@@ -620,6 +653,7 @@ class Engine:
             fee_taker=self.fee_taker,
             blocked=blocked,
             held=held,
+            sizing_mode=self.sizing_mode,
         )
         self.dropped += stats.dropped
         self.attempted += stats.attempted

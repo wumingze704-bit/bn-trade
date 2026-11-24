@@ -9,6 +9,7 @@ from trade.common.sizing import (
     calc_notional,
     equity_floor_hit,
     loss_rate,
+    size_from_notional,
     validate_sizing,
 )
 
@@ -202,3 +203,44 @@ def test_fixed_fraction每仓上限行为不变():
     )
     assert r.notional == pytest.approx(100.0)
     assert r.capped_by is None
+
+
+def test_多空名义比区间必须包含1():
+    with pytest.raises(ValueError):
+        _cfg(ls_ratio_range=(2.0, 0.5))
+    assert _cfg(ls_ratio_range=(0.3, 3.0)).ls_ratio_range == (0.3, 3.0)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"min_notional": 20.0},
+        {"entry_price": 6.0, "step_size": 1.0, "min_notional": 2.0},
+    ],
+)
+def test_size_from_notional与calc_notional状态一致(overrides):
+    """模式 B 直接给目标名义时，取整与状态判定必须与 calc_notional 同一实现（06 §5.3）。"""
+    params = dict(entry_price=100.0, step_size=0.01, min_notional=5.0)
+    params.update(overrides)
+    result = _calc(_cfg(), **params)
+    qty, status = size_from_notional(
+        notional=result.notional,
+        entry_price=params["entry_price"],
+        step_size=params["step_size"],
+        min_notional=params["min_notional"],
+    )
+    assert qty == pytest.approx(result.qty, rel=1e-12)
+    assert status == result.status
+
+
+def test_新配置字段默认保持模式A():
+    """未写新字段的旧配置仍按模式 A 运行（默认值不改变旧行为）。"""
+    cfg = _cfg()
+    assert cfg.sizing_mode == "fixed_risk"
+    assert cfg.target_vol == pytest.approx(0.20)
+    assert cfg.vol_lookback_days == 30
+    assert cfg.cov_lookback_days == 60
+    assert cfg.beta_lookback_days == 60
+    assert cfg.beta_abs_max == pytest.approx(0.10)
+    assert cfg.ls_ratio_range == (0.5, 2.0)

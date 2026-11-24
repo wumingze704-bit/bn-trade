@@ -1,4 +1,4 @@
-"""研究指标：夏普、回撤、月度、bootstrap 与 Deflated Sharpe（docs/13 §7）。"""
+"""研究指标：夏普、实现 β、alpha 夏普、回撤、月度、bootstrap 与 Deflated Sharpe（docs/13 §7）。"""
 
 from __future__ import annotations
 
@@ -108,6 +108,47 @@ def annualized_sharpe(returns: pd.Series) -> float:
     return float(returns.mean() / std * np.sqrt(365)) if std > 0.0 else 0.0
 
 
+def benchmark_daily_returns(result: RunResult) -> pd.Series:
+    """BTCUSDT 日收益（与结果同一天然日口径，docs/13 §7）。
+
+    Raises:
+        ValueError: 结果里没有 BTCUSDT 日线（红线 12：β 与 alpha 夏普不得静默跳过）。
+    """
+    if result.benchmark_ts.size < 2:
+        raise ValueError("结果缺少 BTCUSDT 日线，无法计算实现 β 与 alpha 夏普（红线 12）")
+    index = pd.to_datetime(result.benchmark_ts, unit="ms", utc=True)
+    series = pd.Series(result.benchmark_close, index=index)
+    return series.pct_change().dropna()
+
+
+def realized_beta(returns: pd.Series, benchmark: pd.Series) -> float:
+    """日收益对 BTCUSDT 日收益的实现 β = cov(r, b) ÷ var(b)（docs/13 §7）。
+
+    BTC 日收益方差为 0（例如测试用常数价格）时无法定义 β，返回 0.0。
+    """
+    frame = pd.concat(
+        [returns.rename("strategy"), benchmark.rename("benchmark")], axis=1, join="inner"
+    ).dropna()
+    if frame.shape[0] < 2:
+        return 0.0
+    variance = float(frame["benchmark"].var(ddof=1))
+    if variance <= 0.0:
+        return 0.0
+    return float(frame["strategy"].cov(frame["benchmark"]) / variance)
+
+
+def alpha_sharpe(returns: pd.Series, benchmark: pd.Series) -> float:
+    """剔除 BTC 收益后的年化夏普：超额收益 = 日收益 − β × BTC 日收益（docs/13 §7）。"""
+    frame = pd.concat(
+        [returns.rename("strategy"), benchmark.rename("benchmark")], axis=1, join="inner"
+    ).dropna()
+    if frame.shape[0] < 2:
+        return annualized_sharpe(returns)
+    beta = realized_beta(frame["strategy"], frame["benchmark"])
+    excess = frame["strategy"] - beta * frame["benchmark"]
+    return annualized_sharpe(excess)
+
+
 def trades_between(trades: list[Trade], start_ms: int, end_ms: int) -> int:
     """[start_ms, end_ms) 内开仓的交易数。"""
     return sum(1 for trade in trades if start_ms <= trade.entry_ts < end_ms)
@@ -120,6 +161,8 @@ def summarize(
     returns = result.daily_returns()
     equity = daily_equity(result)
     annualized = annualized_sharpe(returns)
+    benchmark = benchmark_daily_returns(result)
+    beta = realized_beta(returns, benchmark)
     monthly = monthly_returns(equity)
     total_costs = sum(trade.fees for trade in result.trades)
     gross = sum(trade.gross_pnl for trade in result.trades)
@@ -131,6 +174,8 @@ def summarize(
     return {
         "annualized_sharpe": annualized,
         "daily_sharpe": result.daily_sharpe(),
+        "realized_beta": beta,
+        "alpha_sharpe": alpha_sharpe(returns, benchmark),
         "max_drawdown": max_drawdown(equity),
         "monthly_returns": {str(index.date()): float(value) for index, value in monthly.items()},
         "loss_months": int((monthly < 0.0).sum()),

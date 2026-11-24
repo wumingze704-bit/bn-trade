@@ -357,3 +357,34 @@ tmux 会话 `trade` 只有一个空闲 bash）：
   本地到 GitHub 的推送仍未恢复（`git pull` 报 Empty reply），提交暂存在本地 develop。
 - 测试改动（`review_log.md` 已逐条说明）：`test_engine.py` 的成交时点断言与止损用例的标记价格数据、`test_view.py` 的资金费用例
   改用 `funding_missing`；没有放宽任何容差、没有跳过任何测试。
+
+
+## 2026-11-24 迁移 M5：仓位模式 B 与 β 中性的取舍（0 号调度第六部分 M5）
+
+- 参数位置：`sizing_mode`、`target_vol`、`vol_lookback_days`、`cov_lookback_days`、`beta_lookback_days`、
+  `beta_abs_max`、`ls_ratio_range` 加进共享的 `trade.common.sizing.SizingConfig`（带默认值），而不是另建研究专用模型：
+  组合层由研究、影子盘、实盘共用（红线 4），实盘路径读同一份模型；旧配置（`configs/sizing.yaml`）未写这些字段时
+  按默认值保持模式 A，行为不变。`ResearchSizingConfig.with_tier()` 用选中档位的 `target_vol` 覆盖默认值。
+- 模式选择：`sizing_mode` 是网格参数维度。`run_param` 从 `params["sizing_mode"]` 取模式，`build_segments` 把它写进
+  `Segment`；同一组其余参数配 A、B 两种模式即两组参数、两次试验。`scripts/portfolio_backtest.py` 在网格参数未写明时
+  用 `configs/sizing_research.yaml` 的 `sizing_mode` 补齐（结果记录里始终带明确的模式）。
+- 模式 B 权重只用 `1/σ`（过去 30 天日收益标准差），策略给出的 `Target.weight` 不参与，避免与策略自身的波动加权重复；
+  防灾止损固定 `execution.stop_max`，策略的 `sl` 只做合法性校验，不参与名义计算。
+- 日线视图：新增 `View.daily_returns(symbol, days)`，只取 `open_time + 1d ≤ now_ms` 的日线（红线 1）；模式 B 的权重的
+  30 天波动、60 天协方差与 β 的 60 天回归都用它。模式 B 缺 30/60 天日线的币剔除并计入 `vol_missing`；β 样本不足 30 天
+  或 BTC 日收益方差为 0 时取 1.0 并计入 `beta_default`（1 号第二部分第 3 条的规则）。
+- β 调整顺序：先按 β 名义对齐两边使事前 β 为 0；再按 `ls_ratio_range` 缩小名义较大的一边；最后若 |β| 仍超
+  `beta_abs_max × 权益` 则两边等比缩小（保持多空比）。三步都用比例缩放，保证三个约束同时成立。
+- 删除 `portfolio.neutral_max_gap`：中性平衡改为由 β 与多空名义比定义，旧字段不再读取，避免留下死配置
+  （同步 `configs/research.yaml`、`PortfolioConfig` 与测试 fixture）。
+- 指标与达标项：`RunResult` 保存 BTCUSDT 日线（`benchmark_ts` / `benchmark_close`），`metrics.summarize` 计算
+  `realized_beta`（cov(r, b) ÷ var(b)，共同交易日对齐）与 `alpha_sharpe`（剔除 β × BTC 日收益后的年化夏普）；BTC 日收益
+  方差为 0 时 β 记 0；结果缺 BTC 日线时抛异常（红线 12）。达标项 j 只在 `exposure=neutral` 时加入 `checks`
+  （`beta_abs_le_030`、`alpha_sharpe_ge_08`）。
+- 最小规模运行：新增 `--smoke-sizing-mode {fixed_risk,vol_target}`，模式 A、B 各跑一次；仍只写
+  `artifacts/reports/smoke/`，不写 `EXPERIMENTS.log`。
+- 测试：新增 `tests/research/test_metrics.py`（β、alpha 夏普与 j 款）、`test_portfolio.py` 的模式 B 手算 / 单仓上限 /
+  β 中性 / β 样本不足、`test_credibility.py` 的 `test_h5_引擎按段使用模式B` 与 `test_h6_中性策略的β调整在引擎中生效`、
+  `test_config.py` 的新配置项与范围校验、`tests/common/test_sizing.py` 的 `size_from_notional` 与 `calc_notional` 状态一致。
+  没有修改或跳过任何既有断言。
+
