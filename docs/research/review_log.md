@@ -208,3 +208,39 @@
 - 质量命令：`ruff format --check .`（375 files）、`ruff check .`、`mypy --strict`（56 files）、`mypy dashboard`（8 files）通过；`pytest -q` = `1 failed, 862 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。
 - 结论：M7 全部符合；下一步按 R3 → R1 → R2 → R4 → R5 → R6~R10 重跑。
 
+## 2026-11-24 16:25 UTC 会话级一致性检查（0 号调度第五部分第 1 条）
+
+- 总账：`docs/research/ledger.yaml` 的 `trials_used = 65`；Σ rounds[].trials = 0；Σ rounds[].void.trials =
+  12+6+8+6+4+9+6+6+4+4 = 65；冻结仓位选择的试验 0（`qualified_pool` 为空）→ 0 + 65 + 0 = 65 = `trials_used` **符合**。
+- 服务器 `artifacts/reports/EXPERIMENTS.log`：70 条记录，`kind=tuning` 65 条（另有 5 条历史记录无 `kind` 字段）；
+  按轮次 R1 12、R2 6、R3 8、R4 6、R5 4、R6 9、R7 6、R8 6、R9 4、R10 4 → 与 `void.trials` 逐轮一致 **符合**。
+- 候选与窗口：`candidates` 为空，三个窗口均 `unused`、`candidate: null` → 不存在一个窗口对应两个候选 **符合**。
+- 服务器进程：无 `trade-runner@*` 实例；`trade-dashboard` 与 `trade-watchdog.timer` 为 active；`ops` 全为空 **符合**。
+- 状态判断：SETUP_DONE.md 第一行“结论：DONE”；`progress_migration.md` 中 M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷
+  → 按 0 号调度第四部分第 8 条 a 款执行 `1_自动研究循环.txt`（R1~R10 待重跑）。
+- 结论：全部符合。
+
+## 2026-11-24 16:35 UTC 执行 1 号前的前置复核（0 号调度第五部分第 2 条）
+
+- 复核对象与最新提交哈希：`src/trade/research/`（`5c3b674`，仅 M7 的 R5 成分选参改动）、
+  `src/trade/strategies/`（`9c82edc`）、`scripts/portfolio_backtest.py`（`5381f16` 之后无改动）、
+  `configs/research.yaml` / `configs/sizing_research.yaml`（`5381f16`）、`tests/research/`（`5c3b674`）、
+  `docs/research/ledger.yaml`（`5c3b674`）。逐项对照 1 号第五部分 B 第 1~14 条与第三部分底线：
+  - B1 数据层：`trade.research.data`/`view` 读 klines_1h、klines_1h_flow、premium_1h、mark_1h、funding；
+    资金费缺失按该币过去 7 天均值或 U(R) 中位数计并计数，无近期结算的币不允许开仓（D5 修复）**符合**。
+  - B4 执行口径：决策在 t、成交在 `open_time = t` 的 K 线开盘，仓位权益截至 `t − 1h` 收盘（D3 修复）**符合**。
+  - B5 止损：`mark_1h` 触发、成交价 = 止损价 + `stop_slip_mult` × 滑点 + 半价差，取价失败抛异常（D4/D6/D7 修复）**符合**。
+  - B10 拼接：`Engine.run_path(segments)` 连续路径、折边界换参数、训练期风控不带入（D1 修复）**符合**。
+  - B11 守卫：`stage.enforce_research` 只允许研究区间 **符合**；B13 逐组落盘与断点续跑、脚本不写 ledger **符合**。
+  - B14 结果可信度测试：`tests/research/test_credibility.py` 的 a~h 与 h5、h6 全部存在并通过
+    （`pytest tests/research tests/strategies -q` → 67 passed）。
+  - 已完成轮次的数字核对（作废前）：`artifacts/reports/R3/grid.json` 的 `full_period_daily_sharpe`
+    0.022298796969279534 与 `rounds/R3.md` 的 0.0223、`full_trades` 150 与 150 笔一致；其余轮次在 2026-11-24
+    各次复核中已核对，本次未发现新的不一致。
+  - 判定实现与 1 号第七部分第 5 条一致：`pipeline._checks`（a~h、j）与 `_executable_checks`（i）逐项存在 **符合**。
+  - 服务器 HEAD `ff117a4` 与本地 `develop` 一致；下一轮运行前重新核对。
+- 复核中发现但尚未影响任何结果的事项（登记为观察项，待 R11/R12 运行前处理）：
+  `pipeline._checks` 的 delay1 条件是固定“delay1 年化夏普 < base”，而 1 号第八部分 R11/R12 的登记口径是
+  “delay1 ≤ base + 0.10”。当前不影响 R1~R10（不适用该例外），R11/R12 开跑前需按登记口径改为可配置。
+- 结论：**符合**（观察项 1 项，不影响本轮执行）。
+

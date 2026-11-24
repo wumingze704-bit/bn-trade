@@ -64,6 +64,16 @@ rounds:
     trials: 0
     result: null
     void: {status: failed, trials: 4, result: "流动性分层动量：拼接夏普 -0.180；最大回撤 29.4%；多头 -25.76、空头 +14.26；见 rounds/R10.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
+  - id: R11
+    family: short_seasoned_listing
+    status: pending
+    trials: 0
+    result: null
+  - id: R12
+    family: alt_short_btc_long
+    status: pending
+    trials: 0
+    result: null
 
 qualified_pool: []
 candidates: []
