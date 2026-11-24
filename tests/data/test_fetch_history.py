@@ -11,10 +11,14 @@ import pytest
 
 from scripts.fetch_history import (
     build_file_index,
+    download_url,
     month_periods,
+    parse_flow_payload,
     parse_funding_payload,
     parse_klines_payload,
+    parse_ohlc_payload,
     research_end_month,
+    verify_flow_open_time,
 )
 
 _HEADER = (
@@ -135,3 +139,79 @@ def test_数据框列顺序不影响结果() -> None:
     frame = parse_klines_payload(_zip_bytes("BTCUSDT-1h-2023-11.csv", csv), "fixture")
     assert frame.loc[0, "close"] == pytest.approx(105.0)
     assert isinstance(frame, pd.DataFrame)
+
+
+def test_文件索引识别三类补充数据类型() -> None:
+    """K 线 1h 文件同时供 1h 与 flow 使用；溢价指数与标记价格各自独立。"""
+    keys = [
+        "data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip",
+        "data/futures/um/monthly/premiumIndexKlines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip",
+        "data/futures/um/monthly/markPriceKlines/ETHUSDT/1h/ETHUSDT-1h-2024-02.zip",
+    ]
+    index = build_file_index(keys)
+    assert index["1h"]["BTCUSDT"] == ["2024-01"]
+    assert index["flow"]["BTCUSDT"] == ["2024-01"]
+    assert index["premium"]["BTCUSDT"] == ["2024-01"]
+    assert index["mark"]["ETHUSDT"] == ["2024-02"]
+    assert "ETHUSDT" not in index["premium"]
+
+
+def test_下载地址区分三类补充数据() -> None:
+    """溢价指数与标记价格目录不同，文件名仍是 `{symbol}-1h-{month}.zip`。"""
+    assert download_url("flow", "BTCUSDT", "2024-01").endswith(
+        "klines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip"
+    )
+    assert download_url("premium", "BTCUSDT", "2024-01").endswith(
+        "premiumIndexKlines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip"
+    )
+    assert download_url("mark", "BTCUSDT", "2024-01").endswith(
+        "markPriceKlines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip"
+    )
+
+
+def test_主动买入成交只保留三列() -> None:
+    """flow 只保留 open_time、taker_buy_volume、taker_buy_quote_volume。"""
+    csv = "\n".join(
+        [
+            _HEADER,
+            "1700000000000,100,110,90,105,1,1700003599999,1000,5,0.5,500,0",
+        ]
+    )
+    frame = parse_flow_payload(_zip_bytes("BTCUSDT-1h-2023-11.csv", csv), "fixture")
+    assert list(frame.columns) == ["open_time", "taker_buy_volume", "taker_buy_quote_volume"]
+    assert frame.loc[0, "open_time"] == 1700000000000
+    assert frame.loc[0, "taker_buy_volume"] == pytest.approx(0.5)
+    assert frame.loc[0, "taker_buy_quote_volume"] == pytest.approx(500.0)
+
+
+def test_溢价指数只保留OHLC() -> None:
+    """premium / mark 只保留 open_time 与 OHLC。"""
+    csv = "\n".join(
+        [
+            _HEADER,
+            "1700000000000,0.001,0.002,0.0,0.0015,0,1700003599999,0,0,0,0,0",
+        ]
+    )
+    frame = parse_ohlc_payload(_zip_bytes("BTCUSDT-1h-2023-11.csv", csv), "fixture")
+    assert list(frame.columns) == ["open_time", "open", "high", "low", "close"]
+    assert frame.loc[0, "close"] == pytest.approx(0.0015)
+
+
+def test_主动买入成交open_time必须与1hK线逐行一致(tmp_path) -> None:
+    """参照文件缺失或不一致时抛出带上下文的异常（docs/13 §1）。"""
+    csv = "\n".join(
+        [
+            _HEADER,
+            "1700000000000,100,110,90,105,1,1700003599999,1000,5,0.5,500,0",
+            "1700003600000,105,115,95,110,2,1700007199999,2000,6,1.0,1000,0",
+        ]
+    )
+    frame = parse_flow_payload(_zip_bytes("BTCUSDT-1h-2023-11.csv", csv), "fixture")
+    reference = tmp_path / "BTCUSDT-1h-2023-11.parquet"
+    pd.DataFrame({"open_time": [1700000000000, 1700003600000]}).to_parquet(reference, index=False)
+    verify_flow_open_time(frame, reference, "fixture")
+    with pytest.raises(ValueError, match="缺少 1h K 线参照文件"):
+        verify_flow_open_time(frame, tmp_path / "missing.parquet", "fixture")
+    pd.DataFrame({"open_time": [1700000000000]}).to_parquet(reference, index=False)
+    with pytest.raises(ValueError, match="不一致"):
+        verify_flow_open_time(frame, reference, "fixture")

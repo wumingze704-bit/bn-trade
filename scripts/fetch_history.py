@@ -1,6 +1,6 @@
-"""历史研究数据下载器：1h/1d K 线与资金费月度 zip → 月度 parquet。
+"""历史研究数据下载器：1h/1d K 线、资金费与三类补充数据的月度 zip → 月度 parquet。
 
-规格：docs/13-研究框架.md §1（研究数据目录与字段）。
+规格：docs/13-研究框架.md §1（研究数据目录与字段）、docs/03-数据与选币.md §2。
 
 - 只在东京服务器运行（AGENTS.md §6 红线 9）；本机只跑 fixture 测试。
 - 币种与各月文件清单来自 S3 ListObjectsV2，不逐月试探 404。
@@ -8,6 +8,9 @@
 - 先写临时文件再改名；已存在且行数一致的文件跳过（断点续传）。
 - 月度 1h/1d 只保留研究需要的列，价格与成交量转 float32，时间戳 int64 毫秒。
 - 资金费统一换算为每小时费率；旧文件缺结算间隔时按相邻结算时刻差推断。
+- 三类补充数据（`flow` / `premium` / `mark`）写入独立目录与独立 manifest；价格数据仍转 float32。
+- `flow` 只保留主动买入成交量与主动买入成交额，并逐行核对 `open_time` 与 `klines_1h`
+  同月文件一致（docs/13 §1）。
 """
 
 from __future__ import annotations
@@ -43,12 +46,24 @@ _S3_PAGE = 1000
 _MS_PER_HOUR = 3_600_000
 _SYMBOL_PREFIX = "data/futures/um/monthly/klines/"
 _KEY_RE = re.compile(
-    r"^data/futures/um/monthly/(?P<kind>klines|fundingRate)/(?P<symbol>[A-Z0-9]+)/"
-    r"(?P<sub>1h|1d)?/?"
-    r"(?P<name>(?P=symbol)-(?P<kind2>1h|1d|fundingRate)-(?P<month>\d{4}-\d{2})\.zip)$"
+    r"^data/futures/um/monthly/(?P<dir>klines|fundingRate|premiumIndexKlines|markPriceKlines)/"
+    r"(?P<symbol>[A-Z0-9]+)/(?:(?P<sub>1h|1d)/)?"
+    r"(?P<name>(?P=symbol)-(?P<kind>1h|1d|fundingRate)-(?P<month>\d{4}-\d{2})\.zip)$"
 )
 KLINE_KEEP = ("open_time", "open", "high", "low", "close", "volume", "quote_volume", "count")
-_DTYPE = {"1h": "klines_1h", "1d": "klines_1d", "funding": "funding"}
+FLOW_KEEP = ("open_time", "taker_buy_volume", "taker_buy_quote_volume")
+OHLC_KEEP = ("open_time", "open", "high", "low", "close")
+
+# 数据类型 → (S3 目录, 子目录, 输出目录, manifest 文件名)；`funding` 无子目录（docs/13 §1）。
+_DATA_TYPES: dict[str, tuple[str, str, str, str]] = {
+    "1h": ("klines", "1h", "klines_1h", "manifest.json"),
+    "1d": ("klines", "1d", "klines_1d", "manifest.json"),
+    "funding": ("fundingRate", "", "funding", "manifest.json"),
+    "flow": ("klines", "1h", "klines_1h_flow", "manifest_flow.json"),
+    "premium": ("premiumIndexKlines", "1h", "premium_1h", "manifest_premium.json"),
+    "mark": ("markPriceKlines", "1h", "mark_1h", "manifest_mark.json"),
+}
+_SUPPLEMENT_TYPES = ("flow", "premium", "mark")
 
 
 class RateLimitError(Exception):
@@ -115,18 +130,18 @@ def _looks_like_data(first_line: str) -> bool:
     return True
 
 
-def parse_klines_payload(payload: bytes, hint: str) -> pd.DataFrame:
-    """解析 1h/1d 月度 zip（兼容有表头 / 无表头、毫秒 / 微秒）。
+def _read_payload_frame(payload: bytes, hint: str) -> pd.DataFrame:
+    """把 K 线类月度 zip（12 列）读成带列名的 DataFrame（兼容表头与毫秒/微秒）。
 
     Args:
         payload: zip 文件字节。
         hint: 出错时写入异常上下文的数据标识。
 
     Returns:
-        `KLINE_KEEP` 列 DataFrame，`open_time` 为 int64 毫秒，数值列 float32。
+        列名规范化的 DataFrame，`open_time` 为 int64 毫秒；`ignore` 列已丢弃。
 
     Raises:
-        ValueError: zip 内没有 CSV，或列数 / 必需列不符。
+        ValueError: zip 内没有 CSV，或列数不符。
     """
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
@@ -146,6 +161,23 @@ def parse_klines_payload(payload: bytes, hint: str) -> pd.DataFrame:
     frame["open_time"] = normalize_timestamp_ms(frame["open_time"]).astype("int64")
     if "ignore" in frame.columns:
         frame = frame.drop(columns="ignore")
+    return frame
+
+
+def parse_klines_payload(payload: bytes, hint: str) -> pd.DataFrame:
+    """解析 1h/1d 月度 zip（兼容有表头 / 无表头、毫秒 / 微秒）。
+
+    Args:
+        payload: zip 文件字节。
+        hint: 出错时写入异常上下文的数据标识。
+
+    Returns:
+        `KLINE_KEEP` 列 DataFrame，`open_time` 为 int64 毫秒，数值列 float32。
+
+    Raises:
+        ValueError: zip 内没有 CSV，或列数 / 必需列不符。
+    """
+    frame = _read_payload_frame(payload, hint)
     missing = [column for column in KLINE_KEEP if column not in frame.columns]
     if missing:
         raise ValueError(f"K 线缺少列：{hint}，缺失 {missing}")
@@ -155,6 +187,78 @@ def parse_klines_payload(payload: bytes, hint: str) -> pd.DataFrame:
             frame[column] = frame[column].astype("float32")
     frame["open_time"] = frame["open_time"].astype("int64")
     return frame.sort_values("open_time").drop_duplicates("open_time", keep="last")
+
+
+def parse_flow_payload(payload: bytes, hint: str) -> pd.DataFrame:
+    """解析主动买入成交月度 zip，只保留三列（docs/13 §1）。
+
+    Args:
+        payload: 1h K 线月度 zip 的字节（与 `klines_1h` 同一批文件）。
+        hint: 出错时写入异常上下文的数据标识。
+
+    Returns:
+        `FLOW_KEEP` 列 DataFrame，`open_time` int64 毫秒，成交量与成交额 float32。
+
+    Raises:
+        ValueError: zip 内没有 CSV，或缺少 `taker_buy_volume` / `taker_buy_quote_volume`。
+    """
+    frame = _read_payload_frame(payload, hint)
+    missing = [column for column in FLOW_KEEP if column not in frame.columns]
+    if missing:
+        raise ValueError(f"主动买入成交缺少列：{hint}，缺失 {missing}")
+    frame = frame[list(FLOW_KEEP)].copy()
+    for column in FLOW_KEEP[1:]:
+        frame[column] = frame[column].astype("float32")
+    frame["open_time"] = frame["open_time"].astype("int64")
+    return frame.sort_values("open_time").drop_duplicates("open_time", keep="last")
+
+
+def parse_ohlc_payload(payload: bytes, hint: str) -> pd.DataFrame:
+    """解析溢价指数 / 标记价格的 1h 月度 zip，只保留 OHLC（docs/13 §1）。
+
+    Args:
+        payload: zip 文件字节。
+        hint: 出错时写入异常上下文的数据标识。
+
+    Returns:
+        `OHLC_KEEP` 列 DataFrame，`open_time` int64 毫秒，价格 float32。
+
+    Raises:
+        ValueError: zip 内没有 CSV，或列数 / 必需列不符。
+    """
+    frame = _read_payload_frame(payload, hint)
+    missing = [column for column in OHLC_KEEP if column not in frame.columns]
+    if missing:
+        raise ValueError(f"价格数据缺少列：{hint}，缺失 {missing}")
+    frame = frame[list(OHLC_KEEP)].copy()
+    for column in OHLC_KEEP[1:]:
+        frame[column] = frame[column].astype("float32")
+    frame["open_time"] = frame["open_time"].astype("int64")
+    return frame.sort_values("open_time").drop_duplicates("open_time", keep="last")
+
+
+def verify_flow_open_time(frame: pd.DataFrame, reference: Path, hint: str) -> None:
+    """核对主动买入成交与 `klines_1h` 同月文件的 `open_time` 逐行一致（docs/13 §1）。
+
+    Args:
+        frame: `parse_flow_payload` 的结果。
+        reference: `data/klines_1h/{symbol}/{YYYY-MM}.parquet`。
+        hint: 出错时写入异常上下文的数据标识。
+
+    Raises:
+        ValueError: 参照文件不存在，或两边的 `open_time` 序列不一致。
+    """
+    if not reference.is_file():
+        raise ValueError(f"缺少 1h K 线参照文件，无法核对主动买入成交：{reference}（{hint}）")
+    expected = (
+        pq.read_table(reference, columns=["open_time"]).to_pandas()["open_time"].to_numpy("int64")
+    )
+    actual = frame["open_time"].to_numpy("int64")
+    if expected.shape != actual.shape or not np.array_equal(expected, actual):
+        raise ValueError(
+            f"主动买入成交 open_time 与 {reference} 不一致：{hint}，"
+            f"行数 {actual.size} vs {expected.size}"
+        )
 
 
 def parse_funding_payload(payload: bytes, hint: str) -> pd.DataFrame:
@@ -231,15 +335,32 @@ def _fill_interval(calc_time: np.ndarray, interval: np.ndarray) -> np.ndarray:
 
 
 def build_file_index(keys: Iterable[str]) -> dict[str, dict[str, list[str]]]:
-    """把 S3 key 列表整理成 `{类型: {symbol: [月份...]}}`。"""
-    index: dict[str, dict[str, list[str]]] = {"1h": {}, "1d": {}, "funding": {}}
+    """把 S3 key 列表整理成 `{类型: {symbol: [月份...]}}`。
+
+    `klines/1h` 的同一批文件同时供 `1h` 与 `flow` 使用（docs/13 §1）。
+    """
+    index: dict[str, dict[str, list[str]]] = {name: {} for name in _DATA_TYPES}
     for key in keys:
         match = _KEY_RE.match(key)
         if match is None:
             continue
-        kind = match.group("kind2")
-        data_type = "funding" if kind == "fundingRate" else str(kind)
-        index[data_type].setdefault(match.group("symbol"), []).append(match.group("month"))
+        directory = match.group("dir")
+        kind = match.group("kind")
+        sub = match.group("sub")
+        if directory == "klines" and kind == "1h" and sub == "1h":
+            data_types = ("1h", "flow")
+        elif directory == "klines" and kind == "1d" and sub == "1d":
+            data_types = ("1d",)
+        elif directory == "fundingRate" and kind == "fundingRate":
+            data_types = ("funding",)
+        elif directory == "premiumIndexKlines" and kind == "1h" and sub == "1h":
+            data_types = ("premium",)
+        elif directory == "markPriceKlines" and kind == "1h" and sub == "1h":
+            data_types = ("mark",)
+        else:
+            continue
+        for data_type in data_types:
+            index[data_type].setdefault(match.group("symbol"), []).append(match.group("month"))
     for mapping in index.values():
         for symbol in mapping:
             mapping[symbol] = sorted(set(mapping[symbol]))
@@ -248,20 +369,22 @@ def build_file_index(keys: Iterable[str]) -> dict[str, dict[str, list[str]]]:
 
 def download_url(data_type: str, symbol: str, month: str) -> str:
     """月度数据 zip 的 data.binance.vision 地址。"""
-    if data_type in {"1h", "1d"}:
+    directory, sub, _, _ = _DATA_TYPES[data_type]
+    if directory == "fundingRate":
         return (
-            f"{VISION_BASE}/data/futures/um/monthly/klines/{symbol}/{data_type}/"
-            f"{symbol}-{data_type}-{month}.zip"
+            f"{VISION_BASE}/data/futures/um/monthly/fundingRate/{symbol}/"
+            f"{symbol}-fundingRate-{month}.zip"
         )
+    # 溢价指数与标记价格的文件名同样是 `{symbol}-1h-{month}.zip`，目录名不同。
     return (
-        f"{VISION_BASE}/data/futures/um/monthly/fundingRate/{symbol}/"
-        f"{symbol}-fundingRate-{month}.zip"
+        f"{VISION_BASE}/data/futures/um/monthly/{directory}/{symbol}/{sub}/"
+        f"{symbol}-{sub}-{month}.zip"
     )
 
 
 def output_path(root: Path, data_type: str, symbol: str, month: str) -> Path:
     """月度 parquet 输出路径（docs/13 §1）。"""
-    return root / _DTYPE[data_type] / symbol / f"{month}.parquet"
+    return root / _DATA_TYPES[data_type][2] / symbol / f"{month}.parquet"
 
 
 def write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
@@ -369,6 +492,17 @@ async def _list_symbols(client: httpx.AsyncClient) -> list[str]:
     return sorted(set(symbols) - stable)
 
 
+def _parse_by_type(payload: bytes, data_type: str, hint: str) -> pd.DataFrame:
+    """按数据类型选择解析函数（docs/13 §1）。"""
+    if data_type == "funding":
+        return parse_funding_payload(payload, hint)
+    if data_type == "flow":
+        return parse_flow_payload(payload, hint)
+    if data_type in ("premium", "mark"):
+        return parse_ohlc_payload(payload, hint)
+    return parse_klines_payload(payload, hint)
+
+
 async def _fetch_task(
     client: httpx.AsyncClient,
     limiter: AdaptiveLimiter,
@@ -395,11 +529,14 @@ async def _fetch_task(
             expected = _parse_checksum(checksum.decode("utf-8", errors="strict"))
             if _sha256(payload) != expected:
                 raise ValueError(f"SHA256 不匹配：{url}")
-            frame = (
-                parse_funding_payload(payload, url)
-                if data_type == "funding"
-                else parse_klines_payload(payload, url)
-            )
+            frame = _parse_by_type(payload, data_type, url)
+            if data_type == "flow":
+                verify_flow_open_time(
+                    frame,
+                    root / _DATA_TYPES["1h"][2] / symbol / f"{month}.parquet",
+                    url,
+                )
+                record["open_time_verified"] = True
             write_parquet_atomic(frame, path)
             time_column = "calc_time" if data_type == "funding" else "open_time"
             record.update(
@@ -430,19 +567,27 @@ def _resolve(root: Path, value: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def _existing_record(
-    out_root: Path, data_type: str, symbol: str, month: str
-) -> dict[str, Any] | None:
-    """从 manifest 读取已存在文件的行数（用于断点续传判断）。"""
-    manifest_path = out_root / "history" / "manifest.json"
-    if not manifest_path.is_file():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-    record = manifest.get("files", {}).get(f"{data_type}/{symbol}/{month}")
-    return record if isinstance(record, dict) else None
+def _load_manifest(path: Path, end_month: str) -> dict[str, Any]:
+    """读取（或初始化）某个数据类型的 manifest（docs/13 §1）。"""
+    payload: dict[str, Any] = {"research_end": end_month, "files": {}}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            payload = loaded
+    payload.setdefault("files", {})
+    payload["research_end"] = end_month
+    return payload
+
+
+def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
+    """原子写 manifest：先写临时文件再改名（断点续跑不产生半截 JSON）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -456,6 +601,10 @@ async def run(args: argparse.Namespace) -> int:
     out_root = _resolve(root, args.out)
     history_dir = out_root / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
+    types = [item.strip() for item in args.types.split(",") if item.strip()]
+    unknown = sorted(set(types) - set(_DATA_TYPES))
+    if unknown:
+        raise SystemExit(f"未知数据类型 {unknown}，可用 {sorted(_DATA_TYPES)}")
 
     limits = httpx.Limits(
         max_connections=args.concurrency * 2, max_keepalive_connections=args.concurrency
@@ -465,47 +614,54 @@ async def run(args: argparse.Namespace) -> int:
     ) as client:
         print("读取 S3 币种与文件清单…")
         symbols = await _list_symbols(client)
-        types = [item.strip() for item in args.types.split(",") if item.strip()]
+        prefixes = sorted(
+            {f"data/futures/um/monthly/{_DATA_TYPES[data_type][0]}/" for data_type in types}
+        )
         keys: list[str] = []
-        for data_type in types:
-            prefix = (
-                "data/futures/um/monthly/fundingRate/"
-                if data_type == "funding"
-                else "data/futures/um/monthly/klines/"
-            )
+        for prefix in prefixes:
             keys.extend(await _list_keys(client, prefix))
         index = build_file_index(keys)
-        (history_dir / "symbols.json").write_text(
-            json.dumps({"symbols": symbols, "index": index}, indent=2, sort_keys=True) + "\n",
+        symbols_path = history_dir / "symbols.json"
+        merged_index: dict[str, Any] = {}
+        if symbols_path.is_file():
+            try:
+                existing = json.loads(symbols_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                existing = {}
+            if isinstance(existing, dict) and isinstance(existing.get("index"), dict):
+                merged_index = existing["index"]
+        for data_type, mapping in index.items():
+            if mapping:
+                merged_index[data_type] = mapping
+        symbols_path.write_text(
+            json.dumps({"symbols": symbols, "index": merged_index}, indent=2, sort_keys=True)
+            + "\n",
             encoding="utf-8",
         )
         allowed = set(symbols[: args.symbol_limit]) if args.symbol_limit else set(symbols)
         if args.symbols:
             allowed &= {item.strip() for item in args.symbols.split(",") if item.strip()}
+        manifests = {
+            name: _load_manifest(history_dir / name, end_month)
+            for name in sorted({_DATA_TYPES[data_type][3] for data_type in types})
+        }
         tasks: list[tuple[str, str, str]] = []
         for data_type in types:
+            manifest = manifests[_DATA_TYPES[data_type][3]]
             for symbol, available in index.get(data_type, {}).items():
                 if symbol not in allowed:
                     continue
                 for month in available:
                     if month not in month_set:
                         continue
-                    record = _existing_record(out_root, data_type, symbol, month)
-                    if record is not None and parquet_rows(
+                    record = manifest["files"].get(f"{data_type}/{symbol}/{month}")
+                    if isinstance(record, dict) and parquet_rows(
                         output_path(out_root, data_type, symbol, month)
                     ) == record.get("rows"):
                         continue
                     tasks.append((data_type, symbol, month))
         print(f"待下载 {len(tasks)} 个文件（{args.start}~{args.end}，类型 {types}）")
 
-        manifest_path = history_dir / "manifest.json"
-        manifest: dict[str, Any] = {"research_end": end_month, "files": {}}
-        if manifest_path.is_file():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                manifest = {"research_end": end_month, "files": {}}
-            manifest.setdefault("files", {})
         limiter = AdaptiveLimiter(args.concurrency)
         started = time.monotonic()
         done = 0
@@ -518,29 +674,35 @@ async def run(args: argparse.Namespace) -> int:
                     for data_type, symbol, month in chunk
                 ]
             )
+            touched: set[str] = set()
             for (data_type, symbol, month), record in zip(chunk, results, strict=True):
-                manifest["files"][f"{data_type}/{symbol}/{month}"] = record
+                manifest_name = _DATA_TYPES[data_type][3]
+                manifest = manifests[manifest_name]
+                files = manifest["files"]
+                files[f"{data_type}/{symbol}/{month}"] = record
+                manifest["done"] = len(files)
+                manifest["total"] = len(files)
+                touched.add(manifest_name)
                 done += 1
                 if record["status"] == "failed":
                     failed += 1
             elapsed = time.monotonic() - started
             rate = done / elapsed if elapsed > 0 else 0.0
             print(f"进度 {done}/{len(tasks)}，失败 {failed}，{rate:.1f} 文件/秒")
-            manifest["updated_at"] = datetime.now(UTC).isoformat()
-            manifest["done"] = done
-            manifest["total"] = len(tasks)
-            manifest_path.write_text(
-                json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+            for manifest_name in sorted(touched):
+                manifests[manifest_name]["updated_at"] = datetime.now(UTC).isoformat()
+                _write_manifest(history_dir / manifest_name, manifests[manifest_name])
+        for manifest_name, manifest in manifests.items():
+            manifest["finished_at"] = datetime.now(UTC).isoformat()
+            _write_manifest(history_dir / manifest_name, manifest)
+            statuses = [entry.get("status") for entry in manifest["files"].values()]
+            ok = statuses.count("ok")
+            missing = statuses.count("missing")
+            total = max(1, len(statuses))
+            print(
+                f"{manifest_name}：ok={ok} missing={missing} "
+                f"failed={statuses.count('failed')} 完成率={ok / total:.1%}"
             )
-        manifest["finished_at"] = datetime.now(UTC).isoformat()
-        manifest_path.write_text(
-            json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        statuses = [entry.get("status") for entry in manifest["files"].values()]
-        missing = statuses.count("missing")
-        ok = statuses.count("ok")
-        total = max(1, len(statuses))
-        print(f"完成：ok={ok} missing={missing} failed={failed} 完成率={ok / total:.1%}")
     return 1 if failed else 0
 
 
