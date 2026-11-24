@@ -32,5 +32,7 @@ display:
 control:
   enabled: true # false 时整个看板只读
   pin_env: DASHBOARD_CONTROL_PIN
+  pin_file: ./.dashboard_pin # 服务直接调用 python 时从这里读 PIN（权限 600，不进入 git）
   max_pin_failures: 5
   lock_minutes: 15
+

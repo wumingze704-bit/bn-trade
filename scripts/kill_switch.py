@@ -33,19 +33,45 @@ def _resolve(value: str) -> Path:
     return path if path.is_absolute() else _ROOT / path
 
 
-def _stop_unit(candidate: str, mode: str) -> None:
-    """停止 systemd 实例（本机无 systemd 时忽略；不影响停机标志）。"""
-    unit = unit_name(candidate, mode)
+def _run_systemctl(args: list[str]) -> tuple[int, str]:
+    """执行 systemctl（失败返回非 0，不抛异常）。"""
     try:
-        subprocess.run(
-            ["systemctl", "stop", f"{unit}.service"],
-            check=False,
-            capture_output=True,
-            timeout=30,
-        )
-        print(f"[OK] 已请求停止 {unit}")
-    except (OSError, subprocess.SubprocessError) as error:
-        print(f"[WARN] 停止 {unit} 失败（请手动检查）：{error}")
+        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return result.returncode, (result.stdout or "").strip()
+
+
+def _unit_inactive(unit: str) -> bool:
+    """确认实例已停止：`systemctl is-active` 返回 inactive / failed / unknown。"""
+    code, out = _run_systemctl(["systemctl", "is-active", f"{unit}.service"])
+    if code != 0 and not out:
+        return False
+    return out in {"inactive", "failed", "unknown"}
+
+
+def _stop_unit(candidate: str, mode: str) -> bool:
+    """停止 systemd 实例并确认已停止；返回是否确认停止。
+
+    先以当前用户执行，失败时用只读 sudo 规则之外的 `sudo -n systemctl stop` 重试；
+    两次都无法确认停止时返回 False（此时 kill_switch 不得动账户）。
+    """
+    unit = unit_name(candidate, mode)
+    for command in (
+        ["systemctl", "stop", f"{unit}.service"],
+        ["sudo", "-n", "systemctl", "stop", f"{unit}.service"],
+    ):
+        _run_systemctl(command)
+        if _unit_inactive(unit):
+            print(f"[OK] 已确认停止 {unit}")
+            return True
+    print(f"[FAIL] 无法确认 {unit} 已停止")
+    return False
+
+
+async def _stop_unit_async(candidate: str, mode: str) -> bool:
+    """在线程中执行阻塞的停止操作（kill_switch 需要异步回调）。"""
+    return await asyncio.to_thread(_stop_unit, candidate, mode)
 
 
 async def _main(args: argparse.Namespace) -> int:
@@ -80,13 +106,14 @@ async def _main(args: argparse.Namespace) -> int:
             mode=args.mode,
             step_sizes=step_sizes,
             reason=args.reason,
+            stop_runner=lambda: _stop_unit_async(args.candidate, args.mode),
+            heartbeat_path=db_path.parent / f"{args.candidate}-{args.mode}.heartbeat",
         )
         print(
             f"[OK] 停机完成：撤单 {summary['cancelled_orders']}、"
             f"撤条件单 {summary['cancelled_algos']}、平仓 {len(summary['closed'])}、"
             f"剩余 {len(summary['remaining'])}"
         )
-        _stop_unit(args.candidate, args.mode)
         return 0
     except (CredentialError, KillSwitchError) as error:
         print(f"[FAIL] {error}")

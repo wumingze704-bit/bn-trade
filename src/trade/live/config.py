@@ -95,6 +95,10 @@ class EngineConfig(BaseModel):
     klines_1d: Path = Path("./data/klines_1d")
     funding: Path = Path("./data/funding")
     universe_hist: Path = Path("./data/universe_hist")
+    # 实盘密钥环境变量文件（只检查权限，不读取内容；docs/07 §5）
+    env_file: Path = Path("./.env.live")
+    # 候选用到 premium_1h 时开启溢价指数回补（每币每小时多一次 REST 请求）
+    with_premium: bool = False
     # 历史回补长度（天）：1h 取策略最长回看 + 缓冲；1d 取 30 天成交额中位数的 2 倍以上
     history_days_hourly: int = Field(default=45, ge=3, le=400)
     history_days_daily: int = Field(default=120, ge=35, le=800)

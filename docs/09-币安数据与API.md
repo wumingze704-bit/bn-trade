@@ -42,6 +42,8 @@
 | `GET /fapi/v1/ticker/bookTicker`         | 最优买卖价（WS 不可用时兜底）                                                  | 兜底                           |
 | `GET /fapi/v1/klines?interval=1d`        | 日线 K 线，月度再平衡计算上线时长与 30 天日成交额中位数（07 §3.5、03 §4.2）    | 每月 1 日再平衡时              |
 | `GET /fapi/v1/premiumIndex`              | 标记价格、下次资金费时间                                                       | 每 5 分钟                      |
+| `GET /fapi/v1/markPriceKlines`           | 标记价格 1h K 线（止损触发与止损基准，07 §8、13 §4）                           | 启动回补、每整点               |
+| `GET /fapi/v1/premiumIndexKlines`        | 溢价指数 1h K 线（候选使用 `premium_1h` 时，`engine.with_premium`）            | 启动回补、每整点               |
 | `GET /fapi/v1/fundingRate`               | 历史资金费率                                                                   | 日报核算                       |
 
 月度再平衡需要对全部 USDT 永续各拉一次日线（约数百次请求），权重以最新文档为准、待 P5 用 `api_smoke.py` 实测；按权重分批、跨多分钟完成，避开分钟收盘决策窗口（07 §4）。

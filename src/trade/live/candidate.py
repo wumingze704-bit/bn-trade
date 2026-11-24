@@ -59,6 +59,8 @@ class CandidateSpec:
     params: dict[str, Any]
     frozen: tuple[FrozenFile, ...]
     document_path: Path
+    sizing_mode: str | None = None
+    risk_tier: str | None = None
 
 
 def read_conclusion(path: Path) -> str:
@@ -166,6 +168,17 @@ def parse_candidate_document(path: Path, candidate_id: str) -> CandidateSpec:
     frozen_raw = values.get("frozen", [])
     if not isinstance(frozen_raw, list) or not frozen_raw:
         raise CandidateError(f"候选 {candidate_id} 缺少冻结文件清单（frozen）")
+    sizing_mode = values.get("sizing_mode")
+    if sizing_mode is not None and str(sizing_mode) not in {"fixed_risk", "vol_target"}:
+        raise CandidateError(f"候选 {candidate_id} 的 sizing_mode 非法：{sizing_mode}")
+    risk_tier = values.get("risk_tier")
+    if risk_tier is not None and str(risk_tier) not in {
+        "standard",
+        "progressive",
+        "aggressive",
+    }:
+        raise CandidateError(f"候选 {candidate_id} 的 risk_tier 非法：{risk_tier}")
+
     frozen: list[FrozenFile] = []
     for item in frozen_raw:
         if not isinstance(item, dict) or "path" not in item or "sha256" not in item:
@@ -184,6 +197,8 @@ def parse_candidate_document(path: Path, candidate_id: str) -> CandidateSpec:
         params=dict(params),
         frozen=tuple(frozen),
         document_path=path,
+        sizing_mode=str(sizing_mode) if sizing_mode is not None else None,
+        risk_tier=str(risk_tier) if risk_tier is not None else None,
     )
 
 

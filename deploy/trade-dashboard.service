@@ -8,15 +8,18 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/trade
-Environment=DASHBOARD_CONTROL_PIN_FILE=/home/ubuntu/trade/.dashboard_pin
-ExecStart=/bin/bash -lc 'if [ -f "$DASHBOARD_CONTROL_PIN_FILE" ]; then export DASHBOARD_CONTROL_PIN="$(cat "$DASHBOARD_CONTROL_PIN_FILE")"; fi; exec /home/ubuntu/trade-venv/bin/python -m trade.dashboard --config configs/dashboard.yaml'
-Restart=always
+Environment=PYTHONDONTWRITEBYTECODE=1
+# 控制 PIN 由 configs/dashboard.yaml 的 control.pin_file 读取（不经过登录 shell）
+ExecStart=/home/ubuntu/trade-venv/bin/python -m trade.dashboard --config configs/dashboard.yaml
+Restart=on-failure
 RestartSec=5
 MemoryMax=300M
 NoNewPrivileges=true
 PrivateTmp=true
-StandardOutput=journal
-StandardError=journal
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/trade/artifacts/live
 
 [Install]
 WantedBy=multi-user.target
+

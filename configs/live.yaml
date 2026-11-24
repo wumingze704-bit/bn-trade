@@ -47,7 +47,10 @@ engine:
   klines_1d: ./data/klines_1d
   funding: ./data/funding
   universe_hist: ./data/universe_hist
+  env_file: ./.env.live # 密钥环境变量文件（只检查 600 权限与属主，不读取内容）
+  with_premium: false # 候选用到 premium_1h 时改为 true（每币每小时多一次 REST 请求）
   history_days_hourly: 45
+
   history_days_daily: 120
   funding_limit: 1000
   live_capital_cap: 500.0 # 真钱上限，USDT，允许范围 (0, 1000]（风险包络只能由使用者决定，红线 5）

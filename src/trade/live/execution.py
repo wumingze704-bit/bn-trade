@@ -206,6 +206,16 @@ class ReadOnlyMarketClient:
     async def klines(self, symbol: str, interval: str, **kwargs: Any) -> list[list[Any]]:
         return await self._client.klines(symbol, interval, **kwargs)
 
+    async def mark_price_klines(self, symbol: str, interval: str, **kwargs: Any) -> list[list[Any]]:
+        """代理标记价格 K 线（止损基准，docs/13 §4）。"""
+        return await self._client.mark_price_klines(symbol, interval, **kwargs)
+
+    async def premium_index_klines(
+        self, symbol: str, interval: str, **kwargs: Any
+    ) -> list[list[Any]]:
+        """代理溢价指数 K 线（候选用到 premium_1h 时）。"""
+        return await self._client.premium_index_klines(symbol, interval, **kwargs)
+
     async def book_ticker(self, symbol: str | None = None) -> list[BookTicker]:
         return await self._client.book_ticker(symbol)
 

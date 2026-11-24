@@ -205,6 +205,22 @@ CREATE TABLE IF NOT EXISTS shadow_positions (
     updated_ms INTEGER NOT NULL,
     PRIMARY KEY (candidate, symbol)
 );
+CREATE TABLE IF NOT EXISTS strategy_positions (
+    candidate TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    qty REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    sl REAL,
+    updated_ms INTEGER NOT NULL,
+    PRIMARY KEY (candidate, symbol)
+);
+CREATE TABLE IF NOT EXISTS equity_baseline (
+    candidate TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    wallet_balance REAL NOT NULL,
+    created_ms INTEGER NOT NULL,
+    PRIMARY KEY (candidate, mode)
+);
 """
 
 
@@ -401,8 +417,22 @@ class Store:
         )
 
     def update_risk_state(self, date: str, **fields: Any) -> None:
-        columns = ", ".join(f"{key} = ?" for key in fields)
-        self._execute(f"UPDATE risk_state SET {columns} WHERE date = ?", (*fields.values(), date))
+        """写入或更新当日风控状态（行不存在时插入，未给出的列取表默认值）。
+
+        Args:
+            date: UTC 日期 `YYYY-MM-DD`。
+            **fields: 列名 → 新值（如 realized_pnl、peak_equity）。
+        """
+        if not fields:
+            return
+        columns = ", ".join(fields)
+        placeholders = ", ".join("?" for _ in fields)
+        assignments = ", ".join(f"{key} = excluded.{key}" for key in fields)
+        self._execute(
+            f"INSERT INTO risk_state (date, {columns}) VALUES (?, {placeholders}) "
+            f"ON CONFLICT(date) DO UPDATE SET {assignments}",
+            (date, *fields.values()),
+        )
 
     # ---- feature_state ----
 
@@ -723,3 +753,58 @@ class Store:
         return self._query(
             "SELECT * FROM shadow_positions WHERE candidate = ? ORDER BY symbol", (candidate,)
         )
+
+    # ---- 策略持仓与权益基准（docs/07 §5、§10）----
+
+    def sync_strategy_positions(self, *, candidate: str, rows: list[dict[str, Any]]) -> None:
+        """用交易所实际持仓覆盖本候选的策略持仓快照。
+
+        重启后的止损对账与专用账户检查都以本表为“本引擎记录”，
+        所以每次调仓与平仓后都要同步（docs/07 §6.1）。
+
+        Args:
+            candidate: 候选 ID。
+            rows: 每项含 symbol、qty（带方向）、entry_price、sl（可选）。
+        """
+        self._execute("DELETE FROM strategy_positions WHERE candidate = ?", (candidate,))
+        now = _now_ms()
+        for row in rows:
+            self._execute(
+                "INSERT INTO strategy_positions "
+                "(candidate, symbol, qty, entry_price, sl, updated_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    candidate,
+                    str(row["symbol"]),
+                    float(row["qty"]),
+                    float(row["entry_price"]),
+                    float(row.get("sl") or 0.0),
+                    now,
+                ),
+            )
+
+    def list_strategy_positions(self, candidate: str) -> list[dict[str, Any]]:
+        """读取本候选的策略持仓快照（按 symbol 升序）。"""
+        return self._query(
+            "SELECT * FROM strategy_positions WHERE candidate = ? ORDER BY symbol", (candidate,)
+        )
+
+    def get_equity_baseline(self, *, candidate: str, mode: str) -> dict[str, Any] | None:
+        """读取策略权益的启动基准（不存在返回 None，docs/07 §5）。"""
+        rows = self._query(
+            "SELECT * FROM equity_baseline WHERE candidate = ? AND mode = ?", (candidate, mode)
+        )
+        return rows[0] if rows else None
+
+    def set_equity_baseline(self, *, candidate: str, mode: str, wallet_balance: float) -> None:
+        """写入策略权益的启动基准（只在首次启动时写，之后不再覆盖）。"""
+        self._execute(
+            "INSERT OR IGNORE INTO equity_baseline "
+            "(candidate, mode, wallet_balance, created_ms) VALUES (?, ?, ?, ?)",
+            (candidate, mode, float(wallet_balance), _now_ms()),
+        )
+
+    def sum_realized_pnl(self) -> float:
+        """累计已实现盈亏（影子盘权益 = 初始权益 + 本值 + 未实现，docs/07 §5）。"""
+        rows = self._query("SELECT COALESCE(SUM(realized_pnl), 0.0) AS total FROM risk_state")
+        return float(rows[0]["total"]) if rows else 0.0

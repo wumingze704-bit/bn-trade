@@ -104,6 +104,7 @@ class ControlConfig(BaseModel):
 
     enabled: bool
     pin_env: str
+    pin_file: Path | None = None
     max_pin_failures: int = Field(default=5, ge=1, le=100)
     lock_minutes: int = Field(default=15, ge=1, le=1440)
 

@@ -7,7 +7,12 @@ Type=oneshot
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/trade
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_watchdog.py --config configs/live.yaml
 MemoryMax=200M
-NoNewPrivileges=true
+# 看门狗要用 sudo -n systemctl restart（sudoers 白名单），
+# 因此不能设 NoNewPrivileges=true（它会让 setuid 的 sudo 失效，docs/07 §6.10）
 PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/trade/artifacts/live
+

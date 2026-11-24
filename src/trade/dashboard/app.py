@@ -617,12 +617,25 @@ def _day_start_ms(now_ms: int, tz: str) -> int:
 
 
 def _check_pin(config: DashboardConfig, pin: str) -> None:
-    """校验控制 PIN（失败计数与锁定，docs/10 §8）。"""
+    """校验控制 PIN（失败计数与锁定，docs/10 §8）。
+
+    PIN 来自环境变量 `control.pin_env`；未设置时读 `control.pin_file`
+    （systemd 直接调用 python 时不经登录 shell，无法用 shell 导出环境变量）。
+    """
     if not config.control.enabled:
         raise HTTPException(status_code=403, detail="看板控制已关闭")
     expected = os.environ.get(config.control.pin_env, "")
+    pin_file = config.control.pin_file
+    if not expected and pin_file is not None:
+        path = Path(pin_file)
+        if path.is_file():
+            expected = path.read_text(encoding="utf-8").strip()
     if not expected:
-        raise HTTPException(status_code=503, detail=f"未设置环境变量 {config.control.pin_env}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"未设置环境变量 {config.control.pin_env}，也没有可读的 PIN 文件",
+        )
+
     now = time.monotonic()
     locked_until = _PIN_LOCKED_UNTIL.get(_LOCK_KEY, 0.0)
     if now < locked_until:

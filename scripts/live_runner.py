@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,20 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _install_signal_handlers(stop_event: asyncio.Event) -> None:
+    """把 SIGTERM / SIGINT 转成正常退出（systemd stop 与 Ctrl+C）。
+
+    正常退出会删除心跳文件，看门狗据此判断实例是主动停止而不是崩溃
+    （3 号第六部分第 10 条）。Windows 与非主线程不支持时保持默认行为。
+    """
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError, AttributeError):
+            continue
 
 
 def _verify(
@@ -113,6 +128,8 @@ async def _run(mode: str, candidate_id: str, config_path: Path, i_understand: bo
     _acquire_lock(lock_path)
     client = None
     notifier = None
+    runner: Runner | None = None
+    normal_exit = False
     try:
         client = build_client(mode)
         source = ReadOnlyMarketClient(client) if mode == "shadow" else client
@@ -128,10 +145,21 @@ async def _run(mode: str, candidate_id: str, config_path: Path, i_understand: bo
             history_days_hourly=engine.history_days_hourly,
             history_days_daily=engine.history_days_daily,
             funding_limit=engine.funding_limit,
+            with_premium=engine.with_premium,
         )
         research = load_research_config(_resolve(engine.research))
         base = load_config(BaseConfig, _resolve(engine.base))
-        sizing = load_research_sizing(_resolve(engine.sizing_research)).with_tier()
+        # 候选的档位与仓位模式来自候选文件；单笔风险取候选冻结值（docs/13 §2、§3）
+        sizing = load_research_sizing(_resolve(engine.sizing_research)).with_tier(spec.risk_tier)
+        updates: dict[str, Any] = {"risk_per_trade": spec.risk_per_trade}
+        if spec.sizing_mode is not None:
+            updates["sizing_mode"] = spec.sizing_mode
+        sizing = sizing.model_copy(update=updates)
+        print(
+            f"[OK] 候选 {candidate_id} 模式 {mode} 档位 {spec.risk_tier or '（配置默认）'} "
+            f"仓位模式 {sizing.sizing_mode} 资金上限 {engine.live_capital_cap} USDT"
+        )
+
         risk = RiskGuard(
             limits=load_risk_limits(sizing, mode),
             net_exposure_cap=engine.net_exposure_cap,
@@ -156,8 +184,14 @@ async def _run(mode: str, candidate_id: str, config_path: Path, i_understand: bo
             client=None if mode == "shadow" else client,
             notifier=notifier,
         )
-        await runner.run()
+        stop_event = asyncio.Event()
+        _install_signal_handlers(stop_event)
+        await runner.run(stop_event)
+        normal_exit = True
     finally:
+        if normal_exit and runner is not None:
+            # 正常退出（systemd stop）删除心跳，看门狗不会重启主动停止的实例
+            runner.remove_heartbeat()
         if notifier is not None:
             await notifier.aclose()
         if client is not None:
@@ -180,20 +214,42 @@ def _clear_halt(mode: str, candidate_id: str, config_path: Path) -> None:
         store.close()
 
 
+def _parse_instance(instance: str) -> tuple[str, str]:
+    """解析 systemd 模板单元的实例名 `<候选ID>-<shadow|paper>`。
+
+    Raises:
+        SystemExit: 实例名不合法（不猜默认值）。
+    """
+    candidate, _, mode = instance.rpartition("-")
+    if not candidate or mode not in {"shadow", "paper"}:
+        raise SystemExit(f"[FAIL] --instance 必须形如 <候选ID>-<shadow|paper>：{instance}")
+    return mode, candidate
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="通用低频实盘引擎")
-    parser.add_argument("--mode", choices=["shadow", "paper", "live"], required=True)
-    parser.add_argument("--candidate", required=True, help="候选 ID（总账 candidates[].id）")
+    parser.add_argument("--mode", choices=["shadow", "paper", "live"])
+    parser.add_argument("--candidate", help="候选 ID（总账 candidates[].id）")
+    parser.add_argument(
+        "--instance",
+        help="systemd 模板单元的实例名 <候选ID>-<shadow|paper>（替代 --mode 与 --candidate）",
+    )
     parser.add_argument("--config", default="configs/live.yaml")
     parser.add_argument("--i-understand-the-risk", action="store_true")
     parser.add_argument("--clear-halt", action="store_true")
     args = parser.parse_args()
+    if args.instance:
+        mode, candidate_id = _parse_instance(args.instance)
+    elif args.mode and args.candidate:
+        mode, candidate_id = args.mode, args.candidate
+    else:
+        parser.error("必须提供 --mode 与 --candidate（或 systemd 实例用 --instance）")
     config_path = _resolve(args.config)
     if args.clear_halt:
-        _clear_halt(args.mode, args.candidate, config_path)
+        _clear_halt(mode, candidate_id, config_path)
         return
     try:
-        asyncio.run(_run(args.mode, args.candidate, config_path, args.i_understand_the_risk))
+        asyncio.run(_run(mode, candidate_id, config_path, args.i_understand_the_risk))
     except CredentialError as error:
         print(f"[FAIL] {error}")
         raise SystemExit(1) from error

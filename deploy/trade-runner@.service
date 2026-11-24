@@ -10,16 +10,22 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/trade
 # 密钥只放在服务器上的环境变量文件（权限 600，不进入 git，红线 6）
 EnvironmentFile=-/home/ubuntu/trade/.env.live
-ExecStart=/bin/bash -lc 'i="%i"; exec /home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_runner.py --mode "${i##*-}" --candidate "${i%-*}"'
-Restart=always
+# 只读的代码目录，不写 __pycache__
+Environment=PYTHONDONTWRITEBYTECODE=1
+# 直接调用 venv 的 python，不经过登录 shell（3 号第六部分第 12 条）
+ExecStart=/home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_runner.py --instance %i
+# 主动停止的实例不会被 systemd 拉起
+Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
 TimeoutStopSec=120
 MemoryMax=400M
 NoNewPrivileges=true
 PrivateTmp=true
-StandardOutput=journal
-StandardError=journal
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/trade/artifacts/live
 
 [Install]
 WantedBy=multi-user.target
+

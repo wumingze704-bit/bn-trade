@@ -24,6 +24,7 @@ from trade.common.risk_rules import HALT_STRICT, RiskLimits
 from trade.common.sizing import SizingConfig
 from trade.live.candidate import CandidateSpec
 from trade.live.control import effective_sizing_from_store
+from trade.live.credentials import check_secret_permissions
 from trade.live.execution import (
     ExchangeExecutor,
     ExecutionError,
@@ -59,6 +60,70 @@ _RUN_MODES = ("shadow", "paper", "live")
 
 class RunnerError(RuntimeError):
     """引擎启动条件不满足或运行中出现不可恢复错误。"""
+
+
+def strategy_equity(
+    *, wallet_start: float, wallet_now: float, unrealized: float, capital_cap: float
+) -> float:
+    """策略权益（docs/07 §5、3 号第五部分第 3 条）。
+
+    公式：`min(启动时钱包余额, live_capital_cap) + 启动以来已实现盈亏 + 未实现盈亏`，
+    不使用账户总余额，避免账户里多出的资金稀释 R5~R8 的回撤阈值。
+
+    Args:
+        wallet_start: 启动时的合约钱包余额，USDT。
+        wallet_now: 当前合约钱包余额，USDT。
+        unrealized: 当前未实现盈亏，USDT。
+        capital_cap: 实盘资金上限，USDT。
+
+    Returns:
+        策略权益，USDT。
+    """
+    base = min(float(wallet_start), float(capital_cap))
+    return base + (float(wallet_now) - float(wallet_start)) + float(unrealized)
+
+
+def dedicated_account_errors(
+    *,
+    wallet_balance: float,
+    capital_cap: float,
+    positions: Mapping[str, float],
+    known_symbols: set[str] | frozenset[str],
+    open_client_ids: set[str] | frozenset[str],
+    known_client_ids: set[str] | frozenset[str],
+    eps: float = 1e-9,
+) -> list[str]:
+    """专用账户检查（3 号第五部分第 3 条）：外部持仓、外部挂单、余额超过上限 1.5 倍。
+
+    Args:
+        wallet_balance: 账户合约钱包余额，USDT。
+        capital_cap: 实盘资金上限，USDT。
+        positions: symbol → 带方向的持仓数量。
+        known_symbols: 本候选状态库记录的持仓币。
+        open_client_ids: 交易所当前普通挂单的 clientOrderId。
+        known_client_ids: 状态库记录的挂单 clientOrderId。
+        eps: 视为零仓位的容差。
+
+    Returns:
+        错误文案列表；空表示通过。
+    """
+    errors: list[str] = []
+    if float(wallet_balance) > float(capital_cap) * 1.5:
+        errors.append(
+            f"合约钱包余额 {float(wallet_balance):.2f} 超过上限 {capital_cap} 的 1.5 倍"
+            "（必须使用只放本策略资金的子账户）"
+        )
+    external = sorted(
+        symbol
+        for symbol, qty in positions.items()
+        if abs(float(qty)) > eps and symbol not in known_symbols
+    )
+    if external:
+        errors.append(f"账户存在不属于本候选状态库记录的持仓：{external[:5]}")
+    unknown_orders = sorted(set(open_client_ids) - set(known_client_ids))
+    if unknown_orders:
+        errors.append(f"账户存在不属于本候选状态库记录的挂单：{unknown_orders[:5]}")
+    return errors
 
 
 def load_risk_limits(sizing: SizingConfig, mode: str) -> RiskLimits:
@@ -212,11 +277,18 @@ class Runner:
         self._started_ms = 0
         self._shadow_fills = 0
         self._last_report_day: str | None = None
+        self._equity_baseline: float | None = None
+        self._mark_fallback = 0
 
-    async def run(self) -> None:
-        """启动并进入主循环（正常退出只发生在外部停机信号）。"""
+    async def run(self, stop_event: asyncio.Event | None = None) -> None:
+        """启动并进入主循环。
+
+        Args:
+            stop_event: 置位后在下一次循环结束时正常退出（systemd stop / SIGTERM），
+                正常退出时删除心跳文件（3 号第六部分第 10 条）。
+        """
         await self.startup()
-        while True:
+        while stop_event is None or not stop_event.is_set():
             await self.tick_once(self._now_ms())
             await self._sleep(float(self._engine_cfg.loop_sleep_sec))
 
@@ -226,6 +298,7 @@ class Runner:
         await self._startup_exchange_checks()
         symbols = self._symbols(self._now_ms())
         await self._feed.warmup(symbols, self._now_ms())
+        await self._init_equity_baseline()
         self._restore_risk()
         await self._reconcile_stops(self._now_ms())
         self._write_status(self._now_ms(), note="started")
@@ -303,6 +376,47 @@ class Runner:
                 raise RunnerError("API Key 没有设置 IP 白名单，拒绝启动（红线 6）")
             if not bool(restrictions.get("enableFutures", True)):
                 raise RunnerError("API Key 未开启合约权限，拒绝启动")
+            await self._verify_dedicated_account()
+            env_file = Path(self._engine_cfg.env_file)
+            if not env_file.is_absolute():
+                env_file = self._root / env_file
+            private_key = os.environ.get("BINANCE_PRIVATE_KEY_PATH")
+            check_secret_permissions(
+                [env_file, Path(private_key) if private_key else None],
+                expected_uid=os.getuid() if hasattr(os, "getuid") else None,
+            )
+
+    async def _verify_dedicated_account(self) -> None:
+        """专用账户检查（3 号第五部分第 3 条）：外部持仓 / 挂单、余额 1.5 倍上限。
+
+        Raises:
+            RunnerError: 账户里存在不属于本候选状态库记录的持仓或挂单，或余额超限。
+        """
+        if self._client is None:
+            raise RunnerError("live 模式缺少交易所客户端")
+        account = await self._client.account()
+        positions = await self._client.position_risk()
+        qtys = {
+            str(item.get("symbol", "")): float(item.get("positionAmt", 0.0)) for item in positions
+        }
+        orders = await self._client.open_orders()
+        known_symbols = {
+            str(row["symbol"])
+            for row in self._store.list_strategy_positions(self.candidate.candidate_id)
+        }
+        known_client_ids = {str(row["client_id"]) for row in self._store.open_orders()}
+        errors = dedicated_account_errors(
+            wallet_balance=float(account.total_wallet_balance),
+            capital_cap=self._engine_cfg.live_capital_cap,
+            positions=qtys,
+            known_symbols=known_symbols,
+            open_client_ids={str(item.get("clientOrderId", "")) for item in orders},
+            known_client_ids=known_client_ids,
+        )
+        if errors:
+            raise RunnerError(
+                "专用账户检查未通过（必须使用只放本策略资金的子账户）：" + "；".join(errors)
+            )
 
     def _symbols(self, now_ms: int) -> set[str]:
         """当前需要行情的币：当月选币 ∪ BTC/ETH ∪ 已有持仓 ∪ 已加载过的币。"""
@@ -359,26 +473,78 @@ class Runner:
             entries[symbol] = float(item.get("entryPrice", 0.0))
         return qtys, entries
 
-    async def _equity(self, positions: Mapping[str, float]) -> float:
-        """盯市权益：钱包余额 + 未实现盈亏（shadow 用虚拟账户）。"""
-        prices = self._prices()
+    async def _init_equity_baseline(self) -> None:
+        """确定策略权益的启动基准（docs/07 §5）。
+
+        - shadow：`sizing.initial_equity`（虚拟账户）；
+        - paper / live：首次启动时的合约钱包余额，写入状态库后不再覆盖（重启不重置）。
+        """
         if self.mode == "shadow":
-            snapshot = self._store.latest_equity_snapshot()
-            wallet = (
-                float(snapshot["wallet_balance"])
-                if snapshot is not None
-                else float(self._sizing.initial_equity)
-            )
-            unrealized = sum(
-                (prices.get(symbol, 0.0) - self._shadow_positions()[1].get(symbol, 0.0)) * qty
-                for symbol, qty in positions.items()
-                if symbol in prices
-            )
-            return wallet + unrealized
+            self._equity_baseline = float(self._sizing.initial_equity)
+            return
+        if self._client is None:
+            raise RunnerError("paper / live 模式缺少交易所客户端")
+        row = self._store.get_equity_baseline(candidate=self.candidate.candidate_id, mode=self.mode)
+        if row is not None:
+            self._equity_baseline = float(row["wallet_balance"])
+            return
+        account = await self._client.account()
+        self._equity_baseline = float(account.total_wallet_balance)
+        self._store.set_equity_baseline(
+            candidate=self.candidate.candidate_id,
+            mode=self.mode,
+            wallet_balance=self._equity_baseline,
+        )
+        self._store.commit()
+
+    async def _equity(self, positions: Mapping[str, float]) -> float:
+        """策略权益（docs/07 §5，3 号第五部分第 3 条）。
+
+        `min(启动时钱包余额, live_capital_cap) + 启动以来已实现与未实现盈亏`；
+        不使用账户总余额，避免多出的资金稀释 R5~R8 的回撤阈值。
+
+        Raises:
+            RunnerError: 持仓币缺少已收盘价格（红线 12，不用 0 代替）。
+        """
+        if self._equity_baseline is None:
+            await self._init_equity_baseline()
+        baseline = float(self._equity_baseline or 0.0)
+        if self.mode == "shadow":
+            prices = self._prices()
+            entries = self._shadow_positions()[1]
+            unrealized = 0.0
+            for symbol, qty in positions.items():
+                if abs(qty) <= 1e-9:
+                    continue
+                if symbol not in prices or symbol not in entries:
+                    raise RunnerError(f"{symbol} 缺少盯市价格或入场价，无法计算权益（红线 12）")
+                unrealized += (prices[symbol] - entries[symbol]) * qty
+            return baseline + self._store.sum_realized_pnl() + unrealized
         if self._client is None:
             raise RunnerError("paper / live 模式缺少交易所客户端")
         account = await self._client.account()
-        return float(account.total_wallet_balance) + float(account.total_unrealized_profit)
+        return strategy_equity(
+            wallet_start=baseline,
+            wallet_now=float(account.total_wallet_balance),
+            unrealized=float(account.total_unrealized_profit),
+            capital_cap=self._engine_cfg.live_capital_cap,
+        )
+
+    async def _sync_positions(self, sl_map: Mapping[str, float] | None = None) -> None:
+        """把实际持仓写入策略持仓快照（重启对账与专用账户检查的依据）。"""
+        qtys, entries = await self._positions_async()
+        sls = dict(sl_map or {})
+        rows = [
+            {
+                "symbol": symbol,
+                "qty": qty,
+                "entry_price": entries.get(symbol, 0.0),
+                "sl": sls.get(symbol, 0.0),
+            }
+            for symbol, qty in qtys.items()
+        ]
+        self._store.sync_strategy_positions(candidate=self.candidate.candidate_id, rows=rows)
+        self._store.commit()
 
     def _restore_risk(self) -> None:
         """从状态库恢复当日风控状态与停机标志（重启不丢失峰值与连续止损计数）。"""
@@ -406,7 +572,10 @@ class Runner:
         qtys, entries = await self._positions_async()
         if not qtys:
             return
-        stored = {row["symbol"]: row for row in self._store.open_positions()}
+        stored = {
+            row["symbol"]: row
+            for row in self._store.list_strategy_positions(self.candidate.candidate_id)
+        }
         for symbol, qty in qtys.items():
             if symbol not in stored:
                 # 没有本引擎记录的仓位（人工或残留）：无止损依据，直接平掉
@@ -453,6 +622,12 @@ class Runner:
             db_path = self._root / db_path
         return db_path.parent / f"{self.candidate.candidate_id}-{self.mode}.heartbeat"
 
+    def remove_heartbeat(self) -> None:
+        """正常退出（systemd stop）时删除心跳文件，看门狗据此判断是否需要重启。"""
+        path = self._heartbeat_path()
+        if path.is_file():
+            path.unlink()
+
     def _minute_label(self, now_ms: int) -> str:
         return datetime.fromtimestamp(now_ms / 1000, tz=UTC).strftime("%Y%m%d%H%M")
 
@@ -473,6 +648,7 @@ class Runner:
         if flatten:
             await self._alert(f"{self._risk.state.halt_reason} 触发，平掉全部持仓")
             await self._execute_intents(self._close_intents(qtys), hour_start, now_ms, entries, {})
+            await self._sync_positions({})
             self._store.set_engine_halt(
                 candidate=self.candidate.candidate_id,
                 mode=self.mode,
@@ -483,9 +659,11 @@ class Runner:
             return
         if control["flatten_requested"]:
             await self._execute_intents(self._close_intents(qtys), hour_start, now_ms, entries, {})
+            await self._sync_positions({})
             self._store.clear_flatten_request(self.candidate.candidate_id)
             self._store.commit()
             return
+
         blocked_reason = self._risk.open_blocked_reason(now_ms)
         if control["pause_open"]:
             blocked_reason = "控制页暂停开仓"
@@ -502,9 +680,9 @@ class Runner:
         view = View(self._feed.market(), hour_start)
         sizing = effective_sizing_from_store(self._store, self._sizing)
         available_margin = await self._available_margin(equity)
+        # 权益已按 min(启动余额, live_capital_cap) + 启动以来盈亏计算（docs/07 §5）
         base_equity = equity
-        if self.mode == "live":
-            base_equity = min(equity, self._engine_cfg.live_capital_cap)
+
         blocked = {
             symbol: until for symbol, until in self._blocked_until.items() if until > hour_start
         }
@@ -530,7 +708,9 @@ class Runner:
         intents = plan_delta(qtys, targets, step_sizes=step_sizes)
         sl_map = {position.symbol: position.sl for position in planned}
         reports = await self._execute_intents(intents, hour_start, now_ms, entries, sl_map)
+        await self._sync_positions(sl_map)
         self._last_rebalance_ms = now_ms
+
         self._write_scan(hour_start, planned, qtys)
         self._store.insert_rebalance_log(
             candidate=self.candidate.candidate_id,
@@ -641,7 +821,9 @@ class Runner:
                 sl=sl_map.get(intent.symbol),
                 minute=minute,
                 seq=seq,
+                open_hour_ms=hour_start,
             )
+
         self._store.commit()
         return reports
 
@@ -684,9 +866,19 @@ class Runner:
         return zlib.crc32(client_id.encode("utf-8")) & 0x7FFFFFFF
 
     async def _sync_symbol_stop(
-        self, symbol: str, *, sl: float | None, minute: str, seq: int
+        self,
+        symbol: str,
+        *,
+        sl: float | None,
+        minute: str,
+        seq: int,
+        open_hour_ms: int,
     ) -> None:
-        """按实际持仓与止损距离挂新止损、替换旧止损；无持仓则撤掉止损。"""
+        """按实际持仓与止损距离挂新止损、替换旧止损；无持仓则撤掉止损。
+
+        触发价以开仓时刻（决策整点前一根已收盘）的标记价格为基准，
+        与研究框架 `mark_1h` 口径一致（docs/13 §4）；缺标记价格时退回成交价并告警。
+        """
         if self._client is None or self._stops is None:
             return
         qty = 0.0
@@ -703,9 +895,14 @@ class Runner:
             await self._close_symbol(symbol, qty, self._now_ms(), reason="缺少止损参数")
             return
         rules = self._rules_for(symbol)
+        reference = View(self._feed.market(), open_hour_ms).mark_close(symbol)
+        if reference is None or reference <= 0.0:
+            reference = entry
+            await self._alert(f"{symbol} 缺少标记价格，止损基准退回成交价（mark_fallback）")
         trigger = stop_trigger_price(
-            side=1 if qty > 0 else -1, sl=sl, reference_price=entry, tick_size=rules.tick_size
+            side=1 if qty > 0 else -1, sl=sl, reference_price=reference, tick_size=rules.tick_size
         )
+
         existing = await self._client.algo_open_orders(symbol)
         old_id = str(existing[0].get("clientAlgoId")) if existing else None
         try:
@@ -851,6 +1048,10 @@ class Runner:
                 sl=sl or 0.0,
                 opened_ms=opened_ms,
             )
+            # 开仓手续费计入已实现（影子盘权益 = 初始权益 + 累计已实现 + 未实现）
+            realized = -fill.fee
+            self._add_realized(ts_ms, realized)
+
         self._store.insert_fill(
             exchange_trade_id=self._trade_id(fill.client_id),
             client_id=fill.client_id,
@@ -1010,7 +1211,9 @@ class Runner:
             self._shadow_stop_checks(now_ms)
         else:
             await self._reconcile_stops(now_ms)
+        await self._sync_positions()
         equity = await self._equity(qtys)
+
         self._store.insert_equity_snapshot(
             ts_ms=now_ms,
             wallet_balance=equity,
@@ -1021,15 +1224,19 @@ class Runner:
         self._store.commit()
 
     def _shadow_stop_checks(self, now_ms: int) -> None:
-        """影子盘止损：用刚收盘的 1h K 线判断触发（docs/13 §4）。"""
+        """影子盘止损：按标记价格触发、按成交价 K 线开盘成交（docs/13 §4）。
+
+        与研究框架一致：触发用 `mark_1h` 的 low/high，缺标记价格时退回成交价 K 线并计数；
+        成交价含半价差与 `stop_slip_mult` 倍滑点。
+        """
         positions = self._store.list_shadow_positions(self.candidate.candidate_id)
-        slip = self._exec_cfg.slip_min_bp * _BP * self._exec_cfg.stop_slip_mult
+        hour_start = (now_ms // HOUR_MS) * HOUR_MS
         for row in positions:
             symbol = str(row["symbol"])
             bars = self._feed.hourly.get(symbol)
             if bars is None or bars.open_time.size == 0:
                 continue
-            index = bars.last_index_before(now_ms)
+            index = bars.last_index_before(hour_start)
             if index < 0:
                 continue
             side = int(row["side"])
@@ -1037,14 +1244,39 @@ class Runner:
             qty = float(row["qty"])
             if stop <= 0.0 or qty <= 0.0:
                 continue
-            low = float(bars.low[index])
-            high = float(bars.high[index])
+            bar_ts = int(bars.open_time[index])
+            mark = self._feed.market().mark_bars(symbol)
+            mark_index = mark.bar_index(bar_ts) if mark is not None else None
+            if mark is not None and mark_index is not None:
+                low = float(mark.low[mark_index])
+                high = float(mark.high[mark_index])
+            else:
+                low = float(bars.low[index])
+                high = float(bars.high[index])
+                self._mark_fallback += 1
             open_price = float(bars.open[index])
+            view = View(self._feed.market(), hour_start)
+            top = self._top_symbols(view)
+            half_spread = (
+                self._exec_cfg.half_spread_top_bp
+                if symbol in top
+                else self._exec_cfg.half_spread_other_bp
+            ) * _BP
+            slip = estimate_slip(
+                notional=qty * open_price,
+                mean_hourly_volume=view.mean_quote_volume(symbol, self._exec_cfg.impact_vol_hours)
+                or 0.0,
+                hourly_vol=view.hourly_vol(symbol, self._exec_cfg.impact_vol_hours) or 0.0,
+                slip_min_bp=self._exec_cfg.slip_min_bp,
+                impact_y=self._exec_cfg.impact_y,
+            )
+            cost = half_spread + slip * self._exec_cfg.stop_slip_mult
             triggered = (side > 0 and low <= stop) or (side < 0 and high >= stop)
             if not triggered:
                 continue
             base = min(open_price, stop) if side > 0 else max(open_price, stop)
-            price = base * (1.0 - slip) if side > 0 else base * (1.0 + slip)
+            price = base * (1.0 - cost) if side > 0 else base * (1.0 + cost)
+
             entry = float(row["entry_price"])
             realized = (price - entry) * qty * side - qty * price * self._fee_taker
             self._store.delete_shadow_position(candidate=self.candidate.candidate_id, symbol=symbol)

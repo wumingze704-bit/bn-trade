@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import os
+import stat
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from trade.live.exchange.client import ExchangeClient
@@ -18,7 +20,45 @@ from trade.live.exchange.endpoints import demo_endpoints, endpoints_for
 
 
 class CredentialError(RuntimeError):
-    """缺少密钥环境变量或私钥文件不可读（消息只含变量名，不含内容）。"""
+    """缺少密钥环境变量、私钥文件不可读或权限不安全（消息只含变量名/路径，不含内容）。"""
+
+
+def check_secret_permissions(
+    paths: Iterable[Path | None],
+    *,
+    stat_fn: Callable[[Path], os.stat_result] = os.stat,
+    expected_uid: int | None = None,
+) -> None:
+    """检查密钥相关文件的权限（docs/07 §5）：必须 600 且属主为运行用户。
+
+    只读取文件元数据，不读取内容（红线 6）。文件不存在时跳过（shadow / paper 没有实盘密钥）。
+
+    Args:
+        paths: 环境变量文件与私钥文件路径；None 项忽略。
+        stat_fn: 取文件状态函数（测试注入）。
+        expected_uid: 运行用户 uid；None 表示不检查属主（非 POSIX 平台）。
+
+    Raises:
+        CredentialError: 权限不是 600、属主不符或无法读取元数据。
+    """
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            info = stat_fn(Path(path))
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise CredentialError(f"无法读取密钥文件元数据：{path}：{error}") from error
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o600:
+            raise CredentialError(
+                f"密钥文件权限 {mode:04o} 不是 600：{path}（只检查权限，不读取内容）"
+            )
+        if expected_uid is not None and info.st_uid != expected_uid:
+            raise CredentialError(
+                f"密钥文件属主 uid={info.st_uid} 不是运行用户 {expected_uid}：{path}"
+            )
 
 
 def api_key_env(mode: str) -> str:

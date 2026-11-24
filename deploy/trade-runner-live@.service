@@ -10,17 +10,20 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/trade
 # 正式网密钥只放在服务器上的环境变量文件（权限 600，不进入 git，红线 6）
 EnvironmentFile=-/home/ubuntu/trade/.env.live
+Environment=PYTHONDONTWRITEBYTECODE=1
 # live 模式必须带 --i-understand-the-risk；候选与最终检验 / 影子盘结论由引擎再次校验
 ExecStart=/home/ubuntu/trade-venv/bin/python /home/ubuntu/trade/scripts/live_runner.py --mode live --candidate %i --i-understand-the-risk
-Restart=always
+Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
-TimeoutStopSec=120
+TimeoutStopSec=180
 MemoryMax=500M
 NoNewPrivileges=true
 PrivateTmp=true
-StandardOutput=journal
-StandardError=journal
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/trade/artifacts/live
+
 
 [Install]
 WantedBy=multi-user.target

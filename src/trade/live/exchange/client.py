@@ -230,6 +230,64 @@ class ExchangeClient:
         data = await self._request("GET", "/fapi/v1/klines", params=params)
         return data if isinstance(data, list) else []
 
+    async def mark_price_klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
+        """拉取标记价格 K 线（09 §3.1，止损触发基准 docs/13 §4）。
+
+        Args:
+            symbol: 交易对。
+            interval: K 线周期，如 `1h`。
+            limit: 返回条数上限（≤ 1500）。
+            start_time: 起始时间（UTC 毫秒）。
+            end_time: 结束时间（UTC 毫秒）。
+
+        Returns:
+            币安原始 K 线数组列表（open/high/low/close 在 1~4 位）。
+        """
+        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        data = await self._request("GET", "/fapi/v1/markPriceKlines", params=params)
+        return data if isinstance(data, list) else []
+
+    async def premium_index_klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
+        """拉取溢价指数 K 线（09 §3.1，候选使用 `premium_1h` 时）。
+
+        Args:
+            symbol: 交易对。
+            interval: K 线周期，如 `1h`。
+            limit: 返回条数上限（≤ 1500）。
+            start_time: 起始时间（UTC 毫秒）。
+            end_time: 结束时间（UTC 毫秒）。
+
+        Returns:
+            币安原始 K 线数组列表。
+        """
+        params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        data = await self._request("GET", "/fapi/v1/premiumIndexKlines", params=params)
+        return data if isinstance(data, list) else []
+
     async def agg_trades(
         self, symbol: str, *, from_id: int | None = None, limit: int = 1000
     ) -> list[dict[str, Any]]:

@@ -204,26 +204,35 @@ class ResearchSizingConfig(SizingConfig):
         """返回当前选中档位的参数。"""
         return self.risk_tiers[self.tier]
 
-    def effective_max_risk_per_trade(self) -> float:
+    def effective_max_risk_per_trade(self, tier: str | None = None) -> float:
         """单笔止损亏损硬上限：取 0.025 与该档防灾止损单笔亏损上限的较大者（docs/13 §3）。"""
-        return max(0.025, self.selected_tier().disaster_loss_cap)
+        return max(0.025, self.risk_tiers[tier or self.tier].disaster_loss_cap)
 
-    def with_tier(self) -> SizingConfig:
+    def with_tier(self, tier: str | None = None) -> SizingConfig:
         """把选中档位的仓位与停机阈值应用到风险包络，返回纯 `SizingConfig`。
+
+        Args:
+            tier: 档位名（`standard` / `progressive` / `aggressive`）；None 表示用配置里的 `tier`。
 
         Returns:
             SizingConfig，`risk_per_trade`、`max_risk_per_trade`、`target_vol`
             与 R5~R8 阈值取所选档位。
+
+        Raises:
+            ValueError: 档位名不在 `risk_tiers` 中（红线 12）。
         """
-        tier = self.selected_tier()
+        name = tier or self.tier
+        if name not in self.risk_tiers:
+            raise ValueError(f"未知风险档位：{name}（docs/13 §2）")
+        selected = self.risk_tiers[name]
         values = self.model_dump(exclude={"tier", "risk_tiers"})
         values.update(
-            risk_per_trade=tier.risk_per_trade,
-            max_risk_per_trade=self.effective_max_risk_per_trade(),
-            target_vol=tier.target_vol,
-            daily_loss_stop=tier.daily_loss_stop,
-            daily_loss_halt=tier.daily_loss_halt,
-            max_drawdown_halt=tier.max_drawdown_halt,
+            risk_per_trade=selected.risk_per_trade,
+            max_risk_per_trade=self.effective_max_risk_per_trade(name),
+            target_vol=selected.target_vol,
+            daily_loss_stop=selected.daily_loss_stop,
+            daily_loss_halt=selected.daily_loss_halt,
+            max_drawdown_halt=selected.max_drawdown_halt,
         )
         return SizingConfig.model_validate(values)
 

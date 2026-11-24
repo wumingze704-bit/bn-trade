@@ -23,7 +23,9 @@ from trade.research.data import (
     DAY_MS,
     HOUR_MS,
     Bars,
+    FlowBars,
     FundingSeries,
+    MarkBars,
     MarketData,
     UniverseHistory,
 )
@@ -41,6 +43,26 @@ class RestSource(Protocol):
     """行情拉取需要的交易所接口子集。"""
 
     async def klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]: ...
+
+    async def mark_price_klines(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        limit: int = 500,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]: ...
+
+    async def premium_index_klines(
         self,
         symbol: str,
         interval: str,
@@ -88,6 +110,66 @@ def bars_from_rows(symbol: str, rows: Iterable[list[Any]]) -> Bars | None:
     )
 
 
+def flow_from_rows(symbol: str, rows: Iterable[list[Any]]) -> FlowBars | None:
+    """从 1h K 线行提取主动买入成交（`taker_buy_*`，docs/13 §1）。
+
+    Args:
+        symbol: 币种。
+        rows: 币安 K 线原始行（索引 9/10 为主动买入成交量与成交额）。
+
+    Returns:
+        FlowBars；没有数据返回 None。
+
+    Raises:
+        FeedError: 行的列数不足（红线 12，不用 0 填充）。
+    """
+    data = list(rows)
+    if not data:
+        return None
+    for row in data:
+        if len(row) < 11:
+            raise FeedError(f"{symbol} 的 K 线缺少 taker_buy 字段（{len(row)} 列）")
+    open_time = np.array([int(row[0]) for row in data], dtype=np.int64)
+    order = np.argsort(open_time)
+    return FlowBars(
+        symbol=symbol,
+        open_time=open_time[order],
+        taker_buy_volume=np.array([float(row[9]) for row in data], dtype=np.float64)[order],
+        taker_buy_quote_volume=np.array([float(row[10]) for row in data], dtype=np.float64)[order],
+    )
+
+
+def price_from_rows(symbol: str, rows: Iterable[list[Any]], *, label: str) -> MarkBars | None:
+    """把标记价格 / 溢价指数 K 线行转换为 `MarkBars`（docs/13 §1、§4）。
+
+    Args:
+        symbol: 币种。
+        rows: 价格 K 线原始行（索引 1~4 为 open/high/low/close）。
+        label: 目录名（`mark_1h` / `premium_1h`），只用于报错上下文。
+
+    Returns:
+        MarkBars；没有数据返回 None。
+
+    Raises:
+        FeedError: 行的列数不足 5（红线 12）。
+    """
+    data = list(rows)
+    if not data:
+        return None
+    for row in data:
+        if len(row) < 5:
+            raise FeedError(f"{symbol} 的 {label} 行不足 5 列（{len(row)} 列）")
+    open_time = np.array([int(row[0]) for row in data], dtype=np.int64)
+    order = np.argsort(open_time)
+    return MarkBars(
+        symbol=symbol,
+        open_time=open_time[order],
+        high=np.array([float(row[2]) for row in data], dtype=np.float64)[order],
+        low=np.array([float(row[3]) for row in data], dtype=np.float64)[order],
+        close=np.array([float(row[4]) for row in data], dtype=np.float64)[order],
+    )
+
+
 def merge_bars(old: Bars | None, new: Bars | None) -> Bars | None:
     """按 open_time 合并两段 K 线，后到的数据覆盖重复行。"""
     if old is None:
@@ -126,6 +208,54 @@ def merge_bars(old: Bars | None, new: Bars | None) -> Bars | None:
         low=np.array(lows, dtype=np.float64)[order],
         close=np.array(closes, dtype=np.float64)[order],
         quote_volume=np.array(volumes, dtype=np.float64)[order],
+    )
+
+
+def _merge_flow(old: FlowBars | None, new: FlowBars) -> FlowBars:
+    """按 `open_time` 合并主动买入成交（后到的数据覆盖重复行）。"""
+    if old is None:
+        return new
+    merged: dict[int, tuple[float, float]] = {
+        int(ts): (float(buy), float(quote))
+        for ts, buy, quote in zip(
+            old.open_time, old.taker_buy_volume, old.taker_buy_quote_volume, strict=True
+        )
+    }
+    for index, ts in enumerate(new.open_time):
+        merged[int(ts)] = (
+            float(new.taker_buy_volume[index]),
+            float(new.taker_buy_quote_volume[index]),
+        )
+    times = np.array(sorted(merged), dtype=np.int64)
+    return FlowBars(
+        symbol=new.symbol,
+        open_time=times,
+        taker_buy_volume=np.array([merged[int(ts)][0] for ts in times], dtype=np.float64),
+        taker_buy_quote_volume=np.array([merged[int(ts)][1] for ts in times], dtype=np.float64),
+    )
+
+
+def _merge_price(old: MarkBars | None, new: MarkBars) -> MarkBars:
+    """按 `open_time` 合并标记价格 / 溢价指数（后到的数据覆盖重复行）。"""
+    if old is None:
+        return new
+    merged: dict[int, tuple[float, float, float]] = {
+        int(ts): (float(high), float(low), float(close))
+        for ts, high, low, close in zip(old.open_time, old.high, old.low, old.close, strict=True)
+    }
+    for index, ts in enumerate(new.open_time):
+        merged[int(ts)] = (
+            float(new.high[index]),
+            float(new.low[index]),
+            float(new.close[index]),
+        )
+    times = np.array(sorted(merged), dtype=np.int64)
+    return MarkBars(
+        symbol=new.symbol,
+        open_time=times,
+        high=np.array([merged[int(ts)][0] for ts in times], dtype=np.float64),
+        low=np.array([merged[int(ts)][1] for ts in times], dtype=np.float64),
+        close=np.array([merged[int(ts)][2] for ts in times], dtype=np.float64),
     )
 
 
@@ -213,6 +343,7 @@ class LiveFeed:
         history_days_daily: 1d 回补天数。
         funding_limit: 每币资金费记录上限。
         concurrency: 并发拉取的币数（控制请求权重）。
+        with_premium: 是否拉取溢价指数（候选需要 `premium_1h` 时开启）。
     """
 
     def __init__(
@@ -226,6 +357,7 @@ class LiveFeed:
         history_days_daily: int,
         funding_limit: int,
         concurrency: int = 3,
+        with_premium: bool = False,
     ) -> None:
         self._source = source
         self._rules = dict(rules)
@@ -234,10 +366,14 @@ class LiveFeed:
         self._days_hourly = history_days_hourly
         self._days_daily = history_days_daily
         self._funding_limit = funding_limit
+        self._with_premium = with_premium
         self._semaphore = asyncio.Semaphore(concurrency)
         self.hourly: dict[str, Bars] = {}
         self.daily: dict[str, Bars] = {}
         self.funding: dict[str, FundingSeries] = {}
+        self.mark: dict[str, MarkBars] = {}
+        self.flow: dict[str, FlowBars] = {}
+        self.premium: dict[str, MarkBars] = {}
 
     def market(self) -> MarketData:
         """当前缓存组装成研究框架的 `MarketData`（与离线数据层同构）。"""
@@ -247,6 +383,9 @@ class LiveFeed:
             funding=self.funding,
             universe=self._universe,
             rules=self._rules,
+            mark=self.mark,
+            flow=self.flow,
+            premium=self.premium,
         )
 
     def rules(self) -> dict[str, SymbolMeta]:
@@ -288,14 +427,25 @@ class LiveFeed:
         return bid, ask
 
     async def _load_symbol(self, symbol: str, now_ms: int) -> None:
-        hourly = await self._fetch_klines(symbol, "1h", now_ms - self._days_hourly * DAY_MS, now_ms)
-        if hourly is None:
+        self._store_rows(
+            symbol,
+            await self._fetch_rows(
+                self._source.klines, symbol, "1h", now_ms - self._days_hourly * DAY_MS, now_ms
+            ),
+            interval="1h",
+        )
+        self._store_rows(
+            symbol,
+            await self._fetch_rows(
+                self._source.klines, symbol, "1d", now_ms - self._days_daily * DAY_MS, now_ms
+            ),
+            interval="1d",
+        )
+        if symbol not in self.hourly:
             raise FeedError(f"{symbol} 回补 1h K 线为空（{self._days_hourly} 天窗口）")
-        daily = await self._fetch_klines(symbol, "1d", now_ms - self._days_daily * DAY_MS, now_ms)
-        if daily is None:
+        if symbol not in self.daily:
             raise FeedError(f"{symbol} 回补 1d K 线为空（{self._days_daily} 天窗口）")
-        self.hourly[symbol] = hourly
-        self.daily[symbol] = daily
+        await self._load_prices(symbol, now_ms - self._days_hourly * DAY_MS, now_ms)
         rows = await _retry(self._source.funding_rate, symbol, limit=self._funding_limit)
         if rows:
             series = bars_from_funding(symbol, rows)
@@ -306,26 +456,85 @@ class LiveFeed:
         if symbol not in self.hourly:
             await self._load_symbol(symbol, now_ms)
             return
-        hourly = await self._fetch_klines(symbol, "1h", now_ms - tail_hours * HOUR_MS, now_ms)
-        self.hourly[symbol] = merge_bars(self.hourly[symbol], hourly) or self.hourly[symbol]
-        daily = await self._fetch_klines(symbol, "1d", now_ms - 3 * DAY_MS, now_ms)
-        self.daily[symbol] = merge_bars(self.daily[symbol], daily) or self.daily[symbol]
+        start_ms = now_ms - tail_hours * HOUR_MS
+        rows = await self._fetch_rows(self._source.klines, symbol, "1h", start_ms, now_ms)
+        self._merge_rows(symbol, rows, interval="1h")
+        daily_rows = await self._fetch_rows(
+            self._source.klines, symbol, "1d", now_ms - 3 * DAY_MS, now_ms
+        )
+        self._merge_rows(symbol, daily_rows, interval="1d")
+        await self._load_prices(symbol, start_ms, now_ms)
         rows = await _retry(self._source.funding_rate, symbol, limit=self._funding_limit)
         if rows:
             series = bars_from_funding(symbol, rows)
             if series is not None:
                 self.funding[symbol] = series
 
-    async def _fetch_klines(
-        self, symbol: str, interval: str, start_ms: int, end_ms: int
-    ) -> Bars | None:
+    async def _load_prices(self, symbol: str, start_ms: int, end_ms: int) -> None:
+        """拉取标记价格（止损基准）与（启用时）溢价指数 1h K 线（docs/13 §1、§4）。"""
+        mark_rows = await self._fetch_rows(
+            self._source.mark_price_klines, symbol, "1h", start_ms, end_ms
+        )
+        mark = price_from_rows(symbol, mark_rows, label="mark_1h")
+        if mark is None:
+            if symbol not in self.mark:
+                raise FeedError(f"{symbol} 回补标记价格为空（止损基准缺失，红线 12）")
+        else:
+            self.mark[symbol] = _merge_price(self.mark.get(symbol), mark)
+        if not self._with_premium:
+            return
+        premium_rows = await self._fetch_rows(
+            self._source.premium_index_klines, symbol, "1h", start_ms, end_ms
+        )
+        premium = price_from_rows(symbol, premium_rows, label="premium_1h")
+        if premium is None:
+            if symbol not in self.premium:
+                raise FeedError(f"{symbol} 回补溢价指数为空（候选使用 premium_1h）")
+            return
+        self.premium[symbol] = _merge_price(self.premium.get(symbol), premium)
+
+    def _store_rows(self, symbol: str, rows: list[list[Any]], *, interval: str) -> None:
+        """把首次回补的原始行写入缓存（1h 同时写入主动买入成交）。"""
+        bars = bars_from_rows(symbol, rows)
+        if bars is None:
+            return
+        if interval == "1h":
+            self.hourly[symbol] = bars
+            flow = flow_from_rows(symbol, rows)
+            if flow is not None:
+                self.flow[symbol] = flow
+        else:
+            self.daily[symbol] = bars
+
+    def _merge_rows(self, symbol: str, rows: list[list[Any]], *, interval: str) -> None:
+        """把增量行合并进缓存（后到的数据覆盖重复行）。"""
+        bars = bars_from_rows(symbol, rows)
+        if bars is None:
+            return
+        if interval == "1h":
+            self.hourly[symbol] = merge_bars(self.hourly[symbol], bars) or self.hourly[symbol]
+            flow = flow_from_rows(symbol, rows)
+            if flow is not None and symbol in self.hourly:
+                self.flow[symbol] = _merge_flow(self.flow.get(symbol), flow)
+        else:
+            self.daily[symbol] = merge_bars(self.daily[symbol], bars) or self.daily[symbol]
+
+    async def _fetch_rows(
+        self,
+        fetch: Any,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[list[Any]]:
+        """分页拉取原始 K 线行，只保留已收盘的（`open_time + 周期 <= end_ms`）。"""
         rows: list[list[Any]] = []
         cursor = start_ms
         step_ms = HOUR_MS if interval == "1h" else DAY_MS
         async with self._semaphore:
             while cursor < end_ms:
                 batch = await _retry(
-                    self._source.klines,
+                    fetch,
                     symbol,
                     interval,
                     limit=_KLINE_LIMIT,
@@ -339,6 +548,4 @@ class LiveFeed:
                 cursor = last_open + step_ms
                 if len(batch) < _KLINE_LIMIT:
                     break
-        # 只保留已收盘的 K 线：open_time + 周期 <= now
-        closed = [row for row in rows if int(row[0]) + step_ms <= end_ms]
-        return bars_from_rows(symbol, closed)
+        return [row for row in rows if int(row[0]) + step_ms <= end_ms]
