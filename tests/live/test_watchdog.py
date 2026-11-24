@@ -117,6 +117,15 @@ def test_24小时内第二次超时只告警(watchdog: ModuleType) -> None:
     assert expired == "restart"
 
 
+def test_状态文件读取重启记录(watchdog: ModuleType, tmp_path: Path) -> None:
+    """写出的 {"restarts": {...}} 能被读回，24 小时冷却才不会丢失（实测发现）。"""
+    import json
+
+    path = tmp_path / "watchdog.json"
+    path.write_text(json.dumps({"restarts": {"trade-runner@C1-shadow": 123}}), encoding="utf-8")
+    assert watchdog._load_state(path) == {"trade-runner@C1-shadow": 123}
+
+
 def test_不在白名单的单元不执行命令(watchdog: ModuleType) -> None:
     """只允许 trade-runner@* 与 trade-runner-live@*（sudoers 同一条规则）。"""
     expected = ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"]

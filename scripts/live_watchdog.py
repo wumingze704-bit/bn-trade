@@ -155,13 +155,14 @@ def _alert(text: str, db_path: Path) -> None:
 
 
 def _load_state(path: Path) -> dict[str, int]:
-    """读取重启记录 `{unit: 首次重启毫秒}`；兼容旧版 `{unit: [毫秒, ...]}`。"""
+    """读取重启记录 `{unit: 首次重启毫秒}`；兼容旧版 `{unit: [毫秒, ...]}` 与 `{"restarts": {...}}`。"""
     raw: dict[str, Any] = {}
     if path.is_file():
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
-                raw = loaded
+                nested = loaded.get("restarts")
+                raw = nested if isinstance(nested, dict) else loaded
         except (OSError, json.JSONDecodeError):
             raw = {}
     restarts: dict[str, int] = {}
