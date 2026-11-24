@@ -5,7 +5,7 @@
 
 | 步骤 | 状态 | 提交 |
 | :-- | :-- | :-- |
-| M1 服务器改为 git 副本 | 进行中 | — |
+| M1 服务器改为 git 副本 | 完成 | `816c31b` |
 | M2 配置（risk / equity / 风险档位 / 500 USDT） | 未开始 | — |
 | M3 数据补充与防幸存者偏差 | 未开始 | — |
 | M4 研究框架修复（D1~D7）与可信度测试 | 未开始 | — |
@@ -15,9 +15,10 @@
 
 ## 当前状态
 
-- 当前子步骤：M1 第 1~6 步已执行（备份、差异核对、转换、sync.ps1、权限检查、看板验证），
-  待提交推送后改为“完成”。
-- 下一步：M2（按 1 号底线改配置与 pydantic 模型）。
+- 当前子步骤：M1 已完成并提交（`816c31b`），服务器 `~/trade` 已是 git 副本且 HEAD 与本地位于同一提交。
+- 下一步：M2（按 1 号底线改配置与 pydantic 模型：`configs/research.yaml` 的 risk / equity 节、
+  `configs/sizing_research.yaml` 的 500 USDT 与 3.0 / 1.5 上限与三档 risk_tiers、
+  `configs/live.yaml` 的 `live_capital_cap` 500、ledger 的 `global_trial_budget` 400）。
 
 ## M1 记录
 
