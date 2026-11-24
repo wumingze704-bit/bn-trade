@@ -272,3 +272,8 @@
 处理：R3 的第一次重跑结果与判定作废（试验次数照常计入），修复后重跑整轮（1 号第三部分第 8 条）；
 R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19_fix.json`（服务器）。
 
+对实盘引擎的影响：`src/trade/live/` 固定 `strict`（`halted_until_ms = _NEVER_MS`），不会进入 D19 修改的
+“到期恢复”分支，行为不变；`engine.md` 的文件清单（`trade.live` / `trade.dashboard` / `deploy`）不包含
+`trade.common.risk_rules`，无需更新。观察项：建议 3 号下次复核时把 `trade.common.risk_rules`、`trade.common.sizing`
+纳入 engine.md 的 SHA256 清单（它们是实盘与影子盘共用的执行口径）。
+
