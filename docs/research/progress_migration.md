@@ -19,8 +19,18 @@
   （10000 / 500），组合上限改为 3.0 / 1.5；`configs/sizing_research.yaml` 初始权益 500 并新增三档 `risk_tiers`；
   `configs/live.yaml` 资金上限 500（范围 (0, 1000]）；`global_trial_budget` 400；
   研究与最终检验读 research 的 risk 节，实盘 / 测试网 / 影子盘固定 strict（新增测试）。
-- 下一步：M3（数据补充与防幸存者偏差：在服务器下载主动买入成交、溢价指数、标记价格，
-  重新生成 2021-01~2026-07 每月选币快照并按规则顺序补齐下架合约交易规则，统计写入 decisions.md）。
+- 下一步：M3（数据补充与防幸存者偏差，全部在服务器执行）。
+
+## M3 前置事实（2026-11-24 核查，只读）
+
+- `data/universe_hist` 现有 72 个条目（含 `aliases.json`、`summary.json`），月份文件覆盖 2020-10 ~ 2026-07；
+  M3 需为 2021-01 ~ 2026-07 重新生成快照，旧文件先复制到 `data/universe_hist_pre_m3/`（data/ 下的覆盖由
+  M3 第 2 条授权，复制清单写入 `decisions.md`）。
+- `artifacts/exchange_info/` 有 3 个历史快照，可作为交易规则来源②；其余下架币按来源③合成。
+- 现有数据体量：`data/klines_1h` 551 MB、`data/klines_1d` 162 MB、`data/funding` 121 MB；磁盘剩余 37 GB。
+- 需新增的三类数据目录尚不存在：`data/klines_1h_flow/`、`data/premium_1h/`、`data/mark_1h/`，
+  对应 manifest 为 `data/history/manifest_flow.json`、`manifest_premium.json`、`manifest_mark.json`。
+- `research_end` = 2026-07-31，下载月份上限为 2026-07（不得越过）。
 
 ## M1 记录
 
