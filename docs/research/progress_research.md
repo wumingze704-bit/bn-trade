@@ -19,7 +19,9 @@
      （R1 status / trials 24 / result 与 `trials_used`），提交推送。
   3. 启动 R2（12 组）：先把服务器切到含 D21 修复的新提交，`git rev-parse HEAD` 核对一致后用 tmux + `systemd-run` 启动。
   4. R11 / R12 开跑前：网格写 `delay1_max_excess: 0.10`，并做 500 USDT 可执行性预检（0 号调度第七部分第 2 条 c 款）。
-- 未推送提交：无。
+- 未推送提交：`7a7de4f`（D21 修复与复核记录）与本条记录的提交。`git push origin develop` 连续失败
+  （`Empty reply from server`、`Failed to connect to github.com:443`、`Recv failure: Connection was reset`，按 1、2、4 分钟重试 3 次仍失败）；
+  本地提交保留，下次会话开始时先补推（补推成功后删除本节内容）。
 
 
 ## 本次运行状态（2026-11-24 第三次运行：迁移后重跑）
