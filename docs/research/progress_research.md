@@ -1,5 +1,29 @@
 # 自动研究循环进度（进行中）
 
+## 本次运行状态（2026-11-25 第五次运行：等 R1、前置复核与 R11/R12 预检）
+
+- 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
+  `engine.md` = ENGINE_READY；R1 为 researching、R2/R4~R12 为 pending、`trials_used` 97 < 400 → 第 8 条 a 款执行 1 号。
+  1 号第六部分第 3 条的首个轮次是 R1（researching），它在服务器运行中，故本次只做前置复核与预检，不重复启动、不写尚未产生的判定。
+- 前置复核：见 `review_log.md` 的“2026-11-25 00:10 UTC”一节（B1~B14 沿用 23:08 的“符合”，只新增对 `7a7de4f` 的 D21 字段复核；
+  §8 全部通过，`pytest -q` = `1 failed, 868 passed, 3 skipped`，失败为本机无 CUDA 的既有测试）。会话级一致性：
+  `trials_used` 97 = Σ trials 32 + Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 97 条。
+- R1 运行状态：服务器 tmux `r1`（`systemd-run --scope`，PID 924634），2026-11-24 21:34 UTC 启动；23:31 UTC 已运行 1h57m、
+  RSS 1.05 GB、CPU 99.7%；按 R3 实测（16 组约 4 小时 10 分）推算 24 组约 5.8 小时，预计 2026-11-25 03:20 UTC 前后完成。
+  完成判据：`ps` 无 `portfolio_backtest`、`artifacts/reports/R1/grid.json` 的 `generated_at` 为新时间、
+  `EXPERIMENTS.log` 新增 24 条 `kind=tuning`（R1）与 1 条 `kind=exec`。**不要重复启动**。
+- R11 / R12 的 500 USDT 可执行性预检已完成（见 `decisions.md` 2026-11-25 00:15 UTC 一节）：16 组全部低于 20% 丢弃门槛，
+  按预登记网格照抄执行；R12 的 BTC 对冲腿在 BTC 价格高于约 83.3k 的月份会被丢弃（占目标数 ≤ 16.7%），须写入 `rounds/R12.md`。
+- 未推送提交：无。上一节记录的推送失败已解决，`git log origin/develop -1` 与本地 HEAD 同为 `cc3fd09`（含 `7a7de4f`）。
+- 下一步（新会话）：
+  1. 确认 R1 是否结束（`ps -ef | grep portfolio_backtest`、`R1/grid.json`、`EXPERIMENTS.log`）；结束后读 `grid.json` 写
+     `rounds/R1.md` 的“重跑（迁移后）”一节（选参、分折、情景、可执行口径、判定逐项），更新 `ledger.yaml`
+     （R1 status / trials 24 / result 与 `trials_used` = 121），提交推送。
+  2. 启动 R2（12 组）：服务器 `git fetch` 后 `git checkout --detach <本地哈希>`（须含 D21 修复与本次交接提交），
+     核对 `git rev-parse HEAD` 与本地一致后用 tmux + `systemd-run` 启动。
+  3. R11 / R12 开跑前：网格写 `delay1_max_excess: 0.10`，并把本次预检数字抄进 `rounds/R11.md` / `rounds/R12.md` 的假设部分。
+
+
 ## 本次运行状态（2026-11-24 第四次运行：前置复核与 R1 重跑跟踪）
 
 - 判断（0 号调度第四部分）：`SETUP_DONE.md` 第一行“结论：DONE”；`progress_migration.md` 中 M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷

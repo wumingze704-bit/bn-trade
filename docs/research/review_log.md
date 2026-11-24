@@ -335,3 +335,30 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
 
 - 结论：**符合**（新增缺陷 D21 已修复并关闭；观察项 2 项）。
 
+
+## 2026-11-25 00:10 UTC 会话级一致性检查与执行 1 号前的前置复核（R1 仍在运行）
+
+- 会话前检查（0 号调度第二部分）：当前目录是 git 仓库（origin = `https://github.com/wumingze704-bit/bn-trade.git`），分支 `develop`，
+  `git pull --rebase origin develop` → Already up to date（`cc3fd09`，与 `origin/develop` 同步）；`ssh tokyo` 可连通；服务器无 `trade-runner@*` 实例。
+- 会话级总账一致性（第五部分第 1 条）：`trials_used = 97`；Σ rounds[].trials = 32（R3 修复后重跑）+ Σ rounds[].void.trials = 65 +
+  冻结仓位选择的试验 0 = 97 **符合**；服务器 `artifacts/reports/EXPERIMENTS.log` 的 `"kind": "tuning"` 97 条 **符合**。
+- 状态判断（第四部分）：`SETUP_DONE.md` 第一行“结论：DONE”；`progress_migration.md` 中 M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷（D21 已 CLOSED）；
+  `candidates` / `qualified_pool` 为空；三个窗口均 `unused`；`engine.md` 为 `ENGINE_READY` → 按第 8 条 a 款执行 1 号（R1 正在运行，R2、R4~R12 待跑）。
+- 复核对象与最新提交哈希：`src/trade/research/`（`7a7de4f`）、`tests/research/`（`7a7de4f`）、`src/trade/strategies/`（`9c82edc`）、
+  `scripts/portfolio_backtest.py`（`5381f16`）、`configs/research.yaml` 与 `configs/sizing_research.yaml`（`5381f16`）、
+  `src/trade/common/risk_rules.py`（`64a0dde`）、`src/trade/common/sizing.py`（`5381f16`）、`docs/research/ledger.yaml`（`0d602df`）、
+  `docs/research/rounds/R3.md`（`93d1b87`）。
+  - 与 2026-11-24 23:08 的复核相比，只有 `src/trade/research/` 与 `tests/research/` 变化（`7a7de4f`，D21 的 `delay1_max_excess` 可选字段）。
+    逐项复核该改动：默认 0 时仍要求 `delay1 < base`；正数时 `delay1 ≤ base + 容忍度`；负数 / 非数值直接抛 `ValueError`（红线 12）；
+    `grid.json` 记录该字段；3 项新测试通过。`git diff 93d1b87..HEAD` 显示 R1 正在运行的 `93d1b87` 与当前代码的差异只有该字段（默认值不改变判定）
+    与文档，故 B1~B14 与判定实现的结论沿用 23:08 的“符合”。
+  - 其余对象自 23:08 复核后未变化，沿用 2026-11-24 23:08 的复核结论（B1~B14 符合；`trade.common` 已计入 `code_hash`）。
+  - `rounds/R3.md` 与服务器 `artifacts/reports/R3/grid.json`（21:28 UTC 写入，此后无改动）在 23:08 已逐项核对一致。
+- §8 质量命令（本次复跑，代码 `7a7de4f`）：`ruff format --check .`（376 files）、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`
+  （56 files）、`mypy src/trade/dashboard`（8 files）通过；`pytest -q tests/research tests/strategies` → 71 passed；
+  `pytest -q` → `1 failed, 868 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有 `tests/models/test_dataset.py::test_pinned_cpu_placement`，
+  未修改任何测试）。
+- R1 运行状态：服务器 tmux 会话 `r1`（`systemd-run --scope` 下 PID 924634），2026-11-24 21:34 UTC 启动；23:31 UTC 已运行 1h57m、RSS 1.05 GB、
+  CPU 99.7%、服务器可用内存 1.99 GB；`artifacts/reports/R1/groups/` 尚未生成（逐组落盘在全部组跑完后写入）；本次未重复启动。
+- 结论：复核**全部符合**，未发现新缺陷。本次会话不推进 R1 判定（运行中），只完成 R11 / R12 的 500 USDT 可执行性预检（记录见 `decisions.md`）。
+
