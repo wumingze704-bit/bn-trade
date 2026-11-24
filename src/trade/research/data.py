@@ -115,10 +115,16 @@ class FundingSeries:
         return int(self.calc_time[index]) if index >= 0 else None
 
     def median_interval_hours(self) -> float:
-        """结算间隔的中位数（小时），用于判断资金费数据是否断档（docs/13 §1）。"""
-        if self.interval_hours.size == 0:
+        """结算间隔的中位数（小时），用于判断资金费数据是否断档（docs/13 §1）。
+
+        优先用相邻结算时刻差的中位数（真实间隔），不足两笔时退回 `interval_hours` 字段。
+        """
+        if self.calc_time.size >= 2:
+            value = float(np.median(np.diff(self.calc_time)) / HOUR_MS)
+        elif self.interval_hours.size:
+            value = float(np.median(self.interval_hours))
+        else:
             raise ValueError(f"{self.symbol} 的资金费序列为空（红线 12）")
-        value = float(np.median(self.interval_hours))
         if not np.isfinite(value) or value <= 0.0:
             raise ValueError(f"{self.symbol} 的资金费结算间隔非法：{value}（红线 12）")
         return value
