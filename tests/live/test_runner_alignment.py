@@ -17,7 +17,7 @@ from trade.live.store import Store
 from trade.live.targets import TradeIntent
 from trade.research import portfolio as research_portfolio
 from trade.research.config import ExecutionConfig
-from trade.research.data import HOUR_MS, Bars, MarketData, UniverseHistory
+from trade.research.data import HOUR_MS, Bars, MarkBars, MarketData, UniverseHistory
 from trade.research.interface import Decision, Target
 from trade.research.view import View
 
@@ -104,6 +104,70 @@ def test_影子盘按决策整点K线开盘价成交(tmp_path: Path) -> None:
     assert fills[0]["ts"] == start
     # 买入成交价 = 开盘价 + 半价差 + 滑点（大于开盘价）
     assert float(fills[0]["price"]) > float(fills[0]["open"])  # type: ignore[arg-type]
+
+
+def test_影子盘止损只用已收盘K线(tmp_path: Path) -> None:
+    """影子盘止损不得用当前未收盘 K 线触发（红线 1：决策只用已收盘数据）。"""
+    store = Store(tmp_path / "state.db")
+    start = 1_704_067_200_000  # 2024-01-01 00:00 UTC
+    # 三根已收盘 K 线（low=100）+ 一根未收盘 K 线（low=90，若误用会触发止损 95）
+    open_time = np.array([start + i * HOUR_MS for i in range(4)], dtype=np.int64)
+    hourly = Bars(
+        symbol="AAAUSDT",
+        open_time=open_time,
+        open=np.array([100.0, 100.0, 100.0, 100.0]),
+        high=np.array([101.0, 101.0, 101.0, 101.0]),
+        low=np.array([100.0, 100.0, 100.0, 90.0]),
+        close=np.array([100.5, 100.5, 100.5, 95.0]),
+        quote_volume=np.full(4, 1e7),
+    )
+    mark = MarkBars(
+        symbol="AAAUSDT",
+        open_time=open_time,
+        high=np.array([101.0, 101.0, 101.0, 101.0]),
+        low=np.array([100.0, 100.0, 100.0, 90.0]),
+        close=np.array([100.5, 100.5, 100.5, 95.0]),
+    )
+    market = MarketData(
+        hourly={"AAAUSDT": hourly},
+        daily={"AAAUSDT": _daily_bars(start)},
+        funding={},
+        universe=UniverseHistory({"2023-11": _snapshot(start)}),
+        rules={
+            "AAAUSDT": SymbolMeta(symbol="AAAUSDT", tick_size=0.01, step_size=0.1, min_notional=5.0)
+        },
+        mark={"AAAUSDT": mark},
+    )
+    store.upsert_shadow_position(
+        candidate="C1",
+        symbol="AAAUSDT",
+        side=1,
+        qty=1.0,
+        entry_price=100.0,
+        sl=0.05,  # 止损价 95
+        opened_ms=start,
+    )
+    store.commit()
+    runner = Runner.__new__(Runner)
+    runner.mode = "shadow"
+    runner.candidate = SimpleNamespace(candidate_id="C1")  # type: ignore[assignment]
+    runner._store = store
+    runner._feed = SimpleNamespace(hourly={"AAAUSDT": hourly}, market=lambda: market)  # type: ignore[assignment]
+    runner._exec_cfg = _exec_cfg()
+    runner._fee_taker = 0.0005
+    runner._blocked_until = {}
+    runner._mark_fallback = 0
+    runner._top_symbols = lambda view: frozenset()  # type: ignore[assignment]
+    runner._risk = SimpleNamespace(record_exit=lambda **kwargs: None)  # type: ignore[assignment]
+    runner._add_realized = lambda *args: None  # type: ignore[assignment]
+    runner._alert = _async_noop  # type: ignore[assignment]
+    try:
+        now_ms = start + 3 * HOUR_MS + 30_000  # 第四根 K 线刚开始 30 秒，尚未收盘
+        runner._shadow_stop_checks(now_ms)
+        remaining = store.list_shadow_positions("C1")
+    finally:
+        store.close()
+    assert [row["symbol"] for row in remaining] == ["AAAUSDT"]
 
 
 async def _async_noop(*args: object, **kwargs: object) -> None:

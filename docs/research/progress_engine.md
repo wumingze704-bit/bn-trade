@@ -1,6 +1,7 @@
 # 实盘工程与看板进度（P5 / P6）
 
-状态：完成（结论 ENGINE_READY，见 `docs/research/engine.md`）。执行文件：`指令/自动多轮/3_实盘工程与看板.txt`。时间：2026-11-23。
+状态：完成（结论 ENGINE_READY，见 `docs/research/engine.md`）。执行文件：`指令/自动多轮/3-实盘工程与看板.txt`；M6 对齐与安全修复见 0 号调度第六部分。时间：2026-11-23 首次完成，2026-11-24 M6 更新。
+
 
 ## 一、模式
 
@@ -35,3 +36,11 @@
 ## 五、断点续跑说明
 
 新会话收到本指令时：先读本文件与 `engine.md`。已完成的代码与部署无需重做；需要继续时按 engine.md §八 的剩余项处理，或按使用者新指令修改。
+
+## 六、M6 更新（2026-11-24）
+
+- 停机顺序（D8）、看门狗规则与白名单 sudo（D9）、策略权益与专用账户 / 密钥权限（D10）、systemd 加固与 PIN 文件（D11）已修复，详见 `review_log.md`。
+- 引擎对齐研究框架：组合层直接调用 `trade.research.portfolio.plan_positions`（模式 B / β 中性）、行情含 `mark_1h` / 主动买入 / `premium_1h`、止损基准与影子盘止损按标记价格。
+- 部署：服务器 `HEAD = 982df27`，看板 active 且 `curl 127.0.0.1:8501` = 200，看门狗 timer active，`/etc/sudoers.d/trade-watchdog` 解析 OK；看门狗实测重启一次、冷却内与停机标志下均不重启。
+- 测试与文件清单见 `engine.md` §六、§七。
+

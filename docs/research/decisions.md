@@ -388,3 +388,20 @@ tmux 会话 `trade` 只有一个空闲 bash）：
   `test_config.py` 的新配置项与范围校验、`tests/common/test_sizing.py` 的 `size_from_notional` 与 `calc_notional` 状态一致。
   没有修改或跳过任何既有断言。
 
+
+## 2026-11-24 M6 实盘安全修复与引擎对齐（取舍记录）
+
+- 使用者决定：研究与最终检验 R6/R8 停机改为 reset 模式停 7 天、实盘与影子盘保持 strict；研究达标用 10,000 USDT 信号口径并另加 500 USDT 可执行性检查；新增仓位模式 B（按波动率分配权重 + 15% 防灾止损，target_vol 默认 0.20）；中性策略改为 β 中性；实盘策略权益按 live_capital_cap 封顶；实盘资金 500 USDT 起步、可执行口径 500 USDT；三个风险档位；总名义上限权益 × 3、净敞口上限权益 × 1.5；方向侧重主流币、截面类新方向限定成交额前 30、不交易 TradFi 合约；实盘停机回撤线与 90 天评估改为与研究基准对照；global_trial_budget 改为 400；月化约 10% 只作期望、不是达标项（0 号调度第六部分）。
+- 看门狗重启权限：3 号第六部分第 10 条要求用 sudoers 规则授予重启权限，但服务器 sudo 版本不允许命令参数内通配符（`visudo` 报 “wildcards are not allowed in command arguments”）。
+  取舍：保留“最小命令”原则，改为 sudoers 只授予一个白名单校验脚本 `/usr/local/sbin/trade-restart-unit`（规则不含通配符），脚本从标准输入读实例名，只接受 `trade-runner@*.service` 与 `trade-runner-live@*.service`，其他输入返回 64。
+  权限等价于“只能重启 trade-runner 实例”，不授予 systemctl 其他子命令。已同步 `docs/07` §12/§13、`docs/02` §5。
+- 看门狗单元不设 `NoNewPrivileges=true`：sudo 是 setuid 程序，该选项会让 sudo 失效；改用 `ProtectSystem=full` + `PrivateTmp` + `ReadWritePaths`，在 `docs/07` §13 写明例外原因。
+- 紧急停机需要停止 systemd 实例：sudoers 只授予看门狗的重启脚本，没有授予 stop；因此 `scripts/kill_switch.py` 建议以 `sudo` 运行（未确认停止时直接中止，不操作账户）。
+- 新增状态库表 `strategy_positions` 与 `equity_baseline`：前者保存引擎实际持仓快照（重启后止损对账与专用账户检查的依据，替代原先一直为空的旧 `positions` 查询）；后者保存策略权益启动基准，重启不重置。
+- 候选文件新增可选字段 `sizing_mode` 与 `risk_tier`：冻结时按 1 号第九部分第 2 条选档、按 1 号第二部分第 3 条选仓位模式；缺省用 `configs/sizing_research.yaml` 的取值。单笔风险仍以候选 `risk_per_trade` 为准。
+- 止损基准改为 `mark_1h`：与实盘 `workingType=MARK_PRICE`、研究框架 1 号 B 第 5 条一致；缺标记价格时退回成交价并告警。
+- 影子盘止损改用已收盘 K 线：原先 `last_index_before(now_ms)` 会把当前未收盘 K 线当触发依据（红线 1），改为按决策整点取上一根已收盘 K 线。
+- 影子盘权益与 `risk_state` 写入：原实现重复计算未实现、且当日无 `risk_state` 行时已实现盈亏被静默丢弃；改为 `initial_equity + 累计已实现 + 未实现`，`update_risk_state` 改为 upsert（红线 12：不静默丢数据）。
+- 看板控制 PIN 改从 `configs/dashboard.yaml: control.pin_file` 读取：systemd 直接调用 python 后不能再经 `bash -lc` 导出环境变量；文件不存在时控制接口返回 503，不提供默认 PIN。
+- 部署文件改用 LF：Windows 工作区的 CRLF 会让 sudoers / systemd 解析失败（实测 “garbage at end of line”）。
+

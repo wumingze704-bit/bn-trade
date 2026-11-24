@@ -155,7 +155,7 @@ def _alert(text: str, db_path: Path) -> None:
 
 
 def _load_state(path: Path) -> dict[str, int]:
-    """读取重启记录 `{unit: 首次重启毫秒}`；兼容旧版 `{unit: [毫秒, ...]}` 与 `{"restarts": {...}}`。"""
+    """读取重启记录 `{unit: 毫秒}`（兼容旧版列表与 `{"restarts": {...}}` 包裹）。"""
     raw: dict[str, Any] = {}
     if path.is_file():
         try:

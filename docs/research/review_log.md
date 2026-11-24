@@ -155,3 +155,44 @@
   `tests/research` 50 项全通过；`scripts/check_docs_sections.py` 通过（20 条基线失效引用）。
 - 结论：**符合**。最小规模运行（模式 A、B 各一次）结果见 `progress_migration.md`。
 
+## 2026-11-24 16:10 UTC M6 缺陷登记（登记时 OPEN）
+
+复核对象：`src/trade/live/killswitch.py`、`scripts/kill_switch.py`、`scripts/live_watchdog.py`、
+`src/trade/live/runner.py`、`src/trade/live/credentials.py`、`deploy/*.service`（提交 `51e3af8`）。
+方法：逐条对照 3 号第五部分第 3、5 条与第六部分第 6、10、12 条、第八部分 6 / 6b / 6c / 6d；
+读代码与单元文件，未连接交易所、未读取密钥。
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :--- | :--- | :--- | :--- | :--- |
+| D8 | OPEN | 3 号第五部分第 5 条（停机顺序：先停实例再动账户；平仓完成前止损单必须存在） | `killswitch.kill_switch` 第 2 步先撤普通挂单、第 3 步就撤全部条件单（止损），第 4 步才市价平仓；`scripts/kill_switch.py` 的 `_stop_unit` 在 `kill_switch()` 返回之后才调用且不确认已停止 | 停机过程中存在“有仓位无止损”的窗口；闭市时引擎仍可能在操作账户 |
+| D9 | OPEN | 3 号第六部分第 10 条（有停机标志 / 主动停止不重启；24 小时内第二次超时只告警；sudoers 规则） | `scripts/live_watchdog.py` 不读停机标志、不检查实例是否被主动停止、不检查单元是否启用；`_RESTART_WINDOW_MS` 是滚动 1 小时（之后每小时重启一次）；`systemctl restart` 以普通用户执行、无 sudoers 规则 | 停机或主动停止的实例会被看门狗拉起；崩溃时可能陷入每小时重启循环 |
+| D10 | OPEN | 3 号第五部分第 3 条与第六部分第 6 条（策略权益 = min(启动时钱包余额, 上限) + 启动以来盈亏；专用账户与密钥文件权限检查） | `runner._equity` 用 `account.total_wallet_balance + total_unrealized_profit`（账户里多出的资金稀释回撤阈值）；启动检查没有外部持仓 / 挂单、余额 1.5 倍上限与 `.env.live` / 私钥 600 权限检查 | 账户混入其他资金时 R5~R8 与仓位偏大；非专用账户或权限过宽时仍会启动 |
+| D11 | OPEN | 3 号第六部分第 12 条（Restart=on-failure、直接调用 venv python、文件系统加固） | `deploy/trade-runner@.service` 与 `trade-runner-live@.service` 为 `Restart=always`；`trade-runner@.service` 与 `trade-dashboard.service` 用 `/bin/bash -lc`；缺少 ProtectSystem / ProtectHome / ReadWritePaths | 主动停止的实例被 systemd 拉起；登录 shell 与无加固扩大进程权限 |
+
+处理方式：按 3 号底线逐项修复，每个缺陷先写能复现它的测试；修复后把状态改为 CLOSED 并写明提交与测试名。
+
+
+
+## 2026-11-24 15:55 UTC M6 修复完成（D8~D11 → CLOSED；新增 D16~D18）
+
+复核对象与提交：`src/trade/live/{killswitch,runner,feed,candidate,config,credentials,store,execution}.py`、
+`src/trade/live/exchange/client.py`、`src/trade/dashboard/{app,config}.py`、`scripts/{kill_switch,live_runner,live_watchdog}.py`、
+`configs/{live,dashboard}.yaml`、`deploy/*`（`66b8c70`、`982df27`；中间提交 `f610371`、`76f1d52`、`bd10d55`、`c1bea65`、`938c6db`、`e737be9` 属同一修复过程中的迭代）。
+方法：修复前在 `51e3af8` 的 git worktree 中运行新测试，确认 17 项失败（killswitch 顺序/签名、watchdog 全部规则、deploy 单元加固）与 `check_secret_permissions` 导入失败；修复后本地
+`ruff format --check .`、`ruff check .`、`mypy --strict`、`mypy dashboard` 通过，`pytest -q` = `1 failed, 861 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。
+
+| 编号 | 状态 | 修复 | 复现测试 |
+| :--- | :--- | :--- | :--- |
+| D8 | CLOSED | `killswitch.kill_switch` 顺序改为 写停机标志 → 停实例并确认 → 撤普通挂单（保留止损）→ 平仓复核到零 → 撤剩余条件单 → 删心跳；实例未确认停止时不操作账户；剩余持仓保留止损并报错。`scripts/kill_switch.py` 停止并 `is-active` 确认。 | `tests/live/test_killswitch.py::{test_先停实例再动账户且平仓完成前止损单仍在, test_实例未确认停止时不动账户, test_停机后删除心跳文件}` |
+| D9 | CLOSED | 看门狗读停机标志 / 单元启用 / 主动停止（Result=success）；24 小时冷却（状态文件读回修复）；只经 sudoers 白名单脚本重启 `trade-runner*`；实例名从标准输入读，规则无通配符；引擎 SIGTERM 正常退出删除心跳。 | `tests/live/test_watchdog.py`（8 项）；服务器实测：重启一次、冷却内只告警、停机标志只告警 |
+| D10 | CLOSED | `runner._equity` = `min(启动余额, 上限) + 启动以来盈亏 + 未实现`（`equity_baseline`）；live 启动检查专用账户（外部持仓 / 普通挂单 / 余额 1.5 倍）与 `env_file` / 私钥 600 权限；影子盘权益按初始权益 + 累计已实现（含开仓费） + 未实现。 | `tests/live/test_runner_equity.py`（13 项） |
+| D11 | CLOSED | 交易与看板单元 `Restart=on-failure`、直接调用 venv python、`NoNewPrivileges/PrivateTmp/ProtectSystem=strict/ProtectHome=read-only/ReadWritePaths`；看门狗单元 sudo 例外用 `ProtectSystem=full`；看板 PIN 从 `control.pin_file` 读取；deploy 文件改 LF。 | `tests/live/test_deploy_units.py`（6 项） |
+| D16 | CLOSED | 影子盘权益原先把“含未实现的 equity 快照”再叠加未实现，重复计算；改为 `initial_equity + 累计已实现 + 未实现`，开仓手续费计入已实现。 | `tests/live/test_runner_equity.py::test_影子盘权益不重复计算未实现盈亏` |
+| D17 | CLOSED | `Store.update_risk_state` 只 UPDATE 已存在行，首日没有 `risk_state` 行时已实现盈亏被静默丢弃；改为 upsert（未给出的列取默认值）。 | `tests/live/test_runner_equity.py::test_影子盘权益不重复计算未实现盈亏`（依赖当日没有行时写入 realized_pnl） |
+| D18 | CLOSED | 影子盘止损失败地用 `last_index_before(now_ms)`，会把当前未收盘 K 线当触发依据；改为 `last_index_before(决策整点)` 并使用 `mark_1h` 的 low/high。 | `tests/live/test_runner_alignment.py::test_影子盘止损只用已收盘K线` |
+
+处理方式：全部按 0 号调度第六部分 M6 与 3 号第五、六部分修复；改动同步 `docs/07`（§2、§4、§5、§8、§10、§11、§12、§13、§14）、`docs/02`（进程守护与看门狗权限）、
+`docs/09`（新增两个 REST 接口）、`docs/10`（PIN 文件）。测试改动说明：
+- `tests/live/test_killswitch.py`：既有用例改为传入 `stop_runner`（保持原断言），并新增顺序 / 拒绝 / 心跳 / 保留止损用例。
+- 服务器实测中的临时实例 `trade-runner@SMOKE-shadow`、override、心跳、`watchdog.json` 与停机标志均已清理；服务器无 `trade-runner@*` 实例。
+

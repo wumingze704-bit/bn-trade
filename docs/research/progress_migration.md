@@ -10,10 +10,24 @@
 | M3 数据补充与防幸存者偏差 | 完成 | `18cbdee` |
 | M4 研究框架修复（D1~D7、D12、D13）与可信度测试 | 完成 | `9c82edc`、`a2bafb4` |
 | M5 仓位模式 B 与 β 中性 | 完成 | `5381f16` |
-| M6 实盘安全修复（D8~D11）与引擎对齐 | 未开始 | — |
+| M6 实盘安全修复（D8~D11）与引擎对齐 | 完成 | `982df27` |
 | M7 旧判定作废并准备重跑 | 未开始 | — |
 
+
 ## 当前状态
+
+- M6 已完成（代码 `66b8c70`、`982df27`；部署 `982df27`）：
+  - **D8 紧急停机顺序**：`killswitch.kill_switch` 改为 ① 写停机标志 → ② 调用 `stop_runner` 停止并确认实例（未确认不操作账户）→ ③ 只撤普通挂单（保留止损）→ ④ 市价平仓并复核到零 → ⑤ 撤剩余条件单 → ⑥ 删除心跳；仍有持仓时保留止损并报错。`scripts/kill_switch.py` 用 `systemctl stop` + `is-active` 确认，失败时 `sudo -n` 重试，仍失败即中止。
+  - **D9 看门狗**：读 `halt_flags`、`systemctl is-enabled`、`is-active` 与 `Result`；有停机标志 / 单元未启用 / 主动停止（Result=success）只告警；第一次重启后 24 小时内第二次超时只告警（状态文件读回修复）；只重启 `trade-runner*`，经 `sudo -n /usr/local/sbin/trade-restart-unit`（白名单校验脚本，实例名从标准输入读，sudoers 规则无通配符）。实测：超时重启一次、随后 30 秒内再次超时只告警（`ActiveEnterTimestamp` 不变）、写入停机标志后只告警。
+  - **D10 策略权益与专用账户**：`runner._equity` 改为 `min(启动余额, live_capital_cap) + 启动以来已实现 + 未实现`（基准写入 `equity_baseline`）；影子盘权益 = `initial_equity + 累计已实现（含开仓手续费）+ 未实现`；live 启动新增专用账户检查（外部持仓 / 普通挂单 / 余额 1.5 倍上限）与 `env_file` / 私钥 600 权限检查。
+  - **D11 systemd**：交易与看板单元 `Restart=on-failure`、直接调用 venv python、`NoNewPrivileges/PrivateTmp/ProtectSystem=strict/ProtectHome=read-only/ReadWritePaths`；看门狗单元因 sudo 例外改用 `ProtectSystem=full`；看板控制 PIN 改从 `control.pin_file` 读取。
+  - **引擎对齐**：引擎直接调用 `trade.research.portfolio.plan_positions`（含模式 B 与 β 中性）；候选文件可选 `sizing_mode` / `risk_tier`；行情新增标记价格（`markPriceKlines`）与主动买入（`taker_buy_*`），`with_premium` 时补溢价指数；止损触发价改用决策整点前一根已收盘 `mark_1h` 收盘价，影子盘止损按 `mark_1h` 且在已收盘 K 线上判断。
+  - **顺带修复的新缺陷**：D16 影子盘权益重复计未实现；D17 `risk_state` 行不存在时 `update_risk_state` 静默丢弃已实现盈亏（改为 upsert）；D18 影子盘止损误用未收盘 K 线。
+  - **测试**：新增 `test_killswitch.py`（顺序）、`test_watchdog.py`、`test_runner_equity.py`、`test_deploy_units.py`、`test_feed_parity.py`、`test_runner_alignment.py`；修复前在 `51e3af8` 工作树复现 17 项失败（killswitch 9、watchdog 7、deploy 5 中的 4 项）与 `check_secret_permissions` 导入失败。
+  - **质量命令**：`ruff format --check .`（374 files）、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`（56 files）、`mypy src/trade/dashboard`（8 files）通过；`pytest -q` = `1 failed, 861 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。`scripts/check_docs_sections.py` 通过（基线已有失效引用 20 条）。
+  - **服务器部署（`HEAD = 982df27`）**：看板 active、`curl 127.0.0.1:8501` = 200、ExecStart 为直接调用 python；看门狗 timer active；`visudo` 解析 OK；白名单脚本拒绝非 trade-runner 单元。engine.md 已更新文件清单与 SHA256。
+- 下一步（M7）：作废 R1~R10 旧判定并准备重跑（ledger `void` 字段、rounds 顶部标记、按 R3 优先顺序重跑）。
+- 推送：本地 `develop` 已到 `982df27`（代码/部署），M6 交接文档另行提交。
 
 - M5 已完成（代码 `5381f16`）：
   - 仓位模式 B（`vol_target`）：按过去 `vol_lookback_days` 天日收益标准差的倒数分配权重，用过去
