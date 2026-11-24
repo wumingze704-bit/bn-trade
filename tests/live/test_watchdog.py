@@ -141,3 +141,5 @@ def test_重启用sudo且失败返回False(watchdog: ModuleType, monkeypatch: py
     assert len(calls) == before
     assert all(args == ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"] for args, _ in calls)
     assert calls[0][1] == "trade-runner@C1-shadow.service\n"
+    assert watchdog.restart_unit("trade-runner@C3-shadow") is True
+    assert calls[-1][1] == "trade-runner@C3-shadow.service\n"

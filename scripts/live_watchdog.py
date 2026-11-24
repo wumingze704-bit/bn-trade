@@ -62,11 +62,15 @@ def restart_command(unit: str) -> list[str] | None:
 
 
 def restart_unit(unit: str) -> bool:
-    """重启实例一次；返回是否成功（失败只告警，不抛异常）。"""
+    """重启实例一次；返回是否成功（失败只告警，不抛异常）。
+
+    白名单脚本要求完整单元名（带 `.service`），这里补齐后缀。
+    """
     command = restart_command(unit)
     if command is None:
         return False
-    code, _ = _run(command, input_text=f"{unit}\n")
+    target = unit if unit.endswith(".service") else f"{unit}.service"
+    code, _ = _run(command, input_text=f"{target}\n")
     return code == 0
 
 
