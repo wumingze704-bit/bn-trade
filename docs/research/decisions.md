@@ -333,3 +333,27 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 校验：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
   `mypy src/trade/dashboard`、`python scripts/check_docs_sections.py` 全部通过；`pytest -q` 为
   `1 failed, 785 passed, 3 skipped`，唯一失败是与 SETUP_DONE 基线一致的 `tests/models/test_dataset.py::test_pinned_cpu_placement`（本机无 CUDA，未修改测试）。
+
+## 2026-11-24 M4 研究框架修复的取舍（0 号调度第六部分 M4）
+
+- 成交时点：按 1 号第五部分 B 第 4 条改为“决策在 t、成交在 `open_time = t` 的 K 线开盘”，仓位规模用截至 `t − 1h` 收盘的盯市值；
+  权益曲线按每根 K 线收盘记录，因此日收益仍以 23:00 K 线收盘为准。
+- 止损：改为按 `mark_1h` 的 low/high 触发、按成交价 K 线成交，成本 = `stop_slip_mult` 倍滑点（max(1bp, 平方根冲击)） + 半价差；
+  入场基准价取入场时刻已收盘的最后一根标记价格收盘价。缺标记价格时退回成交价并计数 `mark_fallback`。
+- 资金费断档判定：先用“相邻结算间隔中位数 × 1.5”，实测发现部分币的结算周期在 4h 与 8h 之间切换，导致 3 个月窗口内
+  `funding_estimated` 达 8754（明显误判）；改为“相邻结算间隔 99 分位 × 1.5（间隔夹在 1~24h）”，同一窗口降至 28，
+  真正缺数据的币（例如 TONUSDT 序列在窗口前结束）仍会被估算。
+- 拼接曲线：`Engine.run_path` 接受段列表，权益、持仓与风控状态跨段延续，段起点状态为空；训练期只用于选参与指标预热，
+  不再出现“训练期停机把验证折清零”的问题。
+- R5 成分参数：网格改为 `component_grids` 指向 R1/R2/R4 网格，`pipeline.component_params_by_fold` 逐折按折前数据选参；
+  `Ensemble.build` 缺成分时直接报错（不允许回退到全研究期参数）。成分参数的评估已在各自轮次登记，这里只复用结果、不重复登记试验。
+- 可执行性（i 款）：`plan_positions` 增加 `attempted` 与 `dropped_min_notional` 计数，可执行口径用同一选参结果重跑拼接路径；
+  三项判定（丢弃比例 ≤ 20%、净收益 > 0、夏普 ≥ 信号口径 70%）并入 `checks`。
+- `long_only` / `short_only` 情景：仍在决策层过滤方向。1 号 d 款要求“交易集合是 base 的子集”，但仓位大小与持仓决定
+  依赖权益路径，逐笔时间戳无法严格一致；测试改为核对方向过滤与两侧笔数上界，规格写入 `docs/13` §7。
+- 最小规模运行不写 `EXPERIMENTS.log`：`--smoke-months` 只输出结果文件与记录字段样例，避免把调试运行计入试验次数
+  （1 号第三部分第 5 条的试验指研究期网格评估）。
+- 服务器同步：本地 `git bundle` → scp → 服务器 `git fetch` + `git checkout --detach`，核对 `git rev-parse HEAD` 与本地一致；
+  本地到 GitHub 的推送仍未恢复（`git pull` 报 Empty reply），提交暂存在本地 develop。
+- 测试改动（`review_log.md` 已逐条说明）：`test_engine.py` 的成交时点断言与止损用例的标记价格数据、`test_view.py` 的资金费用例
+  改用 `funding_missing`；没有放宽任何容差、没有跳过任何测试。

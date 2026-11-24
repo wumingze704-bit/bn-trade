@@ -59,7 +59,42 @@
 
 - 待办：缺陷 D1~D11 尚未登记，按迁移 M4（D1~D7）与 M6（D8~D11）执行时登记为 OPEN。
 
-## 2026-11-24 12:05 UTC M4 缺陷登记（OPEN；状态在修复后改为 CLOSED）
+## 2026-11-24 13:15 UTC M4 修复完成（D1~D7、D12、D13 → CLOSED）
+
+复核对象与提交：`src/trade/research/{engine,rolling,pipeline,portfolio,view,data,config}.py`、
+`src/trade/strategies/{ensemble,registry}.py`、`scripts/portfolio_backtest.py`、
+`configs/research.yaml`、`configs/strategies/round_R5.yaml`、`tests/research/*`（`9c82edc`、`a2bafb4`）。
+方法：读代码逐条核对 1 号第五部分 B 第 1~14 条与第七部分第 5 条；本地跑 §8 质量命令与
+`tests/research`（36 passed）；服务器 `HEAD = a2bafb4` 与本地一致；最小规模运行见 progress_migration.md。
+
+| 编号 | 状态 | 修复 | 复现测试 |
+| :--- | :--- | :--- | :--- |
+| D1 | CLOSED | 拼接曲线改为连续路径：`Engine.run_path(segments)` 从第 1 折起点以初始权益、空仓、空风控状态运行，折边界换参数；`rolling.concatenated_returns` 与 `selected_trades` 删除 | `tests/research/test_credibility.py::test_e_训练期风控状态不带入验证路径` |
+| D2 | CLOSED | `round_R5.yaml` 改为 `component_grids`，`pipeline.component_params_by_fold` 逐折用折前数据选成分参数；`Ensemble.build` 缺成分时直接报错 | `tests/research/test_credibility.py::test_e_训练期风控状态不带入验证路径`（路径换参数）+ `test_records.py::test_网格评估写出记录与逐组文件并可断点续跑` |
+| D3 | CLOSED | 引擎改为“决策在 t、成交在 `open_time = t` 的 K 线开盘”，仓位权益用截至 `t − 1h` 收盘的盯市值；权益曲线按每根 K 线收盘记录 | `test_credibility.py::test_h_口径回归测试`（h1）、`test_f_独立参考实现逐值一致`、`test_engine.py::test_决策时刻所在K线开盘成交且含成本` |
+| D4 | CLOSED | 止损成交价改为“止损价 + `stop_slip_mult` 倍滑点（max(1bp, 平方根冲击)） + 半价差” | `test_h_口径回归测试`（h2，小币冲击 > 1bp） |
+| D5 | CLOSED | 资金费缺失不再静默为 0：按该币过去 7 天平均估算并计数，没有近期结算时按 U(R) 中位数并计数；开仓前要求过去 7 天有结算记录 | `test_h_口径回归测试`（h3）、`test_view.py::test_资金费均值按已结算序列` |
+| D6 | CLOSED | 止损触发改用 `mark_1h` 的 low/high，成交仍用成交价 K 线；缺标记价格时退回并计数 `mark_fallback` | `test_h_口径回归测试`（h4） |
+| D7 | CLOSED | 取不到平仓价 / 盯市价 / 持仓币没有任何 K 线时抛出带币种与时间的异常 | `test_h_口径回归测试`（h1~h4 依赖该异常路径）+ 代码审查 |
+| D12 | CLOSED | 试验记录含 `code_hash`/`data_hash`/`config_hash`/`equity_basis`，另有 `kind=exec`；逐组原子落盘与断点续跑；`scripts/portfolio_backtest.py` 不再写 ledger | `test_records.py` 三个测试 |
+| D13 | CLOSED | 两种权益口径由同一代码只换初始权益；可执行口径重跑拼接路径并输出 `dropped_min_notional`/`attempted`，i 款三项进入 `checks` | `test_credibility.py::test_g_两种权益口径的丢弃数`、`test_records.py::test_网格评估写出记录与逐组文件并可断点续跑` |
+
+处理方式：全部按 0 号调度第六部分 M4 执行；改动同步 `docs/13`（只写规格）。测试改动说明：
+- `tests/research/test_engine.py::test_决策时刻所在K线开盘成交且含成本`：原断言固定了“晚 1 小时成交”的旧口径（D3），按 1 号 B 第 4 条改为 `entry_ts == start`；止损用例同步替换标记价格数据（D6 后触发基准改为 `mark_1h`）。
+- `tests/research/test_view.py::test_资金费均值按已结算序列`：fixture 默认给所有币资金费序列（D5 后没有序列的币不能开仓），断言不变，改用 `funding_missing=("BBBUSDT",)` 指定缺数据币。
+- `tests/research/helpers.py`：新增标记价格数据、默认资金费序列、`history_days` 预热期与日线起始时间参数（fixture 扩展，不改任何断言）。
+
+## 2026-11-24 13:12 UTC M4 最小规模运行（服务器）
+
+- 命令：`sudo systemd-run --scope -p MemoryMax=2600M nice -n 10 ~/trade-venv/bin/python scripts/portfolio_backtest.py --grid configs/strategies/round_R4.yaml --smoke-months 3`（研究窗口最后 3 个月 2026-05-01 ~ 2026-07-31，1 个方向 × 1 组参数）。
+- 信号口径 10,000 USDT：交易 448、应开仓 448、最小下单额丢弃 0、年化夏普 -2.157、最大回撤 11.5%、多头毛收益 -1436.15、空头毛收益 +673.96。
+- 可执行口径 500 USDT：交易 445、应开仓 448、最小下单额丢弃 3（0.67%）、年化夏普 -1.777、最大回撤 11.0%。
+- 计数：`funding_estimated 28`、`funding_missing 0`、`mark_fallback 128`。记录字段核对：`kind=tuning`（`equity_basis 10000`）与 `kind=exec`（`equity_basis 500`）两种记录都写出。
+- 结果文件：服务器 `artifacts/reports/smoke/20261124T131257Z.json`；未写入 `EXPERIMENTS.log`（最小规模运行不计试验次数）。
+- 备注：首次最小运行出现 `funding_estimated 8754` 的误判，原因是部分币的结算周期在中位数 4h 与常见 8h 之间切换；改为按相邻结算间隔 99 分位判定后降至 28（提交 `a2bafb4`）。
+
+
+## 2026-11-24 12:05 UTC M4 缺陷登记（登记时 OPEN；已在 13:15 一节改为 CLOSED）
 
 复核对象：`src/trade/research/rolling.py`（`182a877`）、`src/trade/research/engine.py`（`182a877`）、
 `src/trade/strategies/ensemble.py` 与 `configs/strategies/round_R5.yaml`（`182a877`）、
