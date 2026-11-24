@@ -15,7 +15,7 @@ from tests.research.helpers import (
 )
 from trade.common.risk_rules import RiskLimits
 from trade.common.sizing import SizingConfig
-from trade.research.data import HOUR_MS, MarketData
+from trade.research.data import HOUR_MS, MarkBars, MarketData
 from trade.research.engine import Engine, ScenarioOptions
 from trade.research.interface import EXPOSURE_DIRECTIONAL, Decision, Target
 from trade.research.view import View
@@ -84,7 +84,8 @@ def _engine(market: MarketData, strategy, options: ScenarioOptions | None = None
     )
 
 
-def test_决策后下一根K线开盘成交且含成本() -> None:
+def test_决策时刻所在K线开盘成交且含成本() -> None:
+    """决策时刻 t 的订单在 open_time = t 的 K 线开盘成交（1 号第五部分 B 第 4 条）。"""
     market = make_market(n=160, drift_by_symbol={"AAAUSDT": 0.0005})
     engine = _engine(market, AlwaysLong())
     start = START_MS + 72 * HOUR_MS
@@ -93,7 +94,7 @@ def test_决策后下一根K线开盘成交且含成本() -> None:
     first = result.trades[0]
     bars = market.bars("AAAUSDT")
     entry_index = int(np.searchsorted(bars.open_time, first.entry_ts))
-    assert first.entry_ts == start + HOUR_MS
+    assert first.entry_ts == start
     assert first.entry_price > float(bars.open[entry_index])
 
 
@@ -105,6 +106,10 @@ def test_止损触发按止损价加滑点成交并进入冷却() -> None:
     bars.high[100:] = 80.2
     bars.low[100:] = 79.8
     market.hourly["AAAUSDT"] = bars
+    # D6：止损按标记价格触发（与实盘 working_type=MARK_PRICE 一致），因此标记价格同步替换
+    market.mark["AAAUSDT"] = MarkBars(
+        symbol="AAAUSDT", open_time=bars.open_time, high=bars.high, low=bars.low, close=bars.close
+    )
     engine = _engine(market, AlwaysLong(sl=0.03))
     start = START_MS + 72 * HOUR_MS
     result = engine.run(start, START_MS + 150 * HOUR_MS)

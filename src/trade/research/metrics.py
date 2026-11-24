@@ -150,6 +150,11 @@ def summarize(
         "long_net": sum(trade.net_pnl for trade in result.trades if trade.side > 0),
         "short_net": sum(trade.net_pnl for trade in result.trades if trade.side < 0),
         "dropped": result.dropped,
+        "dropped_min_notional": result.dropped_min_notional,
+        "attempted": result.attempted,
+        "funding_estimated": result.funding_estimated,
+        "funding_missing": result.funding_missing,
+        "mark_fallback": result.mark_fallback,
         "forced_liquidations": result.forced_liquidations,
         "net_exposure_mean": float(exposures.mean()) if exposures.size else 0.0,
         "net_exposure_abs_p95": float(np.quantile(np.abs(exposures), 0.95))

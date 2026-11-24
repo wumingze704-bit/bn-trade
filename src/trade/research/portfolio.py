@@ -11,6 +11,8 @@ from trade.research.interface import EXPOSURE_NEUTRAL, Decision
 from trade.research.view import View
 
 _BP = 1e-4
+# 不允许开仓的资金费判定窗口（1 号 B 第 1 条：过去 7 天没有结算记录时不允许开仓）
+_FUNDING_REQUIRED_HOURS = 7 * 24
 
 
 @dataclass(frozen=True)
@@ -26,9 +28,17 @@ class PlannedPosition:
 
 @dataclass
 class PlanStats:
-    """组合层统计（写入报告与诊断）。"""
+    """组合层统计（写入报告与诊断）。
+
+    `attempted`：进入仓位计算的目标数（不含已同向持有的仓位），是可执行性检查的分母；
+    `dropped_min_notional`：其中因最小下单额或取整被丢弃的数量（第七部分第 5 条 i 款）。
+    """
 
     dropped: int = 0
+    attempted: int = 0
+    dropped_min_notional: int = 0
+    kept: int = 0
+    kept_symbols: set[str] = field(default_factory=set)
     long_notional: float = 0.0
     short_notional: float = 0.0
     capped: dict[str, int] = field(default_factory=dict)
@@ -64,6 +74,7 @@ def plan_positions(
     portfolio_cfg: PortfolioConfig,
     fee_taker: float,
     blocked: Mapping[str, int],
+    held: Mapping[str, int] | None = None,
 ) -> tuple[list[PlannedPosition], PlanStats]:
     """把策略目标转换为可成交的名义价值（docs/13 §3）。
 
@@ -77,19 +88,30 @@ def plan_positions(
         portfolio_cfg: 组合层上限。
         fee_taker: 吃单费率。
         blocked: 冷却中的币（symbol → 解禁时刻），冷却期内不新开仓。
+        held: 当前持仓方向（symbol → ±1）；已同向持有的目标不重复开仓，也不计入应开仓位。
 
     Returns:
-        (待成交仓位列表, 统计)。被丢弃的仓位记入 dropped。
+        (待成交仓位列表, 统计)。被丢弃的仓位记入 dropped，进入仓位计算的记入 attempted。
     """
+    held = held or {}
     stats = PlanStats()
     top_symbols = top_volume_symbols(view, view.universe_symbols(), exec_cfg.half_spread_top_n)
     weighted: list[tuple[float, PlannedPosition]] = []
     for target in decision.targets:
+        if held.get(target.symbol) == target.side:
+            stats.kept += 1
+            stats.kept_symbols.add(target.symbol)
+            continue
         if target.symbol in blocked or not view.has(target.symbol):
             stats.dropped += 1
             continue
         if target.side not in (1, -1) or not (0.0 < target.sl <= exec_cfg.stop_max):
             stats.dropped += 1
+            continue
+        if view.funding_hourly_mean(target.symbol, _FUNDING_REQUIRED_HOURS) is None:
+            # 没有资金费序列或过去 7 天没有结算：不允许开仓（1 号 B 第 1 条）
+            stats.dropped += 1
+            stats.capped["no_funding"] = stats.capped.get("no_funding", 0) + 1
             continue
         price = view.close(target.symbol)
         if price is None or price <= 0.0:
@@ -122,8 +144,11 @@ def plan_positions(
             min_notional=rule.min_notional,
             cfg=sizing_cfg,
         )
+        stats.attempted += 1
         if not result.accepted:
             stats.dropped += 1
+            if result.status in {"below_min_notional", "step_rounding"}:
+                stats.dropped_min_notional += 1
             stats.capped[result.status] = stats.capped.get(result.status, 0) + 1
             continue
         if result.capped_by is not None:

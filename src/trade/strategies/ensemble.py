@@ -76,11 +76,27 @@ class Ensemble:
         return Decision(tuple(targets), EXPOSURE_NEUTRAL)
 
 
-def build(params: Mapping[str, object], *, stop_max: float) -> Ensemble:
-    """从参数构造 R5（components 为三成分的固定参数）。"""
-    components = params["components"]
-    if not isinstance(components, Mapping):
-        raise ValueError("R5 参数缺少 components 映射")
+def build(
+    params: Mapping[str, object],
+    *,
+    stop_max: float,
+    components: Mapping[str, Mapping[str, object]] | None = None,
+) -> Ensemble:
+    """从参数构造 R5；成分参数必须逐折给出（1 号第八部分 R5）。
+
+    Args:
+        params: 该组参数（`top_k`、`rebalance_hours`）。
+        stop_max: 止损距离硬上限。
+        components: 本折使用的成分参数 `{family: params}`，只用该折之前的数据选出。
+
+    Returns:
+        Ensemble。
+
+    Raises:
+        ValueError: 缺少成分参数（不得回退到全研究期选出的固定参数，否则早期折用到未来数据）。
+    """
+    if not components:
+        raise ValueError("R5 的成分参数必须逐折给出（1 号第八部分 R5）")
     return Ensemble(
         components={
             str(key): dict(value) for key, value in components.items() if isinstance(value, Mapping)

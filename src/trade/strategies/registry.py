@@ -30,7 +30,13 @@ _BUILDERS = {
 }
 
 
-def build_strategy(family: str, params: Mapping[str, object], *, stop_max: float) -> Strategy:
+def build_strategy(
+    family: str,
+    params: Mapping[str, object],
+    *,
+    stop_max: float,
+    components: Mapping[str, Mapping[str, object]] | None = None,
+) -> Strategy:
     """按家族名与参数字典构造策略。
 
     Args:
@@ -39,16 +45,19 @@ def build_strategy(family: str, params: Mapping[str, object], *, stop_max: float
             `btc_hedged_momentum` / `liquidity_tiered_momentum`。
         params: 该组参数（来自 `configs/strategies/` 的网格）。
         stop_max: 止损距离硬上限（来自 research.yaml）。
+        components: R5 的逐折成分参数（`{family: params}`）；其它家族不接受。
 
     Returns:
         Strategy 实例。
 
     Raises:
-        ValueError: 未知家族。
+        ValueError: 未知家族、R5 缺少成分参数或其它家族传入了成分参数。
     """
     if family not in _BUILDERS:
         raise ValueError(f"未知策略家族：{family}（可用 {sorted(_BUILDERS)}）")
     builder = _BUILDERS[family]
     if family == "ensemble":
-        return build_ensemble(params, stop_max=stop_max)
+        return build_ensemble(params, stop_max=stop_max, components=components)
+    if components is not None:
+        raise ValueError(f"{family} 不接受 components（只有 R5 组合使用，1 号第八部分）")
     return builder(params, stop_max=stop_max)  # type: ignore[arg-type]

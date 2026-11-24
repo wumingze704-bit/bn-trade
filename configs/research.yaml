@@ -4,6 +4,9 @@
 paths:
   klines_1h: ./data/klines_1h
   klines_1d: ./data/klines_1d
+  klines_1h_flow: ./data/klines_1h_flow # 主动买入成交（docs/13 §1）
+  premium_1h: ./data/premium_1h # 溢价指数 1h
+  mark_1h: ./data/mark_1h # 标记价格 1h，止损触发基准
   funding: ./data/funding
   universe_hist: ./data/universe_hist
   research_cache: ./artifacts/research_cache

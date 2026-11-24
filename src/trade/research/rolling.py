@@ -107,6 +107,25 @@ def _trades_between(trades: list[Trade], start_ms: int, end_ms: int) -> int:
     return sum(1 for trade in trades if start_ms <= trade.entry_ts < end_ms)
 
 
+def slice_returns(daily: pd.Series, start_ms: int, end_ms: int) -> pd.Series:
+    """取 `[start_ms, end_ms)` 的日收益。"""
+    if daily.empty:
+        return daily
+    mask = (daily.index >= pd.Timestamp(start_ms, unit="ms", tz="UTC")) & (
+        daily.index < pd.Timestamp(end_ms, unit="ms", tz="UTC")
+    )
+    return daily[mask]
+
+
+def _slice(daily: pd.Series, start_ms: int, end_ms: int) -> pd.Series:
+    """内部别名（保持既有调用结构）。"""
+    return slice_returns(daily, start_ms, end_ms)
+
+
+def _trades_between(trades: list[Trade], start_ms: int, end_ms: int) -> int:
+    return sum(1 for trade in trades if start_ms <= trade.entry_ts < end_ms)
+
+
 def select_for_fold(runs: Mapping[str, ParamRun], fold: Fold, research_start_ms: int) -> FoldChoice:
     """折开始之前的全部数据上按年化夏普选参，要求训练期交易数 ≥ 30（docs/13 §7）。"""
     best: tuple[float, int, str] | None = None
@@ -124,31 +143,6 @@ def select_for_fold(runs: Mapping[str, ParamRun], fold: Fold, research_start_ms:
     return FoldChoice(fold=fold, params_key=key, train_sharpe=sharpe, train_trades=-negative_trades)
 
 
-def concatenated_returns(
-    runs: Mapping[str, ParamRun], folds: list[Fold], research_start_ms: int
-) -> tuple[pd.Series, list[FoldChoice]]:
-    """按折选参并把各折样本外日收益拼成一条曲线（docs/13 §7 第 10 条）。"""
-    pieces: list[pd.Series] = []
-    choices: list[FoldChoice] = []
-    for fold in folds:
-        choice = select_for_fold(runs, fold, research_start_ms)
-        choices.append(choice)
-        piece = _slice(runs[choice.params_key].daily, fold.start_ms, fold.end_ms)
-        if not piece.empty:
-            pieces.append(piece)
-    if not pieces:
-        raise ValueError("拼接曲线为空：检查研究期与折切分")
-    return pd.concat(pieces).sort_index(), choices
-
-
-def selected_trades(
-    runs: Mapping[str, ParamRun], folds: list[Fold], choices: list[FoldChoice]
-) -> list[Trade]:
-    """选参之后各折内实际发生的交易（用于拼接曲线的 bootstrap 与分项统计）。"""
-    trades: list[Trade] = []
-    for fold, choice in zip(folds, choices, strict=True):
-        run = runs[choice.params_key]
-        trades.extend(
-            trade for trade in run.trades if fold.start_ms <= trade.entry_ts < fold.end_ms
-        )
-    return trades
+def trades_in_fold(trades: list[Trade], fold: Fold) -> list[Trade]:
+    """某折内开仓的交易（用于分折诊断）。"""
+    return [trade for trade in trades if fold.start_ms <= trade.entry_ts < fold.end_ms]

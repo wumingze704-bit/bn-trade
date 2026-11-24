@@ -61,7 +61,9 @@ def test_ATR与成交额窗口只用到已收盘数据() -> None:
 
 
 def test_资金费均值按已结算序列() -> None:
-    market = make_market(n=100, funding_by_symbol={"AAAUSDT": 0.0002})
+    # D5：fixture 默认给所有币资金费序列（缺数据的币用 funding_missing 指定），
+    # 这里让 BBBUSDT 没有序列，验证 View 如实返回 None 而不是 0。
+    market = make_market(n=100, funding_by_symbol={"AAAUSDT": 0.0002}, funding_missing=("BBBUSDT",))
     view = View(market, START_MS + 50 * HOUR_MS)
     value = view.funding_hourly_mean("AAAUSDT", 24)
     assert value == pytest.approx(0.0002)

@@ -128,6 +128,25 @@ class View:
         """该币的交易规则快照。"""
         return self.market.rule(symbol)
 
+    def mark_close(self, symbol: str, offset: int = 0) -> float | None:
+        """第 offset 根已收盘标记价格 K 线的收盘价（0 = 最近一根）。"""
+        mark = self.market.mark_bars(symbol)
+        if mark is None:
+            return None
+        count = int(np.searchsorted(mark.open_time, self.now_ms - HOUR_MS, side="right"))
+        index = count - 1 - offset
+        if index < 0:
+            return None
+        return float(mark.close[index])
+
+    def has_mark(self, symbol: str) -> bool:
+        """是否有该币的标记价格数据（止损触发基准，docs/13 §4）。"""
+        return self.market.mark_bars(symbol) is not None
+
+    def funding_available(self, symbol: str, hours: int = 7 * 24) -> bool:
+        """过去 `hours` 小时是否有资金费结算记录（1 号 B 第 1 条：没有则不允许开仓）。"""
+        return self.funding_hourly_mean(symbol, hours) is not None
+
     def has(self, symbol: str) -> bool:
         """研究数据中是否有该币。"""
         return symbol in self.market.hourly

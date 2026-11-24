@@ -20,6 +20,7 @@ from trade.data.universe import SymbolMeta, UniverseSnapshot, read_universe_snap
 HOUR_MS = 3_600_000
 DAY_MS = 86_400_000
 _BAR_COLUMNS = ("open", "high", "low", "close", "volume", "quote_volume")
+_PRICE_COLUMNS = ("open", "high", "low", "close")
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,41 @@ class Bars:
 
 
 @dataclass(frozen=True)
+class MarkBars:
+    """标记价格 1h 数组（止损触发基准，docs/13 §1、§4）。
+
+    只保留触发与定基准需要的列（high/low/close），减少内存占用。
+    """
+
+    symbol: str
+    open_time: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+
+    def bar_index(self, ts_ms: int) -> int | None:
+        """返回 open_time == ts_ms 的 K 线下标；缺失返回 None。"""
+        index = int(np.searchsorted(self.open_time, ts_ms, side="left"))
+        if index < self.open_time.size and int(self.open_time[index]) == ts_ms:
+            return index
+        return None
+
+    def last_index_before(self, ts_ms: int) -> int:
+        """返回 open_time < ts_ms 的最后一根 K 线下标；没有则 -1。"""
+        return int(np.searchsorted(self.open_time, ts_ms, side="left")) - 1
+
+
+@dataclass(frozen=True)
+class FlowBars:
+    """主动买入成交（`taker_buy_*`，docs/13 §1）。"""
+
+    symbol: str
+    open_time: np.ndarray
+    taker_buy_volume: np.ndarray
+    taker_buy_quote_volume: np.ndarray
+
+
+@dataclass(frozen=True)
 class FundingSeries:
     """资金费结算序列（每小时费率，docs/13 §1）。"""
 
@@ -72,6 +108,20 @@ class FundingSeries:
         lo = int(np.searchsorted(self.calc_time, start_ms, side="right"))
         hi = int(np.searchsorted(self.calc_time, end_ms, side="right"))
         return self.calc_time[lo:hi], (self.hourly_rate[lo:hi] * self.interval_hours[lo:hi])
+
+    def last_calc_time(self, ts_ms: int) -> int | None:
+        """`calc_time <= ts_ms` 的最后一次结算时刻；没有返回 None。"""
+        index = int(np.searchsorted(self.calc_time, ts_ms, side="right")) - 1
+        return int(self.calc_time[index]) if index >= 0 else None
+
+    def median_interval_hours(self) -> float:
+        """结算间隔的中位数（小时），用于判断资金费数据是否断档（docs/13 §1）。"""
+        if self.interval_hours.size == 0:
+            raise ValueError(f"{self.symbol} 的资金费序列为空（红线 12）")
+        value = float(np.median(self.interval_hours))
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{self.symbol} 的资金费结算间隔非法：{value}（红线 12）")
+        return value
 
 
 class UniverseHistory:
@@ -121,12 +171,30 @@ class MarketData:
         funding: Mapping[str, FundingSeries],
         universe: UniverseHistory,
         rules: Mapping[str, SymbolMeta],
+        mark: Mapping[str, MarkBars] | None = None,
+        flow: Mapping[str, FlowBars] | None = None,
+        premium: Mapping[str, MarkBars] | None = None,
     ) -> None:
         self.hourly = dict(hourly)
         self.daily = dict(daily)
         self.funding = dict(funding)
         self.universe = universe
         self.rules = dict(rules)
+        self.mark = dict(mark or {})
+        self.flow = dict(flow or {})
+        self.premium = dict(premium or {})
+
+    def mark_bars(self, symbol: str) -> MarkBars | None:
+        """标记价格 K 线；该币没有标记价格数据时返回 None（调用方必须计数，docs/13 §4）。"""
+        return self.mark.get(symbol)
+
+    def flow_bars(self, symbol: str) -> FlowBars | None:
+        """主动买入成交；该币没有数据时返回 None。"""
+        return self.flow.get(symbol)
+
+    def premium_bars(self, symbol: str) -> MarkBars | None:
+        """溢价指数 K 线；该币没有数据时返回 None。"""
+        return self.premium.get(symbol)
 
     def bars(self, symbol: str) -> Bars:
         if symbol not in self.hourly:
@@ -234,6 +302,97 @@ def load_rules(path: Path) -> dict[str, SymbolMeta]:
     return rules
 
 
+def load_price_dir(
+    root: Path, symbol: str, start_ms: int, end_ms: int, *, label: str
+) -> MarkBars | None:
+    """加载标记价格 / 溢价指数的月度 parquet（`open_time` + OHLC）。
+
+    Args:
+        root: 目录根（`data/mark_1h` 或 `data/premium_1h`）。
+        symbol: 币种。
+        start_ms: 起始毫秒（含）。
+        end_ms: 结束毫秒（不含）。
+        label: 目录名，用于报错上下文。
+
+    Returns:
+        MarkBars；没有文件或区间内没有数据时返回 None。
+
+    Raises:
+        ValueError: 文件内存在空价格（红线 12）。
+    """
+    frames: list[pd.DataFrame] = []
+    for month in _month_keys(start_ms, end_ms):
+        path = root / symbol / f"{month}.parquet"
+        if not path.is_file():
+            continue
+        frames.append(pq.read_table(path, columns=["open_time", *_PRICE_COLUMNS]).to_pandas())
+    if not frames:
+        return None
+    frame = pd.concat(frames, ignore_index=True)
+    frame = frame[(frame["open_time"] >= start_ms) & (frame["open_time"] < end_ms)]
+    frame = frame.sort_values("open_time").drop_duplicates("open_time", keep="last")
+    if frame.empty:
+        return None
+    if frame[list(_PRICE_COLUMNS)].isna().to_numpy().any():
+        raise ValueError(f"{label} 的 {symbol} 存在空价格（docs/13 §1，红线 12）")
+    return MarkBars(
+        symbol=symbol,
+        open_time=frame["open_time"].to_numpy(dtype="int64"),
+        high=frame["high"].to_numpy(dtype="float64"),
+        low=frame["low"].to_numpy(dtype="float64"),
+        close=frame["close"].to_numpy(dtype="float64"),
+    )
+
+
+def load_flow_dir(root: Path, symbol: str, start_ms: int, end_ms: int) -> FlowBars | None:
+    """加载主动买入成交的月度 parquet。"""
+    frames: list[pd.DataFrame] = []
+    for month in _month_keys(start_ms, end_ms):
+        path = root / symbol / f"{month}.parquet"
+        if not path.is_file():
+            continue
+        frames.append(
+            pq.read_table(
+                path, columns=["open_time", "taker_buy_volume", "taker_buy_quote_volume"]
+            ).to_pandas()
+        )
+    if not frames:
+        return None
+    frame = pd.concat(frames, ignore_index=True)
+    frame = frame[(frame["open_time"] >= start_ms) & (frame["open_time"] < end_ms)]
+    frame = frame.sort_values("open_time").drop_duplicates("open_time", keep="last")
+    if frame.empty:
+        return None
+    return FlowBars(
+        symbol=symbol,
+        open_time=frame["open_time"].to_numpy(dtype="int64"),
+        taker_buy_volume=frame["taker_buy_volume"].to_numpy(dtype="float64"),
+        taker_buy_quote_volume=frame["taker_buy_quote_volume"].to_numpy(dtype="float64"),
+    )
+
+
+def _check_flow_alignment(symbol: str, bars: Bars, flow: FlowBars) -> None:
+    """`klines_1h_flow` 的 `open_time` 必须与 `klines_1h` 逐行一致（docs/13 §1）。
+
+    Raises:
+        ValueError: 时间轴不一致，带币种与首个不一致的月份。
+    """
+    if bars.open_time.size == flow.open_time.size and np.array_equal(
+        bars.open_time, flow.open_time
+    ):
+        return
+    size = min(bars.open_time.size, flow.open_time.size)
+    first = size
+    if size:
+        diff = np.nonzero(bars.open_time[:size] != flow.open_time[:size])[0]
+        first = int(diff[0]) if diff.size else size
+    stamp = int(bars.open_time[first]) if first < bars.open_time.size else int(bars.open_time[-1])
+    day = datetime.fromtimestamp(stamp // 1000, tz=UTC)
+    raise ValueError(
+        f"{symbol} 的 klines_1h_flow 与 klines_1h 时间轴不一致（首个差异 {day:%Y-%m}，docs/13 §1）"
+    )
+
+
 def load_market_data(
     *,
     klines_1h: Path,
@@ -245,9 +404,34 @@ def load_market_data(
     end_ms: int,
     start_month: str,
     end_month: str,
+    mark_1h: Path | None = None,
+    flow_1h: Path | None = None,
+    premium_1h: Path | None = None,
     extra_symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT"),
 ) -> MarketData:
-    """加载研究期数据；只加载选币快照出现过的币与 `extra_symbols`。"""
+    """加载研究期数据；只加载选币快照出现过的币与 `extra_symbols`。
+
+    Args:
+        klines_1h: 1h K 线目录。
+        klines_1d: 1d K 线目录。
+        funding: 资金费目录。
+        universe_hist: 月度选币快照目录。
+        rules_path: `artifacts/exchange_info/rules.json`。
+        start_ms: 起始毫秒（含）。
+        end_ms: 结束毫秒（不含）。
+        start_month: 起始月份 `YYYY-MM`。
+        end_month: 结束月份 `YYYY-MM`。
+        mark_1h: 标记价格目录；None 表示不加载（止损触发退回成交价并计数）。
+        flow_1h: 主动买入成交目录；None 表示不加载。
+        premium_1h: 溢价指数目录；None 表示不加载。
+        extra_symbols: 额外加载的币（BTC/ETH）。
+
+    Returns:
+        MarketData。
+
+    Raises:
+        ValueError: 没有 1h 数据、缺交易规则或 flow 时间轴不一致（红线 12）。
+    """
     universe = load_universe_history(universe_hist, start_month, end_month)
     symbols = set(extra_symbols)
     for month in universe.months:
@@ -256,6 +440,9 @@ def load_market_data(
     hourly: dict[str, Bars] = {}
     daily: dict[str, Bars] = {}
     funding_series: dict[str, FundingSeries] = {}
+    mark: dict[str, MarkBars] = {}
+    flow: dict[str, FlowBars] = {}
+    premium: dict[str, MarkBars] = {}
     for symbol in sorted(symbols):
         bars = load_bars_dir(klines_1h, symbol, start_ms, end_ms)
         if bars is None:
@@ -267,6 +454,19 @@ def load_market_data(
         fund = load_funding_dir(funding, symbol)
         if fund is not None:
             funding_series[symbol] = fund
+        if mark_1h is not None:
+            mark_bars = load_price_dir(mark_1h, symbol, start_ms, end_ms, label="mark_1h")
+            if mark_bars is not None:
+                mark[symbol] = mark_bars
+        if premium_1h is not None:
+            premium_bars = load_price_dir(premium_1h, symbol, start_ms, end_ms, label="premium_1h")
+            if premium_bars is not None:
+                premium[symbol] = premium_bars
+        if flow_1h is not None:
+            flow_bars = load_flow_dir(flow_1h, symbol, start_ms, end_ms)
+            if flow_bars is not None:
+                _check_flow_alignment(symbol, bars, flow_bars)
+                flow[symbol] = flow_bars
     if not hourly:
         raise ValueError(f"研究期没有 1h 数据：{klines_1h}（先运行 scripts/fetch_history.py）")
     rules = load_rules(rules_path)
@@ -279,6 +479,9 @@ def load_market_data(
         funding=funding_series,
         universe=universe,
         rules=rules,
+        mark=mark,
+        flow=flow,
+        premium=premium,
     )
 
 

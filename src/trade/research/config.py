@@ -20,6 +20,9 @@ class ResearchPaths(BaseModel):
 
     klines_1h: Path
     klines_1d: Path
+    klines_1h_flow: Path
+    premium_1h: Path
+    mark_1h: Path
     funding: Path
     universe_hist: Path
     research_cache: Path

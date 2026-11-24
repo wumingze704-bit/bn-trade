@@ -1,30 +1,14 @@
-# R5 组合网格（docs/13 §5）：成分参数取 R1/R2/R4 首轮网格在全研究期按夏普选出的参数
-# R1: L14 K3；R2: D1 K3；R4: L3 K5。成分事先固定，不拟合权重、不按结果筛选。
+# R5 组合网格（docs/13 §5、1 号第八部分 R5）：成分参数不写死，
+# 每一折只用该折开始之前的数据在下面三个网格里按年化夏普选参（1 号第七部分第 3 条）。
 round: R5
 family: ensemble
 exposure: neutral
+component_grids:
+  xs_momentum_ls: configs/strategies/round_R1.yaml
+  funding_carry_ls: configs/strategies/round_R2.yaml
+  xs_reversal_ls: configs/strategies/round_R4.yaml
 params:
-  - top_k: 3
-    rebalance_hours: 8
-    components:
-      xs_momentum_ls: {lookback_days: 14, top_k: 3}
-      funding_carry_ls: {lookback_days: 1, top_k: 3}
-      xs_reversal_ls: {lookback_days: 3, top_k: 5}
-  - top_k: 3
-    rebalance_hours: 24
-    components:
-      xs_momentum_ls: {lookback_days: 14, top_k: 3}
-      funding_carry_ls: {lookback_days: 1, top_k: 3}
-      xs_reversal_ls: {lookback_days: 3, top_k: 5}
-  - top_k: 5
-    rebalance_hours: 8
-    components:
-      xs_momentum_ls: {lookback_days: 14, top_k: 3}
-      funding_carry_ls: {lookback_days: 1, top_k: 3}
-      xs_reversal_ls: {lookback_days: 3, top_k: 5}
-  - top_k: 5
-    rebalance_hours: 24
-    components:
-      xs_momentum_ls: {lookback_days: 14, top_k: 3}
-      funding_carry_ls: {lookback_days: 1, top_k: 3}
-      xs_reversal_ls: {lookback_days: 3, top_k: 5}
+  - {top_k: 3, rebalance_hours: 8}
+  - {top_k: 3, rebalance_hours: 24}
+  - {top_k: 5, rebalance_hours: 8}
+  - {top_k: 5, rebalance_hours: 24}

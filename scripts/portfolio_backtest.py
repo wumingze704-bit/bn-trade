@@ -2,14 +2,17 @@
 
 示例（本地 Windows）：
     python scripts/portfolio_backtest.py --grid configs/strategies/round_R1.yaml
+
+脚本只写 `artifacts/reports/` 与 `EXPERIMENTS.log`，不写 `docs/research/ledger.yaml`
+（1 号第三部分第 5 条：ledger 由研究任务在本地按日志更新）。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,8 +20,11 @@ from trade.common.config import BaseConfig, load_config
 from trade.common.risk_rules import RiskLimits
 from trade.common.sizing import SizingConfig
 from trade.research.config import ResearchConfig, load_research_config, load_research_sizing
-from trade.research.pipeline import evaluate_grid, load_grid
+from trade.research.engine import Engine, RunResult, ScenarioOptions
+from trade.research.metrics import summarize
+from trade.research.pipeline import build_market, evaluate_grid, load_grid
 from trade.research.stage import enforce_research, read_ledger
+from trade.strategies.registry import build_strategy
 
 _ROOT = Path(__file__).resolve().parents[1]
 _MS_PER_DAY = 86_400_000
@@ -53,29 +59,137 @@ def _risk_limits(config: ResearchConfig, sizing: SizingConfig) -> RiskLimits:
     )
 
 
-def _update_ledger(path: Path, round_id: str, trials: int) -> None:
-    """累加 trials_used 与轮次 trials，并把 pending 轮次标为 researching。"""
-    text = path.read_text(encoding="utf-8")
-    match = re.search(r"^trials_used:\s*(\d+)", text, flags=re.MULTILINE)
-    if match is None:
-        raise ValueError(f"ledger 缺少 trials_used：{path}")
-    total = int(match.group(1)) + trials
-    text = re.sub(
-        r"^trials_used:\s*\d+", f"trials_used: {total}", text, count=1, flags=re.MULTILINE
+def _shift_months(moment: datetime, months: int) -> datetime:
+    """按整月平移（最小规模运行的窗口起点）。"""
+    total = moment.year * 12 + (moment.month - 1) + months
+    year, month = total // 12, total % 12 + 1
+    return datetime(year, month, min(moment.day, 28), tzinfo=UTC)
+
+
+def _single_run(
+    market,
+    *,
+    config: ResearchConfig,
+    sizing: SizingConfig,
+    fee_taker: float,
+    risk: RiskLimits,
+    family: str,
+    params: dict,
+    start_ms: int,
+    end_ms: int,
+) -> RunResult:
+    """单策略、单区间的连续运行（最小规模运行使用）。"""
+    engine = Engine(
+        market=market,
+        strategy=build_strategy(family, params, stop_max=config.execution.stop_max),
+        sizing_cfg=sizing,
+        exec_cfg=config.execution,
+        portfolio_cfg=config.portfolio,
+        fee_taker=fee_taker,
+        risk_limits=risk,
+        options=ScenarioOptions(),
+        seed=config.bootstrap.seed,
     )
-    line_re = re.compile(rf"^(  - \{{id: {re.escape(round_id)},[^}}]*)\}}$", re.MULTILINE)
-    line_match = line_re.search(text)
-    if line_match is None:
-        raise ValueError(f"ledger 缺少轮次 {round_id}")
-    line = line_match.group(0)
-    trials_match = re.search(r"trials:\s*(\d+)", line)
-    if trials_match is None:
-        raise ValueError(f"轮次 {round_id} 缺少 trials 字段")
-    new_trials = int(trials_match.group(1)) + trials
-    new_line = re.sub(r"trials:\s*\d+", f"trials: {new_trials}", line, count=1)
-    new_line = re.sub(r"status:\s*(pending)", "status: researching", new_line, count=1)
-    text = text.replace(line, new_line)
-    path.write_text(text, encoding="utf-8")
+    return engine.run(start_ms, end_ms)
+
+
+def _smoke(
+    *,
+    config: ResearchConfig,
+    sizing: SizingConfig,
+    fee_taker: float,
+    risk: RiskLimits,
+    grid: dict,
+    start_ms: int,
+    end_ms: int,
+    start_month: str,
+    end_month: str,
+    months: int,
+) -> int:
+    """最小规模运行：1 个方向 × 1 组参数 × `months` 个月，核对两种口径与记录字段。
+
+    结果写入 `artifacts/reports/smoke/<UTC 时间>.json`，不写 `EXPERIMENTS.log`
+    （这不是研究期网格评估，不计试验次数）。
+    """
+    family = str(grid["family"])
+    params = dict(grid["params"][0])
+    window_start_ms = int(
+        _shift_months(datetime.fromtimestamp(end_ms // 1000, tz=UTC), -months).timestamp() * 1000
+    )
+    market = build_market(
+        config,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        start_month=start_month,
+        end_month=end_month,
+    )
+    report: dict[str, object] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "family": family,
+        "params": params,
+        "window": {"start_ms": window_start_ms, "end_ms": end_ms, "months": months},
+        "signal_basis": config.equity.signal,
+        "exec_basis": config.equity.exec,
+    }
+    records: list[dict[str, object]] = []
+    for label, basis in (("signal", config.equity.signal), ("exec", config.equity.exec)):
+        basis_sizing = sizing.model_copy(update={"initial_equity": basis})
+        result = _single_run(
+            market,
+            config=config,
+            sizing=basis_sizing,
+            fee_taker=fee_taker,
+            risk=risk,
+            family=family,
+            params=params,
+            start_ms=window_start_ms,
+            end_ms=end_ms,
+        )
+        metrics = summarize(result, bootstrap=config.bootstrap, trial_sharpes=[])
+        report[f"{label}_metrics"] = {
+            "annualized_sharpe": metrics["annualized_sharpe"],
+            "daily_sharpe": metrics["daily_sharpe"],
+            "max_drawdown": metrics["max_drawdown"],
+            "trades": metrics["trades"],
+            "dropped": metrics["dropped"],
+            "dropped_min_notional": metrics["dropped_min_notional"],
+            "attempted": metrics["attempted"],
+            "funding_estimated": metrics["funding_estimated"],
+            "funding_missing": metrics["funding_missing"],
+            "mark_fallback": metrics["mark_fallback"],
+            "cost_total": metrics["cost_total"],
+            "funding_total": metrics["funding_total"],
+            "long_gross": metrics["long_gross"],
+            "short_gross": metrics["short_gross"],
+        }
+        print(
+            f"{label}: 交易 {metrics['trades']}，应开仓 {metrics['attempted']}，"
+            f"最小下单额丢弃 {metrics['dropped_min_notional']}，"
+            f"资金费估算 {metrics['funding_estimated']} / 中位数 {metrics['funding_missing']}，"
+            f"标记价退回 {metrics['mark_fallback']}"
+        )
+        records.append(
+            {
+                "kind": "exec" if label == "exec" else "tuning",
+                "family": family,
+                "params": params,
+                "daily_sharpe": metrics["daily_sharpe"],
+                "annualized_sharpe": metrics["annualized_sharpe"],
+                "trades": metrics["trades"],
+                "equity_basis": basis,
+            }
+        )
+    report["record_fields"] = records
+    out_dir = _ROOT / config.paths.artifacts / "reports" / "smoke"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    target = out_dir / f"{stamp}.json"
+    target.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    print(f"写入 {target}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,16 +202,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default="configs/base.yaml")
     parser.add_argument("--research", default="configs/research.yaml")
     parser.add_argument("--sizing", default="configs/sizing_research.yaml")
-    parser.add_argument("--ledger", default="docs/research/ledger.yaml")
+    parser.add_argument(
+        "--ledger", default="docs/research/ledger.yaml", help="只读取研究区间，脚本不写 ledger"
+    )
     parser.add_argument("--workers", type=int, default=None, help="并行进程数，默认按平台")
     parser.add_argument("--no-scenarios", action="store_true", help="跳过压力情景（调试用）")
+    parser.add_argument("--with-flow", action="store_true", help="加载主动买入成交数据")
+    parser.add_argument("--with-premium", action="store_true", help="加载溢价指数数据")
+    parser.add_argument(
+        "--smoke-months",
+        type=int,
+        default=0,
+        help="最小规模运行：只用 1 组参数跑最近 N 个月，核对两种口径与记录字段",
+    )
     args = parser.parse_args(argv)
 
     base = load_config(BaseConfig, _resolve(args.base))
     config = load_research_config(_resolve(args.research))
     sizing = load_research_sizing(_resolve(args.sizing)).with_tier()
-    grid = load_grid(_resolve(args.grid))
-    round_id = str(args.round or grid.get("round") or _resolve(args.grid).stem)
+    grid_path = _resolve(args.grid)
+    grid = load_grid(grid_path)
+    round_id = str(args.round or grid.get("round") or grid_path.stem)
     ledger_path = _resolve(args.ledger)
     ledger = read_ledger(ledger_path)
     research_start = str(ledger["research_start"])
@@ -106,6 +231,19 @@ def main(argv: list[str] | None = None) -> int:
     end_ms = _day_ms(research_end) + _MS_PER_DAY
     enforce_research(ledger_path=ledger_path, start_ms=start_ms, end_ms=end_ms)
     risk = _risk_limits(config, sizing)
+    if args.smoke_months:
+        return _smoke(
+            config=config,
+            sizing=sizing,
+            fee_taker=base.fees.taker,
+            risk=risk,
+            grid=grid,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            start_month=research_start[:7],
+            end_month=research_end[:7],
+            months=args.smoke_months,
+        )
     workers = args.workers if args.workers is not None else _default_workers()
     out_dir = _ROOT / config.paths.artifacts / "reports"
     log_path = _ROOT / config.paths.experiments_log
@@ -125,16 +263,26 @@ def main(argv: list[str] | None = None) -> int:
         workers=workers,
         out_dir=out_dir,
         log_path=log_path,
+        grid_path=grid_path,
         scenarios=scenarios,
+        with_flow=args.with_flow,
+        with_premium=args.with_premium,
     )
-    _update_ledger(ledger_path, round_id, len(grid["params"]))
-    print(f"轮次 {round_id}：{len(grid['params'])} 组参数，试验已登记")
+    print(f"轮次 {round_id}：{len(grid['params'])} 组参数，试验已登记（kind=tuning）")
+    print("ledger 未修改：按 EXPERIMENTS.log 的 kind=tuning 条数在本地更新 trials_used")
     print(
         f"达标：{report['passed']}；未通过项：{[k for k, v in report['checks'].items() if not v]}"
     )
     metrics = report.get("selected_metrics") or {}
     if metrics:
-        print(f"拼接夏普：{metrics['annualized_sharpe']:.3f}")
+        print(f"拼接夏普（信号口径）：{metrics['annualized_sharpe']:.3f}")
+        exec_metrics = report.get("exec_metrics") or {}
+        if exec_metrics:
+            print(
+                f"可执行口径：夏普 {exec_metrics['annualized_sharpe']:.3f}，"
+                f"丢弃 {exec_metrics['dropped_min_notional']:.0f}/"
+                f"{exec_metrics['attempted']:.0f}"
+            )
     else:
         print(f"无法选参：{report.get('failure', '未知原因')}")
     return 0

@@ -1,10 +1,13 @@
 """执行模拟与组合回测引擎（docs/13 §4、§6）。
 
-- 决策在 K 线收盘（t）做出，成交在下一根 1h 开盘（t+1h）。
-- 买入价 = open × (1 + 半价差 + 滑点)，卖出价 = open × (1 − 半价差 − 滑点)。
-- 止损用 1h 的 low/high 判断，触发按止损价（开盘已越过按开盘价）加 2 倍滑点成交。
-- 资金费按结算时刻从持仓名义价值中扣除（多头付正费率）。
-- 下架或断档超过 24 小时：按最后可用收盘价加 2 倍滑点、再扣 1% 惩罚强平。
+- 决策在 t 时刻做出（只看到 `open_time + 1h ≤ t` 的 K 线），成交在 `open_time = t` 的 K 线开盘。
+- 仓位规模用 t 时刻已知的权益（截至 `open_time = t − 1h` 的收盘盯市值）。
+- 买入价 = 开盘价 × (1 + 半价差 + 滑点)，卖出价 = 开盘价 × (1 − 半价差 − 滑点)。
+- 止损以入场时的标记价格为基准，用 `mark_1h` 的 low/high 触发，按成交价 K 线成交并加
+  “`stop_slip_mult` 倍滑点 + 半价差”；某币某月缺标记价格时退回成交价并计数。
+- 资金费按结算时刻从持仓名义价值中扣除（多头付正费率）；缺数据时按第 1 条规则估算并计数。
+- 下架或断档超过 24 小时：按最后可用收盘价加 `stop_slip_mult` 倍滑点、再扣 1% 惩罚强平。
+- 取不到价格一律抛异常（红线 12）。
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from trade.common.risk_rules import (
 )
 from trade.common.sizing import SizingConfig
 from trade.research.config import ExecutionConfig, PortfolioConfig
-from trade.research.data import HOUR_MS, MarketData
+from trade.research.data import DAY_MS, HOUR_MS, MarketData
 from trade.research.interface import (
     Decision,
     Strategy,
@@ -43,6 +46,10 @@ from trade.research.view import View
 
 _BP = 1e-4
 _GAP_HOURS = 24
+# 资金费缺失判定与估算窗口（1 号 B 第 1 条：过去 7 天平均费率）
+_FUNDING_FALLBACK_DAYS = 7
+# 结算间隔的正常范围上限系数：超过 1.5 倍中位间隔视为数据缺失
+_FUNDING_GAP_MULTIPLIER = 1.5
 
 
 @dataclass(frozen=True)
@@ -93,13 +100,14 @@ class Position:
     funding: float = 0.0
 
 
-@dataclass
-class PendingOrders:
-    """上一根 K 线收盘产生、等待下一根开盘成交的订单。"""
+@dataclass(frozen=True)
+class Segment:
+    """连续路径上的一段：`[start_ms, end_ms)` 内使用给定策略（docs/13 §6 第 10 条 b 款）。"""
 
-    targets: list[PlannedPosition]
-    exit_symbols: frozenset[str]
-    execute_ts: int
+    start_ms: int
+    end_ms: int
+    strategy: Strategy
+    label: str = ""
 
 
 @dataclass
@@ -118,6 +126,12 @@ class RunResult:
     short_gross: float
     net_exposure: list[float]
     risk_events: list[str]
+    attempted: int = 0
+    dropped_min_notional: int = 0
+    funding_estimated: int = 0
+    funding_missing: int = 0
+    mark_fallback: int = 0
+    segments: list[str] = field(default_factory=list)
     params: dict[str, float] = field(default_factory=dict)
 
     def daily_returns(self) -> pd.Series:
@@ -153,13 +167,13 @@ class RunResult:
 
 
 class Engine:
-    """单参数组合回测引擎（研究、最终检验、影子盘共用同一口径）。"""
+    """单参数 / 多段连续路径的组合回测引擎（研究、最终检验、影子盘共用同一口径）。"""
 
     def __init__(
         self,
         *,
         market: MarketData,
-        strategy: Strategy,
+        strategy: Strategy | None = None,
         sizing_cfg: SizingConfig,
         exec_cfg: ExecutionConfig,
         portfolio_cfg: PortfolioConfig,
@@ -179,47 +193,63 @@ class Engine:
         self.seed = seed
 
     def run(self, start_ms: int, end_ms: int) -> RunResult:
-        """从 `start_ms`（含）跑到 `end_ms`（不含）。"""
-        self.run_start_ms = int(start_ms)
-        self.cash = float(self.sizing_cfg.initial_equity)
-        self.positions: dict[str, Position] = {}
-        self.trades: list[Trade] = []
-        self.pending: PendingOrders | None = None
-        self.cooldown: dict[str, int] = {}
-        self.equity_ts: list[int] = []
-        self.equity: list[float] = []
-        self.turnover = 0.0
-        self.dropped = 0
-        self.forced = 0
-        self.cost_total = 0.0
-        self.funding_total = 0.0
-        self.long_gross = 0.0
-        self.short_gross = 0.0
-        self.net_exposure: list[float] = []
-        self.risk_events: list[str] = []
-        self.rng = np.random.default_rng(self.seed)
-        self.risk = RiskState(peak_equity=float(self.sizing_cfg.initial_equity))
-        self.last_funding_ts = int(start_ms)
-        for raw_ts in np.arange(start_ms, end_ms, HOUR_MS, dtype=np.int64):
-            ts = int(raw_ts)
-            if self.pending is not None and self.pending.execute_ts == ts:
-                self._execute_pending(ts)
-            elif self.pending is not None and self.pending.execute_ts < ts:
-                self.pending = None
+        """单策略连续运行 `[start_ms, end_ms)`。"""
+        if self.strategy is None:
+            raise ValueError("Engine.run 需要 strategy；多段路径请用 run_path")
+        return self.run_path(
+            [Segment(start_ms=int(start_ms), end_ms=int(end_ms), strategy=self.strategy)], end_ms
+        )
+
+    def run_path(self, segments: list[Segment] | tuple[Segment, ...], end_ms: int) -> RunResult:
+        """按段连续运行：权益、持仓与风控状态跨段延续，段起点状态为空（docs/13 §6）。
+
+        Args:
+            segments: 按时间升序、首尾相接的段列表；每段给出该段使用的策略。
+            end_ms: 路径结束毫秒（不含）；最后一段的 `end_ms` 也按此截断。
+
+        Returns:
+            RunResult。
+
+        Raises:
+            ValueError: 段列表为空或首段起点早于 `end_ms`。
+        """
+        if not segments:
+            raise ValueError("run_path 需要至少一个段（docs/13 §6）")
+        ordered = sorted(segments, key=lambda item: item.start_ms)
+        if ordered[0].start_ms >= end_ms:
+            raise ValueError(f"路径起点 {ordered[0].start_ms} 不早于结束 {end_ms}")
+        self.run_start_ms = int(ordered[0].start_ms)
+        self._reset_state(float(self.sizing_cfg.initial_equity))
+        index = 0
+        labels: list[str] = []
+        for ts_raw in np.arange(self.run_start_ms, end_ms, HOUR_MS, dtype=np.int64):
+            ts = int(ts_raw)
+            while index + 1 < len(ordered) and ts >= ordered[index].end_ms:
+                index += 1
+            self.strategy = ordered[index].strategy
+            if not labels or labels[-1] != ordered[index].label:
+                labels.append(ordered[index].label)
+            # 1) 资金费（last_funding_ts < calc_time <= ts）
             self._apply_funding(ts)
+            # 2) t 时刻已知权益：截至 open_time = t − 1h 的收盘盯市值
+            equity_known = self._mark_at(ts - HOUR_MS)
+            # 3) 风控 R5~R8
+            equity_known = self._step_risk(ts, equity_known)
+            # 4) 调仓：决策后在该 K 线（open_time = t）开盘成交
+            self._maybe_decide_and_execute(ts, equity_known)
+            # 5) 止损（标记价格触发）
             self._check_stops(ts)
+            # 6) 下架 / 断档
             self._handle_gaps(ts)
-            equity = self._mark(ts)
-            equity = self._step_risk(ts, equity)
+            # 7) 收盘盯市并记录权益
             self.equity_ts.append(ts)
-            self.equity.append(equity)
-            self._maybe_decide(ts, equity)
+            self.equity.append(self._mark_at(ts))
             self.last_funding_ts = ts
         if self.positions:
             last_ts = int(self.equity_ts[-1])
             for position in list(self.positions.values()):
                 self._close(position, last_ts, "end")
-            self.equity[-1] = self._mark(last_ts)
+            self.equity[-1] = self._mark_at(last_ts)
         return RunResult(
             trades=self.trades,
             equity_ts=np.asarray(self.equity_ts, dtype="int64"),
@@ -233,7 +263,39 @@ class Engine:
             short_gross=self.short_gross,
             net_exposure=self.net_exposure,
             risk_events=self.risk_events,
+            attempted=self.attempted,
+            dropped_min_notional=self.dropped_min_notional,
+            funding_estimated=self.funding_estimated,
+            funding_missing=self.funding_missing,
+            mark_fallback=self.mark_fallback,
+            segments=labels,
         )
+
+    def _reset_state(self, initial_equity: float) -> None:
+        """把权益、持仓、风控与统计计数器重置为路径起点（空仓、初始权益、空风控）。"""
+        self.cash = initial_equity
+        self.positions: dict[str, Position] = {}
+        self.trades: list[Trade] = []
+        self.cooldown: dict[str, int] = {}
+        self.equity_ts: list[int] = []
+        self.equity: list[float] = []
+        self.turnover = 0.0
+        self.dropped = 0
+        self.forced = 0
+        self.attempted = 0
+        self.dropped_min_notional = 0
+        self.funding_estimated = 0
+        self.funding_missing = 0
+        self.mark_fallback = 0
+        self.cost_total = 0.0
+        self.funding_total = 0.0
+        self.long_gross = 0.0
+        self.short_gross = 0.0
+        self.net_exposure: list[float] = []
+        self.risk_events: list[str] = []
+        self.rng = np.random.default_rng(self.seed)
+        self.risk = RiskState(peak_equity=initial_equity)
+        self.last_funding_ts = self.run_start_ms
 
     def _view(self, ts: int) -> View:
         lag = self.options.delay_rebalances * self.strategy.rebalance_hours * HOUR_MS
@@ -258,51 +320,57 @@ class Engine:
         last = bars.last_index_before(ts + 1)
         return float(bars.close[last]) if last >= 0 else None
 
-    def _execute_pending(self, ts: int) -> None:
-        pending = self.pending
-        self.pending = None
-        if pending is None:
+    def _mark_price_at(self, symbol: str, ts: int) -> float | None:
+        """标记价格收盘价；没有该币的标记价格数据返回 None（调用方计数）。"""
+        mark = self.market.mark_bars(symbol)
+        if mark is None:
+            return None
+        index = mark.bar_index(ts)
+        if index is not None:
+            return float(mark.close[index])
+        last = mark.last_index_before(ts + 1)
+        return float(mark.close[last]) if last >= 0 else None
+
+    def _open(self, planned: PlannedPosition, ts: int, equity: float) -> None:
+        """在 `open_time = ts` 的 K 线开盘成交，并按入场标记价格设止损价（docs/13 §4）。"""
+        bars = self.market.bars(planned.symbol)
+        index = bars.bar_index(ts)
+        if index is None:
+            self.dropped += 1
             return
-        for symbol in pending.exit_symbols:
-            position = self.positions.get(symbol)
-            if position is not None:
-                self._close(position, ts, "rebalance", use_open=True)
-        for planned in pending.targets:
-            if planned.symbol in self.positions:
-                continue
-            bars = self.market.bars(planned.symbol)
-            index = bars.bar_index(ts)
-            if index is None:
-                self.dropped += 1
-                continue
-            spread = self._half_spread(planned.symbol, ts)
-            slip = self._slip(ts, planned.symbol, planned.notional)
-            price = float(bars.open[index]) * (1.0 + planned.side * (spread + slip))
-            rule = self.market.rule(planned.symbol)
-            if price <= 0.0 or rule.step_size is None or rule.step_size <= 0.0:
-                self.dropped += 1
-                continue
-            qty = math.floor(planned.notional / price / rule.step_size + 1e-9) * rule.step_size
-            notional = qty * price
-            if qty <= 0.0 or notional < (rule.min_notional or 0.0) * 1.1:
-                self.dropped += 1
-                continue
-            fee = notional * self.fee_taker * self.options.cost_mult
-            self.cash -= fee
-            self.cost_total += fee
-            self.turnover += notional
-            self.positions[planned.symbol] = Position(
-                symbol=planned.symbol,
-                side=planned.side,
-                qty=qty,
-                entry_price=price,
-                notional=notional,
-                sl=planned.sl,
-                stop_price=price * (1.0 - planned.side * planned.sl),
-                entry_ts=ts,
-                entry_fee=fee,
-                entry_equity=self._mark(ts),
-            )
+        spread = self._half_spread(planned.symbol, ts)
+        slip = self._slip(ts, planned.symbol, planned.notional)
+        price = float(bars.open[index]) * (1.0 + planned.side * (spread + slip))
+        rule = self.market.rule(planned.symbol)
+        if price <= 0.0 or rule.step_size is None or rule.step_size <= 0.0:
+            self.dropped += 1
+            return
+        qty = math.floor(planned.notional / price / rule.step_size + 1e-9) * rule.step_size
+        notional = qty * price
+        if qty <= 0.0 or notional < (rule.min_notional or 0.0) * 1.1:
+            self.dropped += 1
+            self.dropped_min_notional += 1
+            return
+        base_price = self._mark_price_at(planned.symbol, ts - HOUR_MS)
+        if base_price is None or base_price <= 0.0:
+            base_price = float(bars.close[index - 1]) if index > 0 else price
+            self.mark_fallback += 1
+        fee = notional * self.fee_taker * self.options.cost_mult
+        self.cash -= fee
+        self.cost_total += fee
+        self.turnover += notional
+        self.positions[planned.symbol] = Position(
+            symbol=planned.symbol,
+            side=planned.side,
+            qty=qty,
+            entry_price=price,
+            notional=notional,
+            sl=planned.sl,
+            stop_price=base_price * (1.0 - planned.side * planned.sl),
+            entry_ts=ts,
+            entry_fee=fee,
+            entry_equity=equity,
+        )
 
     def _half_spread(self, symbol: str, ts: int) -> float:
         view = View(self.market, ts)
@@ -318,7 +386,11 @@ class Engine:
         use_open: bool = False,
         explicit_price: float | None = None,
     ) -> None:
-        """平仓并登记交易（docs/13 §4）。"""
+        """平仓并登记交易（docs/13 §4）。
+
+        Raises:
+            ValueError: 取不到平仓价格（红线 12：不得静默保留仓位）。
+        """
         if explicit_price is not None:
             price = explicit_price
         else:
@@ -327,13 +399,15 @@ class Engine:
             base = float(bars.open[index]) if use_open and index is not None else None
             if base is None:
                 base = self._price_at(position.symbol, ts)
-            if base is None:
-                return
+            if base is None or base <= 0.0:
+                raise ValueError(
+                    f"{ts} 平仓缺少 {position.symbol} 的价格（原因 {reason}，红线 12）"
+                )
             spread = self._half_spread(position.symbol, ts)
             slip = self._slip(ts, position.symbol, position.notional)
             price = base * (1.0 - position.side * (spread + slip))
         if price <= 0.0:
-            return
+            raise ValueError(f"{ts} 平仓价格非法：{position.symbol} price={price}（红线 12）")
         gross = position.side * position.qty * (price - position.entry_price)
         exit_fee = position.qty * price * self.fee_taker * self.options.cost_mult
         self.cash += gross - exit_fee
@@ -367,64 +441,134 @@ class Engine:
         del self.positions[position.symbol]
 
     def _apply_funding(self, ts: int) -> None:
-        """结算 `last_funding_ts < calc_time <= ts` 的资金费（多头付正费率）。"""
+        """结算 `last_funding_ts < calc_time <= ts` 的资金费（多头付正费率）。
+
+        缺失处理（1 号 B 第 1 条）：没有资金费序列、或距上一次结算超过 1.5 倍中位结算间隔时，
+        按该币过去 7 天平均每小时费率估算；该币过去 7 天也没有结算时按同期 U(R) 资金费中位数
+        估算，两者分别计数；任何情况下都不把资金费当成 0。
+
+        Raises:
+            ValueError: 估算时 U(R) 也没有可用资金费、或取不到价格（红线 12）。
+        """
         for position in self.positions.values():
             series = self.market.funding_series(position.symbol)
+            if series is not None:
+                times, rates = series.settlements_between(self.last_funding_ts, ts)
+                if times.size:
+                    price = self._settlement_price(position.symbol, ts)
+                    for rate in rates:
+                        payment = position.side * position.qty * price * float(rate)
+                        self.cash -= payment
+                        position.funding += payment
+                        self.funding_total += payment
+                    continue
+            rate = self._missing_funding_rate(series, ts)
+            if rate is None:
+                continue
+            price = self._settlement_price(position.symbol, ts)
+            payment = position.side * position.qty * price * float(rate)
+            self.cash -= payment
+            position.funding += payment
+            self.funding_total += payment
+
+    def _settlement_price(self, symbol: str, ts: int) -> float:
+        """资金费结算使用的价格（收盘价优先，缺失时用标记价格）。"""
+        price = self._price_at(symbol, ts)
+        if price is None or price <= 0.0:
+            price = self._mark_price_at(symbol, ts)
+        if price is None or price <= 0.0:
+            raise ValueError(f"{ts} 结算资金费缺少 {symbol} 的价格（红线 12）")
+        return price
+
+    def _missing_funding_rate(self, series, ts: int) -> float | None:
+        """缺失期间使用的每小时费率估计；正常无结算的小时返回 None（成本本来为 0）。"""
+        lookback_ms = _FUNDING_FALLBACK_DAYS * DAY_MS
+        if series is not None:
+            last = series.last_calc_time(ts)
+            interval = series.median_interval_hours()
+            if last is not None and ts - last <= interval * _FUNDING_GAP_MULTIPLIER:
+                return None
+            recent = series.mean_between(ts - lookback_ms, ts)
+            if recent is not None:
+                self.funding_estimated += 1
+                return recent
+        self.funding_missing += 1
+        return self._universe_funding_median(ts)
+
+    def _universe_funding_median(self, ts: int) -> float:
+        """同期 U(R) 各币过去 7 天平均每小时费率的中位数（1 号 B 第 1 条）。"""
+        view = View(self.market, ts)
+        lookback_ms = _FUNDING_FALLBACK_DAYS * DAY_MS
+        values: list[float] = []
+        for symbol in sorted(view.universe_symbols()):
+            series = self.market.funding_series(symbol)
             if series is None:
                 continue
-            times, rates = series.settlements_between(self.last_funding_ts, ts)
-            if times.size == 0:
-                continue
-            price = self._price_at(position.symbol, ts) or position.entry_price
-            for rate in rates:
-                payment = position.side * position.qty * price * float(rate)
-                self.cash -= payment
-                position.funding += payment
-                self.funding_total += payment
+            rate = series.mean_between(ts - lookback_ms, ts)
+            if rate is not None:
+                values.append(float(rate))
+        if not values:
+            raise ValueError(f"{ts} 时期 U(R) 没有任何资金费记录，无法估算缺失资金费（红线 12）")
+        return float(np.median(np.asarray(values, dtype="float64")))
 
     def _check_stops(self, ts: int) -> None:
-        """用当前 1h 的 low/high 判断止损（触发按止损价加 2 倍滑点）。"""
-        stop_slip = 2.0 * self.exec_cfg.slip_min_bp * _BP * self.options.cost_mult
+        """用当前 1h 标记价格的 low/high 判断止损，按成交价 K 线成交（docs/13 §4）。
+
+        成交价 = 止损价（开盘已越过止损价时用开盘价）加 `stop_slip_mult` 倍滑点再加半价差；
+        该币该小时缺标记价格时退回成交价 K 线并计数。
+        """
         for position in list(self.positions.values()):
             bars = self.market.bars(position.symbol)
             index = bars.bar_index(ts)
             if index is None:
                 continue
+            mark = self.market.mark_bars(position.symbol)
+            mark_index = mark.bar_index(ts) if mark is not None else None
+            if mark is not None and mark_index is not None:
+                low = float(mark.low[mark_index])
+                high = float(mark.high[mark_index])
+            else:
+                low = float(bars.low[index])
+                high = float(bars.high[index])
+                self.mark_fallback += 1
             open_price = float(bars.open[index])
-            if position.side > 0 and float(bars.low[index]) <= position.stop_price:
+            spread = self._half_spread(position.symbol, ts)
+            slip = self._slip(ts, position.symbol, position.notional)
+            cost = spread + slip * self.exec_cfg.stop_slip_mult
+            if position.side > 0 and low <= position.stop_price:
                 fill = min(open_price, position.stop_price)
-                self._close(position, ts, "stop", explicit_price=fill * (1.0 - stop_slip))
-            elif position.side < 0 and float(bars.high[index]) >= position.stop_price:
+                self._close(position, ts, "stop", explicit_price=fill * (1.0 - cost))
+            elif position.side < 0 and high >= position.stop_price:
                 fill = max(open_price, position.stop_price)
-                self._close(position, ts, "stop", explicit_price=fill * (1.0 + stop_slip))
+                self._close(position, ts, "stop", explicit_price=fill * (1.0 + cost))
 
     def _handle_gaps(self, ts: int) -> None:
-        """下架或断档超过 24 小时：按最后收盘价加 2 倍滑点与 1% 惩罚强平。"""
-        stop_slip = 2.0 * self.exec_cfg.slip_min_bp * _BP * self.options.cost_mult
+        """下架或断档超过 24 小时：按最后收盘价加 `stop_slip_mult` 倍滑点与 1% 惩罚强平。"""
         for position in list(self.positions.values()):
             bars = self.market.bars(position.symbol)
             last = bars.last_index_before(ts + 1)
             if last < 0:
-                continue
+                raise ValueError(f"{ts} 持仓币 {position.symbol} 没有任何 K 线（红线 12）")
             if ts - int(bars.open_time[last]) <= _GAP_HOURS * HOUR_MS:
                 continue
             price = float(bars.close[last])
-            exit_price = price * (1.0 - position.side * (stop_slip + self.exec_cfg.delist_penalty))
+            slip = self._slip(ts, position.symbol, position.notional) * self.exec_cfg.stop_slip_mult
+            exit_price = price * (1.0 - position.side * (slip + self.exec_cfg.delist_penalty))
             self._close(position, ts, "delist", explicit_price=exit_price)
             self.forced += 1
 
-    def _mark(self, ts: int) -> float:
-        """盯市权益 = 现金 + 未实现盈亏。"""
+    def _mark_at(self, ts: int) -> float:
+        """盯市权益 = 现金 + 未实现盈亏；取不到价格时抛异常（红线 12）。"""
         unrealized = 0.0
         for position in self.positions.values():
             price = self._price_at(position.symbol, ts)
-            if price is None:
-                continue
+            if price is None or price <= 0.0:
+                raise ValueError(f"{ts} 盯市缺少 {position.symbol} 的价格（红线 12）")
             unrealized += position.side * position.qty * (price - position.entry_price)
         return self.cash + unrealized
 
     def _step_risk(self, ts: int, equity: float) -> float:
-        """推进 R5~R8（docs/13 §3、07 §7.1）。"""
+        """推进 R5~R8（docs/13 §3、07 §7.1）；触发 R6/R8 时在该 K 线开盘全平。"""
         if self.options.no_halt:
             return equity
         action = risk_step(self.risk, ts_ms=ts, equity=equity, limits=self.risk_limits)
@@ -432,14 +576,13 @@ class Engine:
             f"{event.ts_ms}:{event.rule}:{event.action}" for event in self.risk.events
         ]
         if action == "flatten":
-            self.pending = None
             for position in list(self.positions.values()):
-                self._close(position, ts, "risk_flatten")
-            return self._mark(ts)
+                self._close(position, ts, "risk_flatten", use_open=True)
+            return self.cash
         return equity
 
-    def _maybe_decide(self, ts: int, equity: float) -> None:
-        """调仓时刻生成目标，下一根 K 线开盘成交。"""
+    def _maybe_decide_and_execute(self, ts: int, equity: float) -> None:
+        """调仓时刻生成目标，并在同一 K 线（`open_time = ts`）开盘成交（docs/13 §4）。"""
         if not rebalance_due(ts, self.strategy.rebalance_hours):
             return
         if self.risk.halted(ts) or self.risk.paused(ts):
@@ -449,9 +592,8 @@ class Engine:
         view = self._view(ts)
         if view.now_ms < self.run_start_ms:
             return
-        decision = self.strategy.decide(
-            view, {symbol: position.side for symbol, position in self.positions.items()}
-        )
+        held = {symbol: position.side for symbol, position in self.positions.items()}
+        decision = self.strategy.decide(view, held)
         targets: list[Target] = list(decision.targets)
         if self.options.long_only:
             targets = [t for t in targets if t.side > 0]
@@ -474,13 +616,18 @@ class Engine:
             portfolio_cfg=self.portfolio_cfg,
             fee_taker=self.fee_taker,
             blocked=blocked,
+            held=held,
         )
         self.dropped += stats.dropped
-        keep = {position.symbol for position in planned}
-        exits = frozenset(symbol for symbol in self.positions if symbol not in keep)
-        self.pending = PendingOrders(
-            targets=list(planned), exit_symbols=exits, execute_ts=ts + HOUR_MS
-        )
+        self.attempted += stats.attempted
+        self.dropped_min_notional += stats.dropped_min_notional
+        keep = {position.symbol for position in planned} | stats.kept_symbols
+        for symbol in [s for s in self.positions if s not in keep]:
+            self._close(self.positions[symbol], ts, "rebalance", use_open=True)
+        for item in planned:
+            if item.symbol in self.positions:
+                continue
+            self._open(item, ts, equity)
 
     def _shuffle_targets(self, targets: list[Target], view: View) -> list[Target]:
         """shuffle 情景：保持多空与止损，随机替换标的（docs/13 §7）。"""
