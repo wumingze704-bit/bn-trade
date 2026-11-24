@@ -25,7 +25,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -446,9 +446,10 @@ async def _get(client: httpx.AsyncClient, url: str, *, retries: int) -> bytes | 
     raise RuntimeError(f"下载失败：{url}")
 
 
-async def _list_pages(client: httpx.AsyncClient, params: dict[str, Any]) -> list[ET.Element]:
-    """S3 ListObjectsV2 分页，返回每页 XML 根节点。"""
-    roots: list[ET.Element] = []
+async def _iter_pages(
+    client: httpx.AsyncClient, params: dict[str, Any]
+) -> AsyncIterator[ET.Element]:
+    """S3 ListObjectsV2 分页，逐页产出 XML 根节点（不把全部页面留在内存）。"""
     token: str | None = None
     while True:
         page_params = dict(params)
@@ -457,16 +458,16 @@ async def _list_pages(client: httpx.AsyncClient, params: dict[str, Any]) -> list
         response = await client.get(S3_LIST, params=page_params)
         response.raise_for_status()
         root = ET.fromstring(response.text)
-        roots.append(root)
         token = root.findtext(f"{_S3_NS}NextContinuationToken")
+        yield root
         if not token:
-            return roots
+            return
 
 
 async def _list_keys(client: httpx.AsyncClient, prefix: str) -> list[str]:
     """S3 ListObjectsV2 分页读取全部 key。"""
     keys: list[str] = []
-    for root in await _list_pages(
+    async for root in _iter_pages(
         client, {"prefix": prefix, "list-type": "2", "max-keys": _S3_PAGE}
     ):
         for content in root.iter(f"{_S3_NS}Contents"):
@@ -479,7 +480,7 @@ async def _list_keys(client: httpx.AsyncClient, prefix: str) -> list[str]:
 async def _list_symbols(client: httpx.AsyncClient) -> list[str]:
     """S3 目录分隔列表读取全部 USDT 结尾的合约目录（含已下架）。"""
     symbols: list[str] = []
-    for root in await _list_pages(
+    async for root in _iter_pages(
         client,
         {"prefix": _SYMBOL_PREFIX, "delimiter": "/", "list-type": "2", "max-keys": _S3_PAGE},
     ):
