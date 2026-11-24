@@ -118,29 +118,20 @@ def test_24小时内第二次超时只告警(watchdog: ModuleType) -> None:
 
 
 def test_不在白名单的单元不执行命令(watchdog: ModuleType) -> None:
-    """只允许 trade-runner@* 与 trade-runner-live@*（sudoers 规则同一条）。"""
-    assert watchdog.restart_command("trade-runner@C1-shadow.service") == [
-        "sudo",
-        "-n",
-        "/usr/local/sbin/trade-restart-unit",
-        "trade-runner@C1-shadow.service",
-    ]
-    assert watchdog.restart_command("trade-runner-live@C1.service") == [
-        "sudo",
-        "-n",
-        "/usr/local/sbin/trade-restart-unit",
-        "trade-runner-live@C1.service",
-    ]
+    """只允许 trade-runner@* 与 trade-runner-live@*（sudoers 同一条规则）。"""
+    expected = ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"]
+    assert watchdog.restart_command("trade-runner@C1-shadow.service") == expected
+    assert watchdog.restart_command("trade-runner-live@C1.service") == expected
     assert watchdog.restart_command("trade-dashboard.service") is None
     assert watchdog.restart_command("trade-watchdog.service") is None
 
 
 def test_重启用sudo且失败返回False(watchdog: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], str | None]] = []
 
-    def fake_run(args: list[str]) -> tuple[int, str]:
-        calls.append(args)
-        return (1, "") if args[-1].endswith("C2-shadow.service") else (0, "")
+    def fake_run(args: list[str], input_text: str | None = None) -> tuple[int, str]:
+        calls.append((args, input_text))
+        return (1, "") if (input_text or "").startswith("trade-runner@C2") else (0, "")
 
     monkeypatch.setattr(watchdog, "_run", fake_run)
     assert watchdog.restart_unit("trade-runner@C1-shadow.service") is True
@@ -148,4 +139,5 @@ def test_重启用sudo且失败返回False(watchdog: ModuleType, monkeypatch: py
     before = len(calls)
     assert watchdog.restart_unit("trade-dashboard.service") is False
     assert len(calls) == before
-    assert all(call[:3] == ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"] for call in calls)
+    assert all(args == ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"] for args, _ in calls)
+    assert calls[0][1] == "trade-runner@C1-shadow.service\n"

@@ -28,4 +28,3 @@ ReadWritePaths=/home/ubuntu/trade/artifacts/live
 
 [Install]
 WantedBy=multi-user.target
-

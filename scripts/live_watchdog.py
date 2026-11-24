@@ -30,13 +30,20 @@ _RESTART_COOLDOWN_MS = 24 * 60 * 60_000
 _ALLOWED_PREFIXES = ("trade-runner@", "trade-runner-live@")
 
 
-def _run(args: list[str]) -> tuple[int, str]:
+def _run(args: list[str], input_text: str | None = None) -> tuple[int, str]:
     """执行一条只读/白名单命令，返回 (退出码, stdout)。
 
     只在这里集中处理 subprocess 异常，调用方按退出码判定，不吞掉规则判断。
     """
     try:
-        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            input=input_text,
+        )
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return result.returncode, (result.stdout or "").strip()
@@ -48,13 +55,10 @@ def unit_allowed(unit: str) -> bool:
 
 
 def restart_command(unit: str) -> list[str] | None:
-    """返回重启命令；不在白名单的单元返回 None（不执行任何命令）。
-
-    通过 `deploy/trade-restart-unit`（sudoers 白名单，只重启 trade-runner 实例）执行。
-    """
+    """返回重启命令（实例名经标准输入传给白名单脚本）；不允许的单元返回 None。"""
     if not unit_allowed(unit):
         return None
-    return ["sudo", "-n", "/usr/local/sbin/trade-restart-unit", unit]
+    return ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"]
 
 
 def restart_unit(unit: str) -> bool:
@@ -62,7 +66,7 @@ def restart_unit(unit: str) -> bool:
     command = restart_command(unit)
     if command is None:
         return False
-    code, _ = _run(command)
+    code, _ = _run(command, input_text=f"{unit}\n")
     return code == 0
 
 

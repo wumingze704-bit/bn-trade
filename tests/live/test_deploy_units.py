@@ -70,13 +70,14 @@ def test_sudoers只允许执行白名单重启脚本() -> None:
     ]
     assert len(lines) == 1, lines
     rule = lines[0]
-    assert rule == "ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/trade-restart-unit *"
-    for forbidden in ("stop", "rm ", "sh ", "bash", "/bin/sh", "systemctl"):
+    assert rule == "ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/trade-restart-unit"
+    for forbidden in ("stop", "rm ", "sh ", "bash", "/bin/sh", "systemctl", "*"):
         assert forbidden not in rule, f"sudoers 规则不应包含 {forbidden}"
 
 
 def test_重启脚本只接受trade_runner实例() -> None:
     text = _read("trade-restart-unit")
+    assert "IFS= read -r unit" in text
     assert "trade-runner@*.service" in text
     assert "trade-runner-live@*.service" in text
     assert "exec /usr/bin/systemctl restart" in text

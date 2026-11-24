@@ -15,4 +15,3 @@ MemoryMax=200M
 PrivateTmp=true
 ProtectSystem=full
 ReadWritePaths=/home/ubuntu/trade/artifacts/live
-

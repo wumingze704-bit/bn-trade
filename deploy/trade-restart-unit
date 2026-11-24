@@ -1,10 +1,10 @@
 #!/bin/sh
 # 看门狗重启实例的唯一入口（docs/07 通知、日报与看门狗）。
-# 只接受 trade-runner@<候选ID>-<模式>.service 与 trade-runner-live@<候选ID>.service，
-# 其他任何参数直接拒绝；sudoers 只授予本脚本（/etc/sudoers.d/trade-watchdog）。
+# 实例单元名从标准输入读取（sudoers 规则不允许参数内通配符），
+# 只接受 trade-runner@<候选ID>-<模式>.service 与 trade-runner-live@<候选ID>.service。
 set -eu
 
-unit="${1:-}"
+IFS= read -r unit || true
 case "$unit" in
   trade-runner@*.service | trade-runner-live@*.service) ;;
   *)
