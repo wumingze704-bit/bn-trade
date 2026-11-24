@@ -122,15 +122,13 @@ def test_不在白名单的单元不执行命令(watchdog: ModuleType) -> None:
     assert watchdog.restart_command("trade-runner@C1-shadow.service") == [
         "sudo",
         "-n",
-        "/usr/bin/systemctl",
-        "restart",
+        "/usr/local/sbin/trade-restart-unit",
         "trade-runner@C1-shadow.service",
     ]
     assert watchdog.restart_command("trade-runner-live@C1.service") == [
         "sudo",
         "-n",
-        "/usr/bin/systemctl",
-        "restart",
+        "/usr/local/sbin/trade-restart-unit",
         "trade-runner-live@C1.service",
     ]
     assert watchdog.restart_command("trade-dashboard.service") is None
@@ -150,4 +148,4 @@ def test_重启用sudo且失败返回False(watchdog: ModuleType, monkeypatch: py
     before = len(calls)
     assert watchdog.restart_unit("trade-dashboard.service") is False
     assert len(calls) == before
-    assert all(call[:3] == ["sudo", "-n", "/usr/bin/systemctl"] for call in calls)
+    assert all(call[:3] == ["sudo", "-n", "/usr/local/sbin/trade-restart-unit"] for call in calls)

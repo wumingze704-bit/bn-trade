@@ -61,7 +61,7 @@ def test_看门狗单元保留sudo所需权限并加固() -> None:
     assert "live_watchdog.py" in text
 
 
-def test_sudoers只允许重启trade_runner实例() -> None:
+def test_sudoers只允许执行白名单重启脚本() -> None:
     text = _read("sudoers-trade-watchdog")
     lines = [
         line.strip()
@@ -70,10 +70,15 @@ def test_sudoers只允许重启trade_runner实例() -> None:
     ]
     assert len(lines) == 1, lines
     rule = lines[0]
-    assert rule.startswith("ubuntu ALL=(root) NOPASSWD:")
-    assert "/usr/bin/systemctl restart trade-runner@*.service" in rule
-    assert "/usr/bin/systemctl restart trade-runner-live@*.service" in rule
-
-    assert rule.count("systemctl") == 2
-    for forbidden in ("stop", "rm ", "sh ", "bash", "/bin/sh"):
+    assert rule == "ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/trade-restart-unit *"
+    for forbidden in ("stop", "rm ", "sh ", "bash", "/bin/sh", "systemctl"):
         assert forbidden not in rule, f"sudoers 规则不应包含 {forbidden}"
+
+
+def test_重启脚本只接受trade_runner实例() -> None:
+    text = _read("trade-restart-unit")
+    assert "trade-runner@*.service" in text
+    assert "trade-runner-live@*.service" in text
+    assert "exec /usr/bin/systemctl restart" in text
+    assert "exit 64" in text
+    assert "stop" not in text

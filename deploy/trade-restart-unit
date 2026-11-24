@@ -1,0 +1,15 @@
+#!/bin/sh
+# 看门狗重启实例的唯一入口（docs/07 通知、日报与看门狗）。
+# 只接受 trade-runner@<候选ID>-<模式>.service 与 trade-runner-live@<候选ID>.service，
+# 其他任何参数直接拒绝；sudoers 只授予本脚本（/etc/sudoers.d/trade-watchdog）。
+set -eu
+
+unit="${1:-}"
+case "$unit" in
+  trade-runner@*.service | trade-runner-live@*.service) ;;
+  *)
+    echo "trade-restart-unit: 只允许重启 trade-runner / trade-runner-live 实例：$unit" >&2
+    exit 64
+    ;;
+esac
+exec /usr/bin/systemctl restart "$unit"

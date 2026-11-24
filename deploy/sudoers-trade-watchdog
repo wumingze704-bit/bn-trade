@@ -1,5 +1,7 @@
-# 看门狗重启实例所需的最小 sudo 权限（docs/07 §6.10）。
-# 只允许重启 trade-runner@* 与 trade-runner-live@*，不授予 stop / start / 任意命令。
+# 看门狗重启实例所需的最小 sudo 权限（docs/07 通知、日报与看门狗）。
+# 只允许执行白名单校验脚本 trade-restart-unit（它只重启 trade-runner / trade-runner-live 实例），
+# 不授予 systemctl 的其他子命令或任意命令。
 # 安装：sudo install -m 440 -o root -g root deploy/sudoers-trade-watchdog /etc/sudoers.d/trade-watchdog
-ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart trade-runner@*.service, /usr/bin/systemctl restart trade-runner-live@*.service
+ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/trade-restart-unit *
+
 

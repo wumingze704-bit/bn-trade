@@ -50,11 +50,11 @@ def unit_allowed(unit: str) -> bool:
 def restart_command(unit: str) -> list[str] | None:
     """返回重启命令；不在白名单的单元返回 None（不执行任何命令）。
 
-    使用 `/usr/bin/systemctl` 绝对路径，与 sudoers 规则逐字符一致。
+    通过 `deploy/trade-restart-unit`（sudoers 白名单，只重启 trade-runner 实例）执行。
     """
     if not unit_allowed(unit):
         return None
-    return ["sudo", "-n", "/usr/bin/systemctl", "restart", unit]
+    return ["sudo", "-n", "/usr/local/sbin/trade-restart-unit", unit]
 
 
 def restart_unit(unit: str) -> bool:
