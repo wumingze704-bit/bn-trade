@@ -50,6 +50,9 @@
 
 ## 推送状态
 
+- 2026-11-24：`develop` 已推送至 `5d40de4`；`5c3b674`（M7 作废与网格加倍）与 `6f34153`（M7 提交哈希记录）因 GitHub 连接被重置 / 无法连接尚未推送。
+
 本地提交与推送状态见文末记录：本机到 GitHub 的推送多次失败（`Empty reply from server` /
 `Recv failure: Connection was reset`），每次重试仍失败时在报告中记录提交哈希与未推送原因。
+
 
