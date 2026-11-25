@@ -1,6 +1,30 @@
 # 自动研究循环进度（进行中）
 
-## 本次运行状态（2026-11-25 第六次运行：R1 判定完成、启动 R2）
+## 本次运行状态（2026-11-25 第七次运行：R2 判定完成、启动 R4）
+
+- 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
+  `engine.md` = ENGINE_READY；R4~R12 为 pending、`trials_used` 133 < 400 → 第 8 条 a 款执行 1 号。
+- 前置复核：见 `review_log.md` 的“2026-11-25 10:47 UTC”一节（代码对象与 10:30 UTC 复核相比无变化，沿用 B1~B14“符合”）；
+  会话级一致性：`trials_used` 133 = Σ rounds[].trials 68（R1 24 + R2 12 + R3 32）+ Σ void.trials 65 + 0 =
+  `EXPERIMENTS.log` 的 `kind=tuning` 133 条（另 3 条 `kind=exec` 与 5 条无 `kind` 的历史记录）。
+- R2（服务器 HEAD `c037ee8`，12 组，10:28 UTC 启动、13:41 UTC 完成）判定 **FAILED**：拼接年化夏普 −0.491、
+  最大回撤 53.90%、DSR 0.004、5 折仅 1 折为正、可执行口径丢弃 4.13%（达标）但净收益 −42.56%；
+  12 组自身拼接曲线只有 1 组为正（D3 K3 vol_target 年化 +0.027）。单月最高 +22.03% 触发第三部分第 8 条的四项检查，
+  结果均不支持泄露（见 `rounds/R2.md` 与 `decisions.md`）。不做修订。`ledger.yaml` 已更新
+  （R2 status=failed、trials 12、`trials_used` 133）。核对方式：在服务器用同一 `compute_hashes` 文件清单复算得
+  `code_hash 66cdbd12…`、`config_hash 825e398c…`，与 `grid.json` 完全一致。
+- R4（交叉短期反转，12 组）已于 2026-11-25 14:09 UTC 在服务器启动：`~/trade` HEAD
+  `dffecab7bae9ca0a973b8b020294830212a077fd`（与本地 `develop` 一致，核对 `git rev-parse HEAD`），tmux 会话 `r4`，
+  `sudo -n systemd-run --scope -p MemoryMax=2000M --working-directory=/home/ubuntu/trade nice -n 10
+  ~/trade-venv/bin/python scripts/portfolio_backtest.py --grid configs/strategies/round_R4.yaml`，
+  日志 `~/trade/artifacts/reports/R4.log`，报告 `~/trade/artifacts/reports/R4/grid.json`。
+  按 R2 实测（12 组约 3 小时 13 分）推算，预计 2026-11-25 17:20 UTC 前后完成。**不要重复启动**。
+- 提交与推送：`dffecab`（R2 判定与总账）已推送 `origin/develop`；本进度文件随下一次提交推送。
+- 下一步（新会话）：确认 R4 是否结束（`ps -ef | grep portfolio_backtest`、`R4/grid.json`、`EXPERIMENTS.log` 增至 145），
+  读 `grid.json` 写 `rounds/R4.md` 的“重跑（迁移后）”一节、更新 `ledger.yaml`（`trials_used`）并提交推送，
+  随后启动 R5（8 组）；再依次 R6~R10、R11、R12（R11/R12 开跑前网格写 `delay1_max_excess: 0.10`）。
+
+
 
 - 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
   `engine.md` = ENGINE_READY；R2/R4~R12 为 pending、`trials_used` 121 < 400 → 第 8 条 a 款执行 1 号。
