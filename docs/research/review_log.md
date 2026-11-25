@@ -362,7 +362,25 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
   CPU 99.7%、服务器可用内存 1.99 GB；`artifacts/reports/R1/groups/` 尚未生成（逐组落盘在全部组跑完后写入）；本次未重复启动。
 - 结论：复核**全部符合**，未发现新缺陷。本次会话不推进 R1 判定（运行中），只完成 R11 / R12 的 500 USDT 可执行性预检（记录见 `decisions.md`）。
 
-## 2026-11-25 10:30 UTC 执行 1 号前的前置复核（R1 已完成，判定后启动 R2）
+## 2026-11-25 10:47 UTC 会话级一致性检查与执行 1 号前的前置复核（R2 运行中）
+
+- 会话前检查（0 号调度第二部分）：当前目录是 git 仓库（origin = `https://github.com/wumingze704-bit/bn-trade.git`），分支 `develop`，
+  本地 HEAD `54ec510`；`git pull --rebase origin develop` 因 GitHub 连接被重置（`Recv failure: Connection was reset`）失败，
+  本地无未推送的新内容丢失风险，按第五部分第 5 条 d 款记为“无法核实远端是否领先”，继续本地工作；
+  `ssh tokyo` 可连通；服务器无 `trade-runner@*` 实例（只有 `trade-dashboard` 与 `trade-watchdog.timer`）。
+- 会话级总账一致性（第五部分第 1 条）：`trials_used = 121` = Σ rounds[].trials 56（R1 24 + R3 32）+
+  Σ rounds[].void.trials 65 + 冻结仓位选择的试验 0 = 121 **符合**；服务器 `artifacts/reports/EXPERIMENTS.log` 的
+  `kind=tuning` 121 条（全文 129 行，另 3 条 `kind=exec` 与 5 条无 `kind` 的历史记录）**符合**。
+- 复核对象与最新提交哈希：`src/trade/research/`（`7a7de4f`）、`src/trade/strategies/`（`9c82edc`）、
+  `scripts/portfolio_backtest.py`（`5381f16`）、`configs/research.yaml` 与 `configs/sizing_research.yaml`（`5381f16`）、
+  `src/trade/common/risk_rules.py`（`64a0dde`）、`src/trade/common/sizing.py`（`5381f16`）、`tests/research/`（`7a7de4f`）。
+  以上哈希与 2026-11-25 10:30 UTC 复核完全相同 → 未变化，沿用 2026-11-25 10:30 UTC 的复核结论（B1~B14 与判定实现全部符合）。
+- `docs/research/ledger.yaml`（`c037ee8`，R1 判定与 `trials_used 121`）已在 10:30 UTC 复核中逐项核对原始输出；
+  R2 由该次会话启动，运行于服务器 `c037ee8`（本地此后只多出 `54ec510` 一个 `docs/research/` 提交，无代码差异）。
+- 运行状态：服务器 `~/trade` HEAD `c037ee8`；R2 于 2026-11-25 10:28 UTC 启动（tmux `r2`，`systemd-run --scope`，MemoryMax 2000M），
+  本次检查时仍在运行（`ps` 有 3 个匹配进程），未重复启动。
+- 结论：复核**全部符合**，无新缺陷；本次会话等待 R2 完成后写判定并启动下一轮。
+
 
 - 会话前检查（0 号调度第二部分）：当前目录是 git 仓库（origin = `https://github.com/wumingze704-bit/bn-trade.git`），分支 `develop`，
   `git pull --rebase origin develop` → Already up to date（起点 `2fd2186`）；`ssh tokyo` 可连通；服务器无 `trade-runner@*` 实例（`candidates` 为空）。
