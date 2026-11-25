@@ -1,5 +1,31 @@
 # 自动研究循环进度（进行中）
 
+## 本次运行状态（2026-11-25 第八次运行：R2 判定、R4 判定、启动 R5）
+
+- 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
+  `engine.md` = ENGINE_READY；R5~R12 为 pending、`trials_used` 145 < 400 → 第 8 条 a 款执行 1 号（本会话两次）。
+- 前置复核：见 `review_log.md` 的“2026-11-25 10:47 UTC”一节（代码对象与 10:30 UTC 复核相比无变化，沿用 B1~B14“符合”）。
+- **R2**（12 组，10:28 ~ 13:41 UTC）判定 **FAILED**：拼接年化 −0.491、最大回撤 53.90%、DSR 0.004、5 折 1 折为正、
+  可执行口径丢弃 4.13% 但净收益 −42.56%。单月最高 +22.03% 触发第三部分第 8 条四项检查，结论不支持泄露
+  （见 `rounds/R2.md`、`decisions.md`）。核对方式：在服务器用同一 `compute_hashes` 清单复算
+  `code_hash 66cdbd12…`、`config_hash 825e398c…`，与 `grid.json` 一致。
+- **R4**（12 组，14:09 ~ 16:47 UTC）判定 **FAILED**：拼接年化 −0.519、最大回撤 47.70%、DSR 0.004、5 折 2 折为正、
+  成本占毛收益 4.90 倍、可执行口径丢弃 5.60% 但净收益 −23.70%；12 组自身拼接曲线全部为负。核对：
+  `code_hash 66cdbd12…`、`config_hash 32372077…` 与服务器复算一致。
+- **R5**（组合，8 组）已于 2026-11-25 23:10 UTC 在服务器启动：`~/trade` HEAD
+  `2efa95b156bc4b755532af6f9e45d0fd63eb7f26`（与本地 `develop` 一致），tmux 会话 `r5`，
+  `sudo -n systemd-run --scope -p MemoryMax=2000M --working-directory=/home/ubuntu/trade nice -n 10
+  ~/trade-venv/bin/python scripts/portfolio_backtest.py --grid configs/strategies/round_R5.yaml`，
+  日志 `~/trade/artifacts/reports/R5.log`，报告 `~/trade/artifacts/reports/R5/grid.json`。
+  按 R2（12 组 3 小时 13 分）、R4（12 组 2 小时 38 分）推算，8 组约 2~3 小时。**不要重复启动**。
+- 试验预算：145 / 400。`trials_used` 145 = Σ rounds[].trials 80（R1 24 + R2 12 + R3 32 + R4 12）+
+  Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 145 条。
+- 提交与推送：`a5eca78`（R4 标 researching）、`2efa95b`（R4 判定与总账）已推送 `origin/develop`；本进度文件随下一次提交推送。
+- 下一步（新会话）：确认 R5 是否结束（`pgrep -f portfolio_backtest.py`、`R5/grid.json`、`EXPERIMENTS.log` 增至 153），
+  读 `grid.json` 写 `rounds/R5.md`“重跑（迁移后）”、更新 `ledger.yaml` 并提交推送，随后启动 R6（18 组）；
+  再依次 R7~R10、R11、R12（R11/R12 开跑前网格写 `delay1_max_excess: 0.10`，并把 `decisions.md` 的 500 USDT 预检数字
+  抄进两轮的假设部分）。
+
 ## 本次运行状态（2026-11-25 第七次运行：R2 判定完成、启动 R4）
 
 - 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
