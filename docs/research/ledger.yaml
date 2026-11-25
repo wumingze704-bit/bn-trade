@@ -1,6 +1,6 @@
 version: 2
 global_trial_budget: 400
-trials_used: 133
+trials_used: 145
 research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
 research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
 rounds:
@@ -24,9 +24,9 @@ rounds:
     void: {status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
   - id: R4
     family: xs_reversal_ls
-    status: researching
-    trials: 0
-    result: null
+    status: failed
+    trials: 12
+    result: "拼接夏普 -0.519、最大回撤 47.70%、DSR 0.004；5 折 2 折为正；成本占毛收益 4.90 倍；可执行口径丢弃 5.60%、净收益 -23.70%；见 rounds/R4.md（重跑，迁移后）"
     void: {status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
   - id: R5
     family: ensemble

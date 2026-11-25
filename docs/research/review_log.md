@@ -394,6 +394,7 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
   `src/trade/common/risk_rules.py`（`64a0dde`）、`src/trade/common/sizing.py`（`5381f16`）、`docs/research/rounds/R1.md`（`c037ee8`）。
   - 代码对象（前六项）的最新提交与 2026-11-25 00:10 复核相同：未变化，沿用该次复核的 B1~B14“符合”结论。
   - `docs/research/rounds/R1.md` 为本会话新写内容，逐项对照服务器原始输出：
+
     `artifacts/reports/R1/grid.json`（`generated_at` 2026-11-25T04:21:30Z，`hashes.code_hash 9d4479fb…`、`config_hash 1d63621f…`、
     `data_hash bcb2dca3…`，`equity_basis {signal: 10000, exec: 500}`，`params` 24 组）**符合**：
     - `selected_metrics` 逐项一致：年化夏普 −0.530427、日频 −0.027764、净收益 −4159.476、最大回撤 0.529341、
@@ -411,4 +412,21 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
   启动方式上的一个操作记录：`systemd-run --scope` 会把工作目录重置为用户家目录（首次启动因此找不到相对路径脚本），
   已改为显式 `--working-directory=/home/ubuntu/trade` 后正常启动；不影响任何计算结果。
 - 结论：复核**全部符合**，未发现新缺陷；R1 判定按原始输出写为 FAILED，R2 已启动。
+
+
+## 2026-11-25 23:20 UTC R4 重跑结果的核对与观察项
+
+- R4（12 组）2026-11-25 14:09 UTC 启动、16:47:59 UTC 完成（`grid.json` 的 `generated_at`），运行时长约 2 小时 38 分；
+  服务器 HEAD `dffecab7`。在服务器上用同一 `compute_hashes` 文件清单复算得 `code_hash 66cdbd12…`、`config_hash 32372077…`，
+  与 `grid.json` 完全一致；`EXPERIMENTS.log` 的 `kind=tuning` 由 133 增至 145（+12），另新增 1 条 `kind=exec`。
+- `rounds/R4.md` 的“重跑（迁移后）”逐项与原始输出一致：拼接年化 −0.5193249、日频 −0.0271827、净 −3321.885、
+  最大回撤 0.476977、交易 6307、换手 547.729、成本 2738.644、成本占毛收益 4.8985、资金费 +24.167、
+  多头净 −4702.932、空头净 +1381.047、实现 β 0.017043、alpha −0.546984、DSR 0.003749、
+  bootstrap [−30.529, +12.532]、风险事件 8、强平 2、资金费估算 33 / 缺失 0、标记价格回退 432、丢弃 778 / 应开仓 6341；
+  分折选中参数、训练夏普与折内净收益、七项情景、12 组自身拼接夏普均与 `grid.json` 对应字段一致。
+- 观察项（不登记为缺陷）：`pipeline._executable_checks` 的 `exec_sharpe_ge_70pct` 实现为
+  `exec_sharpe >= 0.7 × signal_sharpe`；信号夏普为负时该不等式恒松（R4：−0.308 ≥ −0.363 → True）。
+  实现与 i 款“年化夏普 ≥ 信号口径的 70%”的字面表述一致，本轮 i 款仍因净收益 −23.70% 不达标，判定不受影响；
+  在报告中按字面含义解释该检查项，不自行改动口径（要改成“只对信号夏普为正时比较”属使用者决定）。
+- 结论：核对全部一致，R4 判定 FAILED。
 
