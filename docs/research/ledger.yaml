@@ -24,7 +24,7 @@ rounds:
     void: {status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
   - id: R4
     family: xs_reversal_ls
-    status: pending
+    status: researching
     trials: 0
     result: null
     void: {status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
