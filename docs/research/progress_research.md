@@ -1,6 +1,31 @@
 # 自动研究循环进度（进行中）
 
-## 本次运行状态（2026-11-25 第五次运行：等 R1、前置复核与 R11/R12 预检）
+## 本次运行状态（2026-11-25 第六次运行：R1 判定完成、启动 R2）
+
+- 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
+  `engine.md` = ENGINE_READY；R2/R4~R12 为 pending、`trials_used` 121 < 400 → 第 8 条 a 款执行 1 号。
+- 前置复核：见 `review_log.md` 的“2026-11-25 10:30 UTC”一节（代码提交 `7a7de4f` 与 00:10 复核相同，沿用结论；
+  R1 判定数字与服务器 `artifacts/reports/R1/grid.json` 逐项一致）。会话级一致性：`trials_used` 121 =
+  Σ rounds[].trials 56（R1 24 + R3 32）+ Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 121 条。
+- R1（服务器 HEAD `93d1b87`，24 组）已完成并判定 **FAILED**：拼接年化夏普 −0.530、最大回撤 52.93%、DSR 0.003、
+  5 折仅 1 折为正、可执行口径丢弃 14.17%（达标）但净收益 −44.64%；24 组自身拼接曲线只有 2 组日频夏普为正
+  （最好 L28 K5 24h fixed_risk 年化 +0.169）。不做修订（理由见 `rounds/R1.md`）。`ledger.yaml` 已更新
+  （R1 status=failed、trials 24、`trials_used` 121）。
+- R2（资金费拥挤多空，12 组）已于 2026-11-25 10:28 UTC 在服务器启动：`~/trade` HEAD
+  `c037ee8b5829369bcbefcf8d6700df948c162c29`（与本地一致），tmux 会话 `r2`，
+  `sudo -n systemd-run --scope -p MemoryMax=2000M --working-directory=/home/ubuntu/trade nice -n 10
+  ~/trade-venv/bin/python scripts/portfolio_backtest.py --grid configs/strategies/round_R2.yaml`，
+  日志 `~/trade/artifacts/reports/R2.log`，报告 `~/trade/artifacts/reports/R2/grid.json`。
+  按 R1 实测（24 组约 6 小时 45 分）推算 12 组约 3.5 小时，预计 2026-11-25 14:00 UTC 前后完成。**不要重复启动**。
+  启动方式注意：`systemd-run --scope` 会把工作目录重置为用户家目录，必须显式 `--working-directory=/home/ubuntu/trade`。
+- 下一步（新会话）：
+  1. `ps -ef | grep portfolio_backtest` 确认 R2 是否结束；结束后读 `artifacts/reports/R2/grid.json` 写
+     `rounds/R2.md` 的“重跑（迁移后）”一节，更新 `ledger.yaml`（R2 status / trials 12 / result 与 `trials_used` = 133），提交推送。
+  2. 启动 R4（12 组）；随后 R5（8 组）、R6~R10、R11、R12。
+  3. R11 / R12 开跑前：网格写 `delay1_max_excess: 0.10`，并把 `decisions.md` 2026-11-25 00:15 UTC 一节的
+     500 USDT 预检数字抄进 `rounds/R11.md` / `rounds/R12.md` 的假设部分（R12 的 BTC 对冲腿在 BTC 价格高于
+     约 83.3k 的月份会被丢弃，占目标数 ≤ 16.7%）。
+
 
 - 判断（0 号调度第四部分）：`SETUP_DONE.md` 为 DONE；M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；无候选、窗口全为 unused；
   `engine.md` = ENGINE_READY；R1 为 researching、R2/R4~R12 为 pending、`trials_used` 97 < 400 → 第 8 条 a 款执行 1 号。

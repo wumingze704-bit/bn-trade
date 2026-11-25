@@ -362,3 +362,35 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
   CPU 99.7%、服务器可用内存 1.99 GB；`artifacts/reports/R1/groups/` 尚未生成（逐组落盘在全部组跑完后写入）；本次未重复启动。
 - 结论：复核**全部符合**，未发现新缺陷。本次会话不推进 R1 判定（运行中），只完成 R11 / R12 的 500 USDT 可执行性预检（记录见 `decisions.md`）。
 
+## 2026-11-25 10:30 UTC 执行 1 号前的前置复核（R1 已完成，判定后启动 R2）
+
+- 会话前检查（0 号调度第二部分）：当前目录是 git 仓库（origin = `https://github.com/wumingze704-bit/bn-trade.git`），分支 `develop`，
+  `git pull --rebase origin develop` → Already up to date（起点 `2fd2186`）；`ssh tokyo` 可连通；服务器无 `trade-runner@*` 实例（`candidates` 为空）。
+- 会话级总账一致性（第五部分第 1 条）：`trials_used = 121` = Σ rounds[].trials 56（R1 24 + R3 32）+
+  Σ rounds[].void.trials 65 + 冻结仓位选择的试验 0 **符合**；服务器 `artifacts/reports/EXPERIMENTS.log` 的 `"kind": "tuning"` 121 条 **符合**
+  （R1 36 = 作废首轮 12 + 重跑 24；R3 40 = 作废首轮 8 + 第 1 次重跑 16 + 修复后重跑 16；其余轮次首轮合计 45）。
+- 状态判断（第四部分）：`SETUP_DONE.md` 第一行“结论：DONE”；`progress_migration.md` 中 M1~M7 全部完成；`review_log.md` 无 OPEN 缺陷；
+  `candidates` / `qualified_pool` 为空；三个窗口均 `unused`；`engine.md` 为 `ENGINE_READY` → 按第 8 条 a 款执行 1 号。
+- 复核对象与最新提交哈希：`src/trade/research/`（`7a7de4f`）、`tests/research/`（`7a7de4f`）、`src/trade/strategies/`（`9c82edc`）、
+  `scripts/portfolio_backtest.py`（`5381f16`）、`configs/research.yaml` 与 `configs/sizing_research.yaml`（`5381f16`）、
+  `src/trade/common/risk_rules.py`（`64a0dde`）、`src/trade/common/sizing.py`（`5381f16`）、`docs/research/rounds/R1.md`（`c037ee8`）。
+  - 代码对象（前六项）的最新提交与 2026-11-25 00:10 复核相同：未变化，沿用该次复核的 B1~B14“符合”结论。
+  - `docs/research/rounds/R1.md` 为本会话新写内容，逐项对照服务器原始输出：
+    `artifacts/reports/R1/grid.json`（`generated_at` 2026-11-25T04:21:30Z，`hashes.code_hash 9d4479fb…`、`config_hash 1d63621f…`、
+    `data_hash bcb2dca3…`，`equity_basis {signal: 10000, exec: 500}`，`params` 24 组）**符合**：
+    - `selected_metrics` 逐项一致：年化夏普 −0.530427、日频 −0.027764、净收益 −4159.476、最大回撤 0.529341、
+      成本合计 1866.351、成本 / 毛 0.8065、资金费 −20.961、多头净 −6202.548、空头净 +2043.072、实现 β −0.047972、
+      alpha 夏普 −0.474024、DSR 0.003344、bootstrap [−49.213, +19.030]、交易 4079、换手 373.270、亏损月 33、最差月 −0.103155、
+      风险事件 11、强制平仓 3、资金费估算 6 / 缺失 0、标记价格回退 731、丢弃 351 / 应开仓 4100。
+    - `fold_stats` 与文档分折表一致（训练夏普 0.4595 / −0.1528 / −0.1324 / −0.3122 / −0.2695，折内净收益
+      −0.15671 / −0.00473 / −0.14355 / −0.31972 / +0.20360，多头毛 − 空头毛 5 折仅第 3 折为正）。
+    - `scenarios` 七项与文档情景表一致；`exec_metrics` 一致（应开仓 4269、丢弃 605、因最小下单额 258、净 −0.44640、夏普 −0.602611）。
+    - `checks` 14 项与文档“未达标项 / 达标项”逐条对应（`shuffle_le_03`、`delay1_lt_base`、`beta_abs_le_030`、`exec_drop_ratio_le_020` 为 True，其余 False）。
+- §8 质量命令（本次复跑，代码 `7a7de4f`、文档 `c037ee8`）：`ruff format --check .`（376 files）、`ruff check .` 通过；
+  `pytest -q tests/research tests/strategies` → 71 passed。`mypy --strict src/trade/common src/trade/backtest src/trade/live`
+  与 `mypy src/trade/dashboard` 的代码对象与 00:10 复核相同，该次已通过，本次未重复运行。
+- 运行环境：R2 启动时服务器 `~/trade` HEAD `c037ee8b5829369bcbefcf8d6700df948c162c29` 与本地一致（`git rev-parse HEAD` 核对）。
+  启动方式上的一个操作记录：`systemd-run --scope` 会把工作目录重置为用户家目录（首次启动因此找不到相对路径脚本），
+  已改为显式 `--working-directory=/home/ubuntu/trade` 后正常启动；不影响任何计算结果。
+- 结论：复核**全部符合**，未发现新缺陷；R1 判定按原始输出写为 FAILED，R2 已启动。
+
