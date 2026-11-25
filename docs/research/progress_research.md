@@ -12,19 +12,21 @@
 - **R4**（12 组，14:09 ~ 16:47 UTC）判定 **FAILED**：拼接年化 −0.519、最大回撤 47.70%、DSR 0.004、5 折 2 折为正、
   成本占毛收益 4.90 倍、可执行口径丢弃 5.60% 但净收益 −23.70%；12 组自身拼接曲线全部为负。核对：
   `code_hash 66cdbd12…`、`config_hash 32372077…` 与服务器复算一致。
-- **R5**（组合，8 组）已于 2026-11-25 23:10 UTC 在服务器启动：`~/trade` HEAD
-  `2efa95b156bc4b755532af6f9e45d0fd63eb7f26`（与本地 `develop` 一致），tmux 会话 `r5`，
-  `sudo -n systemd-run --scope -p MemoryMax=2000M --working-directory=/home/ubuntu/trade nice -n 10
-  ~/trade-venv/bin/python scripts/portfolio_backtest.py --grid configs/strategies/round_R5.yaml`，
-  日志 `~/trade/artifacts/reports/R5.log`，报告 `~/trade/artifacts/reports/R5/grid.json`。
-  按 R2（12 组 3 小时 13 分）、R4（12 组 2 小时 38 分）推算，8 组约 2~3 小时。**不要重复启动**。
-- 试验预算：145 / 400。`trials_used` 145 = Σ rounds[].trials 80（R1 24 + R2 12 + R3 32 + R4 12）+
-  Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 145 条。
+- **R5**（组合，8 组）第一次启动即崩溃（缺陷 D22：`ensure_groups` 不给组合方向传成分参数，
+  `Ensemble.build` 抛 `ValueError`），已在 `review_log.md` 登记并修复（`src/trade/research/pipeline.py` 支持
+  “每折一条训练曲线 + 按折切换成分参数的自身拼接曲线”；新增 `tests/research/test_ensemble_fold_components.py` 4 项，
+  修复前 `ImportError`、修复后通过；`docs/13` §6 已同步）。修复提交 `83500d0`。
+  修复后于 2026-11-25 23:31 UTC 重新启动：`~/trade` HEAD `83500d07f356eb3aa1aea40a0ee8a9fb438557ba`（与本地一致），
+  tmux 会话 `r5`，同一条 `systemd-run` 命令，日志 `~/trade/artifacts/reports/R5.log`，进程 PID 1293177 运行中。
+  预计耗时明显长于前几轮：成分网格（R1 24 + R2 12 + R4 12 = 48 组）× 2 次全期运行约 10 小时，
+  R5 自身 8 组 ×（5 条按折训练 + 1 条拼接路径）约 4 小时。**不要重复启动**。
+- 试验预算：145 / 400（R5 崩溃未写入任何 `kind=tuning` 记录）。`trials_used` 145 = Σ rounds[].trials 80
+  （R1 24 + R2 12 + R3 32 + R4 12）+ Σ void.trials 65 + 0 = `EXPERIMENTS.log` 的 `kind=tuning` 145 条。
 - 提交与推送：`a5eca78`（R4 标 researching）、`2efa95b`（R4 判定与总账）已推送 `origin/develop`；本进度文件随下一次提交推送。
-- 下一步（新会话）：确认 R5 是否结束（`pgrep -f portfolio_backtest.py`、`R5/grid.json`、`EXPERIMENTS.log` 增至 153），
-  读 `grid.json` 写 `rounds/R5.md`“重跑（迁移后）”、更新 `ledger.yaml` 并提交推送，随后启动 R6（18 组）；
-  再依次 R7~R10、R11、R12（R11/R12 开跑前网格写 `delay1_max_excess: 0.10`，并把 `decisions.md` 的 500 USDT 预检数字
-  抄进两轮的假设部分）。
+- 下一步（新会话）：确认 R5 是否结束（`pgrep -af portfolio_backtest`、`R5/grid.json`、`EXPERIMENTS.log` 由 145 增至 153，
+  另有 `R5/components` 下的成分组缓存与 1 条 `kind=exec`），读 `grid.json` 写 `rounds/R5.md`“重跑（迁移后）”、
+  更新 `ledger.yaml` 并提交推送，随后启动 R6（18 组）；再依次 R7~R10、R11、R12
+  （R11/R12 开跑前网格写 `delay1_max_excess: 0.10`，并把 `decisions.md` 的 500 USDT 预检数字抄进两轮的假设部分）。
 
 ## 本次运行状态（2026-11-25 第七次运行：R2 判定完成、启动 R4）
 
