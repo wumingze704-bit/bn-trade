@@ -183,17 +183,45 @@ def _worker_init(payload: dict[str, Any]) -> None:
 
 
 def _worker_task(task: dict[str, Any]) -> ParamRun:
+    return _execute_task(_CTX["market"], _CTX, task)
+
+
+def _execute_task(market, ctx: Mapping[str, Any], task: Mapping[str, Any]) -> ParamRun:
+    """执行一个任务：普通参数运行，或 R5 的按折成分参数拼接路径。"""
+    config = ctx["config"]
+    if isinstance(config, Mapping):
+        config = ResearchConfig.model_validate(config)
+    sizing = ctx["sizing"]
+    if isinstance(sizing, Mapping):
+        sizing = SizingConfig.model_validate(sizing)
+    risk = ctx["risk"]
+    if isinstance(risk, Mapping):
+        risk = RiskLimits(**risk)
+    if task.get("kind") == "path":
+        return run_path_param(
+            market,
+            config=config,
+            sizing=sizing,
+            fee_taker=float(ctx["fee_taker"]),
+            risk_limits=risk,
+            family=str(task["family"]),
+            params=task["params"],
+            folds=task["folds"],
+            components_by_fold=task["components_by_fold"],
+            end_ms=int(task["end_ms"]),
+        )
     return run_param(
-        _CTX["market"],
-        config=_CTX["config"],
-        sizing=_CTX["sizing"],
-        fee_taker=_CTX["fee_taker"],
-        risk_limits=_CTX["risk"],
+        market,
+        config=config,
+        sizing=sizing,
+        fee_taker=float(ctx["fee_taker"]),
+        risk_limits=risk,
         family=str(task["family"]),
         params=task["params"],
-        start_ms=int(task.get("start_ms", _CTX["start_ms"])),
-        end_ms=int(task.get("end_ms", _CTX["end_ms"])),
+        start_ms=int(task.get("start_ms", ctx["start_ms"])),
+        end_ms=int(task.get("end_ms", ctx["end_ms"])),
         options=ScenarioOptions(**task["options"]),
+        components=task.get("components"),
     )
 
 
@@ -219,21 +247,15 @@ def _run_tasks(
     if not tasks:
         return []
     if workers <= 1:
-        return [
-            run_param(
-                market,
-                config=ResearchConfig.model_validate(payload["config"]),
-                sizing=SizingConfig.model_validate(payload["sizing"]),
-                fee_taker=float(payload["fee_taker"]),
-                risk_limits=RiskLimits(**payload["risk"]),
-                family=str(task["family"]),
-                params=task["params"],
-                start_ms=int(task.get("start_ms", payload["start_ms"])),
-                end_ms=int(task.get("end_ms", payload["end_ms"])),
-                options=ScenarioOptions(**task["options"]),
-            )
-            for task in tasks
-        ]
+        ctx = {
+            "config": ResearchConfig.model_validate(payload["config"]),
+            "sizing": SizingConfig.model_validate(payload["sizing"]),
+            "fee_taker": float(payload["fee_taker"]),
+            "risk": RiskLimits(**payload["risk"]),
+            "start_ms": payload["start_ms"],
+            "end_ms": payload["end_ms"],
+        }
+        return [_execute_task(market, ctx, task) for task in tasks]
     with ProcessPoolExecutor(
         max_workers=workers, initializer=_worker_init, initargs=(payload,)
     ) as pool:
@@ -321,6 +343,58 @@ class GroupResult:
     train_meta: dict[str, float]
     own_daily: pd.Series
     own_meta: dict[str, float] = field(default_factory=dict)
+    # R5 组合：训练曲线必须按折使用该折的成分参数（1 号第八部分 R5），
+    # 因此为每一折各存一条训练日收益与训练期交易数；其他方向的这两个字段为空。
+    train_by_fold: list[pd.Series] = field(default_factory=list)
+    train_trades_by_fold: list[int] = field(default_factory=list)
+
+    def as_param_run_for_fold(self, index: int) -> ParamRun:
+        """转成第 `index` 折选参用的 ParamRun（该折训练曲线与交易数）。
+
+        Args:
+            index: 折序号（0 起）。
+
+        Returns:
+            ParamRun，`daily` 为该折成分参数下的训练曲线，`trades` 长度等于该折训练期交易数。
+
+        Raises:
+            IndexError: 该组没有按折成分参数（非组合方向）。
+        """
+        series = self.train_by_fold[index]
+        # 交易数与训练窗口内的一致性：虚拟交易的 entry_ts 取该序列首日（必然落在
+        # [研究起点, 该折起点) 内），使 select_for_fold 的交易数下限判断正确。
+        entry_ms = int(series.index[0].timestamp() * 1000) if len(series) else 0
+        trades = [
+            Trade(
+                symbol="",
+                side=0,
+                entry_ts=entry_ms,
+                exit_ts=entry_ms,
+                notional=0.0,
+                fees=0.0,
+                funding=0.0,
+                gross_pnl=0.0,
+                net_pnl=0.0,
+                reason="cached",
+                entry_equity=0.0,
+            )
+            for _ in range(self.train_trades_by_fold[index])
+        ]
+        return ParamRun(
+            key=params_key(self.params),
+            params=dict(self.params),
+            daily=series,
+            trades=trades,
+            turnover=0.0,
+            dropped=0,
+            forced=0,
+            cost_total=0.0,
+            funding_total=0.0,
+            long_gross=0.0,
+            short_gross=0.0,
+            risk_events=0,
+            params_meta={},
+        )
 
     def as_param_run(self) -> ParamRun:
         """转成折内选参用的 ParamRun（只用日收益与开仓时刻）。"""
@@ -399,6 +473,10 @@ def save_group(path: Path, group: GroupResult, hashes: RecordHashes) -> None:
             "entries": [int(ts) for ts in group.train_entries],
             "meta": group.train_meta,
         },
+        "train_by_fold": [
+            {"daily": _series_to_json(series), "trades": int(count)}
+            for series, count in zip(group.train_by_fold, group.train_trades_by_fold, strict=True)
+        ],
         "own": {"daily": _series_to_json(group.own_daily), "meta": group.own_meta},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -416,6 +494,7 @@ def load_group(path: Path, hashes: RecordHashes) -> GroupResult | None:
         return None
     train = payload["train"]
     own = payload["own"]
+    train_by_fold_raw = payload.get("train_by_fold") or []
     return GroupResult(
         family=str(payload["family"]),
         params=dict(payload["params"]),
@@ -424,6 +503,8 @@ def load_group(path: Path, hashes: RecordHashes) -> GroupResult | None:
         train_meta={key: float(value) for key, value in train["meta"].items()},
         own_daily=_series_from_json(own["daily"]),
         own_meta={key: float(value) for key, value in own["meta"].items()},
+        train_by_fold=[_series_from_json(item["daily"]) for item in train_by_fold_raw],
+        train_trades_by_fold=[int(item["trades"]) for item in train_by_fold_raw],
     )
 
 
@@ -491,6 +572,7 @@ def ensure_groups(
     start_ms: int,
     end_ms: int,
     register: bool = True,
+    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
 ) -> dict[tuple[str, str], GroupResult]:
     """取得每组参数的训练曲线与自身拼接曲线：命中缓存直接复用，否则重跑并落盘。
 
@@ -511,13 +593,18 @@ def ensure_groups(
         start_ms: 研究起点。
         end_ms: 研究终点（不含）。
         register: 是否登记 `kind=tuning` 试验（R5 的成分复用其它轮次已登记的组时为 False）。
+        components_by_fold: R5 的逐折成分参数；给出时训练曲线按折分别运行
+            （该折之前的数据 + 该折成分参数），自身拼接曲线也在折边界切换成分参数
+            （1 号第八部分 R5）。
 
     Returns:
         {(family, params_key): GroupResult}。
 
     Raises:
-        ValueError: 参数重复（同一 family 下同一组参数出现两次）。
+        ValueError: 参数重复（同一 family 下同一组参数出现两次）；成分参数折数不一致。
     """
+    if components_by_fold is not None and len(components_by_fold) != len(folds):
+        raise ValueError(f"成分参数折数 {len(components_by_fold)} 与验证折数 {len(folds)} 不一致")
     results: dict[tuple[str, str], GroupResult] = {}
     fresh: list[tuple[str, dict[str, object]]] = []
     for family, params in pairs:
@@ -535,22 +622,46 @@ def ensure_groups(
     if not fresh:
         return results
     tasks: list[dict[str, Any]] = []
+    stride = 2 if components_by_fold is None else len(folds) + 1
     for family, params in fresh:
+        if components_by_fold is None:
+            tasks.append(
+                {
+                    "family": family,
+                    "params": params,
+                    "options": {"name": "base"},
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                }
+            )
+            tasks.append(
+                {
+                    "family": family,
+                    "params": params,
+                    "options": {"name": "base"},
+                    "start_ms": folds[0].start_ms,
+                    "end_ms": end_ms,
+                }
+            )
+            continue
+        for index, fold in enumerate(folds):
+            tasks.append(
+                {
+                    "family": family,
+                    "params": params,
+                    "options": {"name": "base"},
+                    "start_ms": start_ms,
+                    "end_ms": fold.start_ms,
+                    "components": components_by_fold[index],
+                }
+            )
         tasks.append(
             {
+                "kind": "path",
                 "family": family,
                 "params": params,
-                "options": {"name": "base"},
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-            }
-        )
-        tasks.append(
-            {
-                "family": family,
-                "params": params,
-                "options": {"name": "base"},
-                "start_ms": folds[0].start_ms,
+                "folds": list(folds),
+                "components_by_fold": list(components_by_fold),
                 "end_ms": end_ms,
             }
         )
@@ -558,17 +669,41 @@ def ensure_groups(
     entries: list[dict[str, Any]] = []
     now = datetime.now(UTC).isoformat()
     for index, (family, params) in enumerate(fresh):
-        train = runs[2 * index]
-        own = runs[2 * index + 1]
-        group = GroupResult(
-            family=family,
-            params=params,
-            train_daily=train.daily,
-            train_entries=[int(trade.entry_ts) for trade in train.trades],
-            train_meta=_group_meta(train, prefix="train_"),
-            own_daily=own.daily,
-            own_meta=_group_meta(own, prefix="own_"),
-        )
+        chunk = runs[index * stride : (index + 1) * stride]
+        if components_by_fold is None:
+            train = chunk[0]
+            own = chunk[1]
+            group = GroupResult(
+                family=family,
+                params=params,
+                train_daily=train.daily,
+                train_entries=[int(trade.entry_ts) for trade in train.trades],
+                train_meta=_group_meta(train, prefix="train_"),
+                own_daily=own.daily,
+                own_meta=_group_meta(own, prefix="own_"),
+            )
+        else:
+            fold_runs = chunk[: len(folds)]
+            own = chunk[-1]
+            merged = (
+                pd.concat([run.daily for run in fold_runs]).sort_index()
+                if fold_runs
+                else pd.Series(dtype="float64")
+            )
+            merged = merged[~merged.index.duplicated(keep="first")]
+            group = GroupResult(
+                family=family,
+                params=params,
+                train_daily=merged,
+                train_entries=sorted(
+                    {int(trade.entry_ts) for run in fold_runs for trade in run.trades}
+                ),
+                train_meta=_group_meta(fold_runs[0], prefix="train_"),
+                own_daily=own.daily,
+                own_meta=_group_meta(own, prefix="own_"),
+                train_by_fold=[run.daily for run in fold_runs],
+                train_trades_by_fold=[len(run.trades) for run in fold_runs],
+            )
         key = params_key(params)
         results[(family, key)] = group
         save_group(group_cache_path(group_dir, family, key), group, hashes)
@@ -648,6 +783,67 @@ def run_selected_path(
         seed=config.bootstrap.seed,
     )
     return engine.run_path(list(segments), int(end_ms))
+
+
+def run_path_param(
+    market,
+    *,
+    config: ResearchConfig,
+    sizing: SizingConfig,
+    fee_taker: float,
+    risk_limits: RiskLimits,
+    family: str,
+    params: Mapping[str, object],
+    folds: Sequence[Fold],
+    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]],
+    end_ms: int,
+) -> ParamRun:
+    """同一组参数按折切换成分参数的“自身拼接曲线”（R5 专用）。
+
+    规格：1 号第八部分 R5（第 k 折的成分参数由该折之前的数据选出，折边界切换）。
+
+    Args:
+        market: 市场数据。
+        config: 研究配置。
+        sizing: 信号口径仓位配置。
+        fee_taker: 吃单费率。
+        risk_limits: 风控参数。
+        family: 方向（组合为 `ensemble`）。
+        params: 该组参数（各折相同）。
+        folds: 验证折。
+        components_by_fold: 每折的成分参数，长度必须与 `folds` 相同。
+        end_ms: 路径终点（不含）。
+
+    Returns:
+        ParamRun（该组的自身拼接曲线）。
+
+    Raises:
+        ValueError: 成分参数折数与验证折数不一致。
+    """
+    if len(components_by_fold) != len(folds):
+        raise ValueError(f"成分参数折数 {len(components_by_fold)} 与验证折数 {len(folds)} 不一致")
+    key = params_key(params)
+    choices = [
+        FoldChoice(fold=fold, params_key=key, train_sharpe=0.0, train_trades=0) for fold in folds
+    ]
+    segments = build_segments(
+        family=family,
+        folds=list(folds),
+        choices=choices,
+        params_by_key={key: dict(params)},
+        config=config,
+        components_by_fold=components_by_fold,
+    )
+    result = run_selected_path(
+        market,
+        config=config,
+        sizing=sizing,
+        fee_taker=fee_taker,
+        risk_limits=risk_limits,
+        segments=segments,
+        end_ms=end_ms,
+    )
+    return _to_param_run(params, result)
 
 
 def _component_param_sets(
@@ -751,6 +947,43 @@ def component_params_by_fold(
             by_key[select_for_fold(runs, fold, start_ms).params_key] for fold in folds
         ]
     return [{family: choices[family][index] for family in choices} for index in range(len(folds))]
+
+
+def select_choices(
+    *,
+    groups: Mapping[tuple[str, str], GroupResult],
+    family: str,
+    params_by_key: Mapping[str, Mapping[str, object]],
+    folds: Sequence[Fold],
+    start_ms: int,
+    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+) -> list[FoldChoice]:
+    """按第七部分第 3 条为每一折选参（组合方向用该折成分参数下的训练曲线）。
+
+    Args:
+        groups: 逐组结果。
+        family: 方向。
+        params_by_key: `{参数键: 参数}`。
+        folds: 验证折。
+        start_ms: 研究起点（训练期起点）。
+        components_by_fold: 组合方向的逐折成分参数；为 None 时用各折共用的训练曲线。
+
+    Returns:
+        每折一个 FoldChoice。
+
+    Raises:
+        ValueError: 某折没有满足训练期交易数下限的参数。
+    """
+    if components_by_fold is None:
+        train_runs = {key: groups[(family, key)].as_param_run() for key in params_by_key}
+        return [select_for_fold(train_runs, fold, start_ms) for fold in folds]
+    choices: list[FoldChoice] = []
+    for index, fold in enumerate(folds):
+        fold_runs = {
+            key: groups[(family, key)].as_param_run_for_fold(index) for key in params_by_key
+        }
+        choices.append(select_for_fold(fold_runs, fold, start_ms))
+    return choices
 
 
 def _block_metrics(result: RunResult) -> dict[str, float]:
@@ -1088,6 +1321,26 @@ def evaluate_grid(
             with_premium=with_premium,
         )
     group_dir = out_dir / round_id / "groups"
+    components_by_fold = None
+    if family == "ensemble":
+        components_by_fold = component_params_by_fold(
+            grid=grid,
+            config=config,
+            market=market,
+            sizing=signal_sizing,
+            fee_taker=fee_taker,
+            risk_limits=risk_limits,
+            payload=payload,
+            workers=workers,
+            group_dir=group_dir / "components",
+            log_path=log_path,
+            hashes=hashes,
+            round_id=round_id,
+            folds=folds,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            root=root,
+        )
     groups = ensure_groups(
         market=market,
         config=config,
@@ -1104,11 +1357,18 @@ def evaluate_grid(
         folds=folds,
         start_ms=start_ms,
         end_ms=end_ms,
+        components_by_fold=components_by_fold,
     )
     params_by_key = {params_key(params): params for params in params_list}
-    train_runs = {key: groups[(family, key)].as_param_run() for key in params_by_key}
     try:
-        choices = [select_for_fold(train_runs, fold, start_ms) for fold in folds]
+        choices = select_choices(
+            groups=groups,
+            family=family,
+            params_by_key=params_by_key,
+            folds=folds,
+            start_ms=start_ms,
+            components_by_fold=components_by_fold,
+        )
     except ValueError as error:
         return _no_selection_report(
             round_id=round_id,
@@ -1147,6 +1407,7 @@ def evaluate_grid(
         scenarios=scenarios,
         out_dir=out_dir,
         root=root,
+        components_by_fold=components_by_fold,
     )
 
 
@@ -1177,28 +1438,9 @@ def _evaluate_selected(
     scenarios: Sequence[str],
     out_dir: Path,
     root: Path,
+    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
 ) -> dict[str, Any]:
     """按折选中参数跑连续路径、两种权益口径与全部情景，并汇总达标项。"""
-    components_by_fold = None
-    if family == "ensemble":
-        components_by_fold = component_params_by_fold(
-            grid=grid,
-            config=config,
-            market=market,
-            sizing=signal_sizing,
-            fee_taker=fee_taker,
-            risk_limits=risk_limits,
-            payload=payload,
-            workers=workers,
-            group_dir=group_dir / "components",
-            log_path=log_path,
-            hashes=hashes,
-            round_id=round_id,
-            folds=folds,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            root=root,
-        )
 
     def _segments() -> list[Segment]:
         return build_segments(

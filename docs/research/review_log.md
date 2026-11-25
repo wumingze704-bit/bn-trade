@@ -430,3 +430,42 @@ R3 第一次重跑的原始报告保留为 `artifacts/reports/R3/grid_before_D19
   在报告中按字面含义解释该检查项，不自行改动口径（要改成“只对信号夏普为正时比较”属使用者决定）。
 - 结论：核对全部一致，R4 判定 FAILED。
 
+
+## 2026-11-25 23:40 UTC 缺陷 D22（R5 无法运行）登记与修复
+
+复核对象：`src/trade/research/pipeline.py`（`2efa95b` 之后未改动的版本）、`src/trade/strategies/ensemble.py`（`9c82edc`）。
+
+发现方式：按 M7 顺序启动 R5（`configs/strategies/round_R5.yaml`，8 组）后进程立即退出，`~/trade/artifacts/reports/R5.log`：
+
+```text
+File "src/trade/research/pipeline.py", line 557, in ensure_groups -> _run_tasks -> run_param
+File "src/trade/strategies/registry.py", line 60, in build_strategy
+File "src/trade/strategies/ensemble.py", line 99, in build
+ValueError: R5 的成分参数必须逐折给出（1 号第八部分 R5）
+```
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :--- | :--- | :--- | :--- | :--- |
+| D22 | CLOSED | 1 号第八部分 R5（第 k 折的训练与验证都用该折的成分参数）与第五部分 B 第 10 条 a、c 款（训练曲线与自身拼接曲线都必须能跑） | `ensure_groups` 的两类任务（全期训练曲线、自身拼接曲线）都不传 `components`，`Ensemble.build` 因此必然抛 `ValueError`；`_worker_task` 与串行分支也不传成分参数，R5 的任何网格都无法运行 | 组合方向 R5 无法运行，重跑顺序在 R5 处中断；R6~R10 依赖 R5 之后继续 |
+
+修复（`src/trade/research/pipeline.py`、`tests/research/test_ensemble_fold_components.py`、`docs/13` §6）：
+- `ensure_groups` 新增 `components_by_fold`：给出时每组参数改为“每折一条训练曲线（该折之前的数据 + 该折成分参数）”
+  加“一条按折切换成分参数的自身拼接曲线”；`GroupResult` 新增 `train_by_fold` / `train_trades_by_fold` 并写入逐组缓存；
+  未给出时（R1~R4、R6~R12）保持原有两个任务的结构不变。
+- 新增 `run_path_param`（一组参数按折切换成分参数的连续路径）、`select_choices`（组合方向按折训练曲线选参）；
+  `_execute_task` 统一串行与多进程两种执行方式；`evaluate_grid` 先算成分参数再跑组合的逐组结果，避免重复计算。
+- `docs/13` §6 补两条规格：组合方向训练曲线按折运行、自身拼接曲线在折边界切换成分参数。
+
+复现测试（修复前失败、修复后通过）：`tests/research/test_ensemble_fold_components.py` 4 项
+（`test_ensure_groups为组合方向按折传成分参数`、`test_select_choices按折成分参数选参`、
+`test_run_path_param拒绝折数不一致`、`test_按折训练曲线可落盘复用`）。在 `2efa95b` 的临时 worktree 上运行该文件
+→ `ImportError: cannot import name 'run_path_param'`（旧代码没有逐折成分参数能力）；修复后 `4 passed`。
+
+质量命令：`ruff format --check .`（378 files）、`ruff check .`、`mypy --strict`（56 files）、`mypy dashboard`（8 files）通过；
+`pytest -q tests/research tests/strategies` → 75 passed；`pytest -q` → `1 failed, 872 passed, 3 skipped`
+（唯一失败为本机无 CUDA 的既有测试，未修改任何既有测试断言）。
+
+影响范围：R1~R4 的判定基于旧的 `ensure_groups` 路径（未传 `components_by_fold`，行为与修复后完全一致，
+不涉及任何成分参数），其结果与报告不受影响；R5 的第一次启动未产生 `kind=tuning` 记录（崩溃在写入之前），
+`trials_used` 仍为 145。修复后重新启动 R5。
+
