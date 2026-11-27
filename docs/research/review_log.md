@@ -611,16 +611,18 @@ ValueError: 1612137600000 BTCUSDT 日线不足 50 根，无法判断 X1 的市�
 | D25 | CLOSED | 1 号第五部分 B 第 10 条 a 款（选参用的训练曲线必须能从 `research_start` 起跑）与第八部分 X1、R11、R12 的市场状态过滤 | X1 的 `bearish`、R11 的 `bull_market`、R12 的 `alt_season` / `btc_hedge_weight` 在日线根数不足时直接抛 `ValueError`；训练曲线从 `research_start`（2021-02-01）起跑，那时 BTC 日线只有 1 根，X1 需要 50 根、R11 需要 200 根、R12 需要 120 根，因此三者在第一个决策点就退出（X1 实测见上） | X1~X4 与 R11、R12 六轮全部无法运行；X0 不使用日线，未受影响 |
 
 修复：
-- `View.daily_warmup(symbol, count)`：日线行数少于 `count` 视为预热段（数据尚未存在），
-  该币没有日线数据时返回 False（交给调用方按缺数据报错）。
+- `View.daily_warmup(symbol, count)`：已收盘根数不足 **且** 最早一根日线晚于 `now − count` 天时视为预热段
+  （数据尚未存在；不能用内存行数判断，加载时整段窗口一次性装入）；该币没有日线数据、或日线起始时间
+  足够早但已收盘根数仍不足时返回 False（交给调用方按缺数据报错）。
 - `short_basket_btc_regime.bearish`、`short_seasoned_listing.bull_market`、`alt_short_btc_long.alt_season`
   在预热段返回 None，`decide` 据此返回空目标（空仓）；窗口存在缺口或完全没有日线时仍抛带币种与时间的
   异常（红线 12 不变，`test_X1没有BTC日线时仍报错` 覆盖）。`btc_hedge_weight` 同理返回 None。
 - `docs/13-研究框架.md` §5 增加“预热不足”规格一条（只写规格）。
 - 复现测试（修复前失败、修复后通过）：`tests/research/test_short_strategies.py` 的
-  `test_X1预热段日线不足时空仓`、`test_R11预热段日线不足时空仓`、`test_R12预热段日线不足时空仓`；
-  在 `cccce68` 的临时 worktree 上运行（新测试文件覆盖过去）→ `3 failed, 1 passed`（失败均为
-  `ValueError: ... 日线不足 ...`）；修复后该文件 `15 passed`。
+  `test_X1预热段日线不足时空仓`、`test_R11预热段日线不足时空仓`、`test_R12预热段日线不足时空仓`、
+  `test_X1日线从决策时刻才开始时按预热处理`（最后一条对应服务器上的真实情形：日线整段窗口一次性装入、
+  研究期第一根不早于决策时刻）；在 `cccce68` 的临时 worktree 上运行 → `3 failed, 1 passed`
+  （失败均为 `ValueError: ... 日线不足 ...`）；修复后该文件 `16 passed`、`test_view.py` 通过。
 - 测试改动说明（红线 11 授权范围）：`test_X1日线不足时抛出异常而不是当作牛市` 的断言把“预热段抛错”
   固定成规格，而该行为使 X1 无法运行；按新规格改名为 `test_X1预热段日线不足时空仓`，并新增
   `test_X1没有BTC日线时仍报错` 继续覆盖红线 12。未删除其他断言、未放宽容差。

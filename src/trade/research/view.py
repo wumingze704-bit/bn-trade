@@ -283,22 +283,27 @@ class View:
         return bool(closes[-1] < float(np.mean(closes)))
 
     def daily_warmup(self, symbol: str, count: int) -> bool:
-        """该币的日线是否还处于预热段（已有日线行数少于 `count` 根，docs/13 §5）。
+        """该币的日线是否还处于预热段（数据起始时间覆盖不到 `count` 根之前，docs/13 §5）。
 
         用来区分“数据尚未存在”（研究期开头、币刚上线）与“数据缺失”：前者按规格空仓，
-        后者必须抛出带上下文的异常（红线 12）。
+        后者必须抛出带上下文的异常（红线 12）。判定依据是已收盘根数不足且最早一根日线
+        晚于 `now − count` 天，而不是内存里的行数（加载时整段窗口一次性装入）。
 
         Args:
             symbol: 币种。
             count: 策略需要的最少日线根数。
 
         Returns:
-            True 表示预热段；该币完全没有日线数据时返回 False（由调用方按缺数据报错）。
+            True 表示预热段；该币没有日线数据、或日线起始时间足够早但已收盘根数仍不足
+            （缺数据）时返回 False，由调用方报错。
         """
         bars = self.market.daily.get(symbol)
-        if bars is None:
+        if bars is None or bars.open_time.size == 0:
             return False
-        return int(bars.open_time.size) < count
+        closed = int(np.searchsorted(bars.open_time, self.now_ms - DAY_MS, side="right"))
+        if closed >= count:
+            return False
+        return int(bars.open_time[0]) > self.now_ms - count * DAY_MS
 
     def has(self, symbol: str) -> bool:
         """研究数据中是否有该币。"""

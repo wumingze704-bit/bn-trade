@@ -164,6 +164,25 @@ def test_X1预热段日线不足时空仓() -> None:
     assert strategy.decide(view, {}).targets == ()
 
 
+def test_X1日线从决策时刻才开始时按预热处理() -> None:
+    """日线整段窗口一次性装入：研究期第一根日线不早于决策时刻时仍属预热段（D25 的真实情形）。"""
+    market = _with_daily(make_market(n=240, history_days=_HISTORY_DAYS), "BTCUSDT", [100.0] * 200)
+    bars = market.daily["BTCUSDT"]
+    shift = _NOW_MS - int(bars.open_time[0]) + DAY_MS
+    market.daily["BTCUSDT"] = Bars(
+        symbol="BTCUSDT",
+        open_time=bars.open_time + shift,
+        open=bars.open,
+        high=bars.high,
+        low=bars.low,
+        close=bars.close,
+        quote_volume=bars.quote_volume,
+    )
+    view = View(market, _NOW_MS)
+    strategy = ShortBasketBtcRegime(basket_n=2, ma_days=50, stop_max=_STOP_MAX)
+    assert strategy.decide(view, {}).targets == ()
+
+
 def test_X1没有BTC日线时仍报错() -> None:
     """完全没有 BTC 日线属缺数据（不是预热段），必须抛出带上下文的异常（红线 12）。"""
     market = make_market(n=240, history_days=_HISTORY_DAYS)
