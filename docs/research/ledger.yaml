@@ -1,80 +1,26 @@
-version: 2
 global_trial_budget: 400
-trials_used: 145
-research_start: "2021-02-01"      # 第一个入选币数 ≥ 20 的月份（2021-02）
-research_end: "2026-07-31"        # 研究可用数据上限；任何窗口检验完成后延长到该窗口末日
-rounds:
-  - id: R1
-    family: xs_momentum_ls
-    status: failed
-    trials: 24
-    result: "拼接夏普 -0.530、最大回撤 52.93%、DSR 0.003；5 折仅 1 折为正；可执行口径丢弃 14.17%、净收益 -44.64%；见 rounds/R1.md（重跑，迁移后）"
-    void: {status: failed, trials: 12, result: "拼接夏普 -0.470；成本/毛收益 1.42；R8 停机；见 rounds/R1.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R2
-    family: funding_carry_ls
-    status: failed
-    trials: 12
-    result: "拼接夏普 -0.491、最大回撤 53.90%、DSR 0.004；5 折仅 1 折为正；可执行口径丢弃 4.13%、净收益 -42.56%；见 rounds/R2.md（重跑，迁移后）"
-    void: {status: failed, trials: 6, result: "拼接夏普 -0.607；最大回撤 24.5%；见 rounds/R2.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R3
-    family: ts_trend
-    status: failed
-    trials: 32
-    result: "拼接夏普 0.070、最大回撤 59.89%、DSR 0.054；5 折仅 2 折为正；可执行口径丢弃 45.7%；见 rounds/R3.md（含第 1 次重跑因 D19 作废）"
-    void: {status: failed, trials: 8, result: "训练期无交易，无法选参；全期最好夏普 0.43；见 rounds/R3.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R4
-    family: xs_reversal_ls
-    status: failed
-    trials: 12
-    result: "拼接夏普 -0.519、最大回撤 47.70%、DSR 0.004；5 折 2 折为正；成本占毛收益 4.90 倍；可执行口径丢弃 5.60%、净收益 -23.70%；见 rounds/R4.md（重跑，迁移后）"
-    void: {status: failed, trials: 6, result: "拼接夏普 -0.939；多头端最小下单额丢弃；见 rounds/R4.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R5
-    family: ensemble
-    status: researching
-    trials: 0
-    result: null
-    void: {status: failed, trials: 4, result: "拼接夏普 -1.078；成分均不达标；见 rounds/R5.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R6
-    family: ai_proposed_1
-    status: pending
-    trials: 0
-    result: null
-    void: {status: failed, trials: 9, result: "资金费调整动量：训练期内 2021-10-07 单日亏损 8% 触发 R6 停机，验证折无交易，拼接夏普 0.000；nohalt 年化 0.124、回撤 41.6%；见 rounds/R6.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R7
-    family: ai_proposed_2
-    status: pending
-    trials: 0
-    result: null
-    void: {status: failed, trials: 6, result: "低波动异常：拼接夏普 -0.026；多头（低波动）净 -16.69、空头 +8.73，方向与假设相反；最大回撤 22.4%；见 rounds/R7.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R8
-    family: ai_proposed_3
-    status: pending
-    trials: 0
-    result: null
-    void: {status: failed, trials: 6, result: "波动率择时动量：选中组训练期 2021-10-07 触发 R6 停机，验证折无交易；σ0.5 组自身拼接日频夏普最高 +0.031；nohalt 净 -0.14%；见 rounds/R8.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R9
-    family: ai_proposed_4
-    status: pending
-    trials: 0
-    result: null
-    void: {status: failed, trials: 4, result: "BTC 对冲单边动量：拼接夏普 -0.317；多头 -19.05、空头 +5.30；2022-08-19 触发 R8 停机；见 rounds/R9.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R10
-    family: ai_proposed_5
-    status: pending
-    trials: 0
-    result: null
-    void: {status: failed, trials: 4, result: "流动性分层动量：拼接夏普 -0.180；最大回撤 29.4%；多头 -25.76、空头 +14.26；见 rounds/R10.md", reason: "D1~D7 与 M2、M3、M5 口径变更，见 docs/research/review_log.md"}
-  - id: R11
-    family: short_seasoned_listing
-    status: pending
-    trials: 0
-    result: null
-  - id: R12
-    family: alt_short_btc_long
-    status: pending
-    trials: 0
-    result: null
-
+trials_used: 0
+void_history: {trials: 153, rounds: "R1~R10 首次运行", log: "artifacts/reports/_void_20261127T120139Z/EXPERIMENTS.log", reason: "D1~D16 口径缺陷，研究重置时作废"}
+research_start: "2021-02-01"
+research_end: "2026-07-31"
+rounds:                           # 按列出的顺序执行：X 轨（纯做空，仅报告）→ R3 → R1、R2、R4、R5 → R6~R10 → R11、R12
+  - {id: X0, track: short_report, family: short_basket_baseline, status: pending, trials: 0, result: null}
+  - {id: X1, track: short_report, family: short_basket_btc_regime, status: pending, trials: 0, result: null}
+  - {id: X2, track: short_report, family: short_crowded_pump, status: pending, trials: 0, result: null}
+  - {id: X3, track: short_report, family: short_premium_rich, status: pending, trials: 0, result: null}
+  - {id: X4, track: short_report, family: short_taker_exhaustion, status: pending, trials: 0, result: null}
+  - {id: R3, family: ts_trend, status: pending, trials: 0, result: null}
+  - {id: R1, family: xs_momentum_ls, status: pending, trials: 0, result: null}
+  - {id: R2, family: funding_carry_ls, status: pending, trials: 0, result: null}
+  - {id: R4, family: xs_reversal_ls, status: pending, trials: 0, result: null}
+  - {id: R5, family: ensemble, status: pending, trials: 0, result: null}
+  - {id: R6, family: funding_adj_momentum, status: pending, trials: 0, result: null}
+  - {id: R7, family: xs_low_vol_ls, status: pending, trials: 0, result: null}
+  - {id: R8, family: vol_timed_momentum, status: pending, trials: 0, result: null}
+  - {id: R9, family: btc_hedged_momentum, status: pending, trials: 0, result: null}
+  - {id: R10, family: liquidity_tiered_momentum, status: pending, trials: 0, result: null}
+  - {id: R11, family: short_seasoned_listing, status: pending, trials: 0, result: null}
+  - {id: R12, family: alt_short_btc_long, status: pending, trials: 0, result: null}
 qualified_pool: []
 candidates: []
 final_windows:

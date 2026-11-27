@@ -1,53 +1,111 @@
 # 决策记录（共用，只追加）
 
-## 2026-11-23 自动研究循环（首次运行）
+## 2026-11-27 研究重置
 
-### 1. 运行位置与研究数据
+- 使用者决定：研究重置（00_研究重置_单独发送.txt）。
+- 重置时间：2026-11-27 12:01:39 UTC（本地与服务器本地时间 20:01 CST）。
+- 原因：已有的研究轮次（R1~R10）由一个有口径缺陷的研究框架跑出，缺陷影响每一轮的数字与判定，旧结论不能作为
+  “方向无效”的证据。缺陷编号与内容：
+  - D1 拼接曲线把训练期的风控状态（停机、回撤、连续亏损）带进验证折；
+  - D2 R5 的成分参数用全研究期选参，早期各折用到了之后的数据；
+  - D3 决策时刻 t 的订单晚一小时成交，仓位所用权益含 t 之后的价格；
+  - D4 止损成交只算 2 × 1bp 滑点，没有半价差与冲击成本；
+  - D5 持仓币没有资金费序列时静默按 0 计；
+  - D6 止损按成交价而不是标记价格触发；
+  - D7 平仓取不到价格时静默保留仓位；
+  - D12 中性策略“多空毛收益差”判定写反，要求多头比空头赚得多；
+  - D13 reset 停机恢复时峰值不重设，回撤停机恢复当刻就再次停机，等于 strict；
+  - D14 方向相反的目标被当作继续持有，不会反手；
+  - D15 中性策略一侧为空时变成单边敞口、持仓数截断先截空头、止损后周内不再配平、上线天数按加载窗口起点计算；
+  - D16 R1 未执行打分符号条件、R3 波动被缩放两次、半价差缺 tick 下限、168 小时调仓落在周四而不是周一。
+- 旧记录：`docs/research/decisions.md` 重置前最后一次提交为 `2efa95b`；被删除的 `docs/research/rounds/`（R1~R10
+  共 10 个文件）与 `docs/research/progress_research.md` 全文见 git 历史。
+- 本任务只清研究结果，不修代码，也不运行任何研究；代码修复与重跑由后续任务负责。
 
-- 研究数据：2020-10 ~ 2026-07 的月度 1h/1d K 线与资金费，共 59,703 个文件、约 834 MB，
-  全部来自 data.binance.vision 月度目录，CHECKSUM 校验通过，0 缺失、0 失败（`data/history/manifest.json`）。
-- 选币快照：`data/universe_hist/` 重建 70 个月（2020-10 ~ 2026-07），规则与 `configs/universe.yaml` 一致；
-  第 7 步质量门槛改为“R 前一个自然月 1h 缺失比例 ≤ 1%”。各月入选数：2020-10 ~ 2021-01 依次为
-  0、0、8、9，此后 2021-02 起 ≥ 20（最多 60），最近 6 个月为 2026-02 48、2026-03 39、2026-04 38、
-  2026-05 33、2026-06 35、2026-07 39。`research_start` 取第一个 ≥ 20 的月份 2021-02-01。
-- 181 个币在 `artifacts/exchange_info/rules.json` 中没有交易规则（多为已下架且逐笔数据已清理的老合约，
-  以及 TradFi 合约）。这些币无法取整与判定可交易性，统一标记 `excluded`，不进入 U(R)；名单写入
-  `data/universe_hist/summary.json`。2020-10 的快照在补充该标记前生成，不用于研究（research_start 之后）。
-- 运行位置：服务器上加载 310 个币、2021-01~2026-07 数据，峰值 RSS 630 MB、耗时 46 秒，空闲内存 2.5 GB，
-  满足“峰值 ≤ 1.5 GB 且内存充足”，因此研究在东京服务器上运行（1 个进程，`nice -n 10`，tmux）。
+### 1. 预登记内容的摘出（删除之前完成）
 
-### 2. 与旧框架的差异（有意偏差，已同步 docs/13）
+- 新建 `docs/research/hypotheses_R1_R10.md`：逐轮原样复制 `docs/research/rounds/<轮次>.md` 的“假设（先写后跑）”
+  一节，并附 `configs/strategies/round_<轮次>.yaml` 的参数列表；文件开头写明“R1~R10 的预登记假设与网格；
+  不含任何运行结果”。
+- 逐行检查后删除 3 处由结果得出的措辞（其余保留的都是事先写下的参数、阈值与选参规则）：
+  - R5 成分说明的括号“（各自首轮网格在全研究期按年化夏普、交易数 ≥ 30 选出的参数）”；
+  - R6 预期收益来源的“周频调仓把换手与成本压到 R1 的约 1/20”；
+  - R9 经济机制的“（R1 的多头端 −39.9、空头端 +18.3 就是这种混合的结果）”。
+- R1 数据行引用旧 `docs/research/decisions.md` 的数据缺口记录，补注“（重置前的记录，只在 git 历史中）”，
+  避免指向已重写的文件。
 
-- 旧回测的滑点用 1 分钟 `rv_15_raw`；本框架只有 1h 数据，改用过去 24 小时 1h 对数收益标准差
-  作为波动代理：`slip = max(1bp, Y × rv_1h × sqrt(notional / mean_1h_quote_volume))`，
-  `Y` 取 `configs/backtest.yaml: costs.Y`。已在 `docs/13-研究框架.md` §4 写明。
-- 流动性上限按指令第二部分第 3 条：`单币名义 ≤ liq_cap × 该币 24 小时成交额 / 24`，
-  `liq_cap` 取 `configs/sizing_research.yaml` 的 0.005；旧框架的 `mean_60` 口径不再使用。
-- Deflated Sharpe 的 `trial_sharpes` 与 `sharpe` 统一用日频非年化夏普（指令第五部分 B 第 9 条），
-  `n_obs` 为拼接曲线日数；与 `trade.backtest.sanity.deflated_sharpe` 的“同周期单位”要求一致。
+### 2. 删除（`git rm`，历史可恢复）
 
-### 3. 首轮 R1~R5 结果与关键约束
+| 路径 | 内容 |
+| :--- | :--- |
+| `docs/research/rounds/` | R1~R10 共 10 个轮次记录（`R1.md`~`R10.md`） |
+| `docs/research/progress_research.md` | 研究进度记录 |
 
-- R1~R5 首轮网格全部不达标：拼接年化夏普分别为 R1 −0.470、R2 −0.607、R3 无法选参（训练期无交易，
-  全期最好 0.43）、R4 −0.939、R5 −1.078。逐组数字与诊断见 `docs/research/rounds/R1.md` ~ `R5.md`，
-  报告在服务器 `artifacts/reports/R1~R5/grid.json`，试验登记 `artifacts/reports/EXPERIMENTS.log`。
-- 关键约束（使用者确定的风险包络，Agent 不得修改）：100 USDT × `risk_per_trade` 0.0075 ÷ 15% 止损
-  ≈ 4.9 USDT 名义，低于最小下单额 5 × 1.1 = 5.5，因此宽止损仓位全部被丢弃。R3 的 3 × ATR14(1d)
-  几乎总是触及 15% 上限，2021-02~2022-02 没有交易，按第七部分第 3 条无法选参；R4 的多头一侧
-  （近期下跌币，波动更大）也被大量丢弃。
-- 所有轮次都未修订：网格内已覆盖可调参数，方向上做反向选择属于按结果挑参数，不符合第七部分第 6 条。
-  各轮的决定与理由写在对应 `rounds/*.md` 的“判定”一节。
+不存在的路径（按指令“不存在的跳过”处理，未做任何操作）：`docs/research/short_report.md`、
+`docs/research/candidates/`、`docs/research/final/`、`docs/research/shadow/`、`docs/research/live/`；
+本地与服务器 `~/trade/docs/research/` 下均无这五项。
 
-### 4. ledger 被同步覆盖后恢复
+### 3. 清空与重写
 
-- 服务器 `~/trade` 不是 git 仓库，研究结果直接写在服务器上的 `docs/research/ledger.yaml`。在同步代码时
-  用 tar 覆盖了该文件，导致 R1~R4 的 trials 与状态被重置；已按服务器 `EXPERIMENTS.log`（R1 12 条、
-  R2 6 条、R3 8 条、R4 6 条、R5 4 条，合计 36 条 `kind=tuning`）恢复 `trials_used: 36` 与
-  R1~R5 的 failed 状态与结果摘要。之后同步代码时排除 `docs/research/ledger.yaml`，以本地 git 版本为准，
-  研究运行结束后再把服务器 ledger 复制回本地。
+- `docs/research/ledger.yaml`：按研究重置指令第五部分第 2 条的模板重写。`trials_used` 归零；
+  `research_start`/`research_end`（2021-02-01 / 2026-07-31）与 `final_windows`（W1~W3）沿用重置前的值，窗口未改动、
+  未读取；`rounds` 改为 X0~X4 与 R1~R12 共 17 条 `pending`，顺序为 X 轨 → R3 → R1、R2、R4、R5 → R6~R10 →
+  R11、R12；`qualified_pool`、`candidates`、`live_candidates` 置空。
+- `void_history.trials = 153`：服务器旧 `artifacts/reports/EXPERIMENTS.log` 共 164 条记录，其中 `kind=tuning`
+  153 条、`kind=exec` 6 条、无 `kind` 字段 5 条（按 Python 逐行解析统计，无坏行）。
+- `void_history.log = artifacts/reports/_void_20261127T120139Z/EXPERIMENTS.log`：移动后的实际路径。
+- 本文件（`docs/research/decisions.md`）重写为三部分：研究重置（本节）、一次性准备的事实（分支名、服务器代码
+  同步方式、指令文件位置、归档清单、数据目录清理，原文照抄）、实盘工程与看板（P5 / P6）（原文照抄）。原文件中
+  关于研究轮次结果、诊断与研究运行的段落不再保留。
 
+### 4. artifacts 移动与删除（只移动不删除，清单内）
+
+服务器 `~/trade/artifacts/reports/` → `~/trade/artifacts/reports/_void_20261127T120139Z/`：
+
+| 目录/文件 | 文件数 | 大小 | 修改时间（服务器本地） |
+| :--- | ---: | ---: | :--- |
+| `EXPERIMENTS.log` | 1 | 74 786 B | 2026-11-26 15:49:26 |
+| `R1/` | 28 | 6.9 M | 2026-11-25 11:37:25 |
+| `R2/` | 14 | 3.3 M | 2026-11-25 20:58:34 |
+| `R3/` | 19 | 3.5 M | 2026-11-25 01:16:48 |
+| `R4/` | 14 | 4.2 M | 2026-11-26 00:19:10 |
+| `R5/` | 34 | 11 M | 2026-11-26 12:21:19 |
+| `R6/` | 2 | 72 K | 2026-11-23 21:40:32 |
+| `R7/` | 2 | 80 K | 2026-11-23 21:46:09 |
+| `R8/` | 2 | 68 K | 2026-11-23 21:48:40 |
+| `R9/` | 2 | 72 K | 2026-11-23 21:54:31 |
+| `R10/` | 2 | 72 K | 2026-11-23 21:56:52 |
+| 合计 | 120 | 29 M（`du -sh`） | 移动完成 2026-11-27 12:01:39 UTC |
+
+- 移动前确认无进程在用：`ps -ef` 无 `portfolio_backtest.py`/`fetch_history.py` 等研究进程，`lsof +D` 无打开文件。
+- `R6`~`R10` 目录属主为 root，用 `sudo -n mv` 移动（移动，不删除）。
+
+本地 `artifacts/reports/` → `artifacts/reports/_void_20261127T120139Z/`：`EXPERIMENTS.log` 83 370 B
+（修改时间 2026-11-19 23:10:34 本地）。本地 `artifacts/reports/` 下无大写 `R`/`X` 后接数字的轮次目录。
+
+- `artifacts/research_cache/`：服务器与本地都不存在，未删除任何内容。
+- 未动：`artifacts/reports/FINAL_RUNS.log`（服务器上不存在）、`artifacts/reports/research_final/`（服务器上不存在）、
+  `artifacts/live/`（含 `book/`）、`artifacts/exchange_info/`、`artifacts/costs/`、`artifacts/server_backup/`
+  以及未列出的文件（含 `artifacts/reports/R*.log` 各轮日志与 `EXPERIMENTS.log.before_*` 备份）。
+
+### 5. 自行决定的记录
+
+- 依据研究重置指令授权自行决定：第二部分第 1 条要求的“重置前快照”把当时工作区里已有的 `docs/00-当前目标.md`、
+  `docs/07-实盘与风控.md`、`docs/13-研究框架.md`、`docs/design.md` 修改与未跟踪的 `docs/records.md` 单独提交为
+  `eee523f`（排除 `指令/`）；本任务未修改这些设计书的内容。
+- 依据研究重置指令授权自行决定：重置前 `ledger.yaml` 中 R5 的 `status` 为 `researching`，但检查显示没有任何
+  在流程中的候选或运行中的实例——`candidates` 为空，`systemctl list-units 'trade-runner*'` 为 0 个单元，
+  `ps -ef` 无研究进程，tmux 会话 `m3`、`trade` 只有空闲 bash，`artifacts/reports/R5.log` 以判定输出（未达标项与
+  拼接夏普、可执行口径）结束，因此继续重置。
+- 依据研究重置指令授权自行决定：本地 `artifacts/reports/` 下的小写旧目录（`r0_full_nohalt`、`r3` 等，迁移前旧
+  项目产物）与 `artifacts/` 根下的 `r6_report` 等目录不匹配“名字为 R 或 X 后接数字”的清单口径（清单写的是大写
+  `R`/`X`），未移动、未删除。
+- 依据研究重置指令授权自行决定：删除 `docs/research/` 文件后，若 `scripts/check_docs_sections.py` 或
+  `docs/research/` 下的交接文件出现失效引用，只修改交接文件或检查脚本的数据目录配置，不改测试断言与设计书。
 
 ## 2026-11-23 一次性准备（00_一次性准备_最先发这个.txt）
+
+（保留与分支名、服务器代码同步方式、指令文件位置、归档清单、数据目录清理有关的第 1、2、3、5 小节与分支改名说明；原第 4、6 小节是代码文件删除与仓库规范改写记录，只在 git 历史中。）
 
 ### 1. 分支与 git
 
@@ -87,13 +145,6 @@
 
 不存在的文件（指令中列为“若存在”）：`docs/12-*.md`、`docs/review.txt`、`docs/qa.txt`，无需处理。
 
-### 4. 删除（git 操作与磁盘）
-
-- `git rm`：`tmp_train_lgbm.yaml`、`_commit_msg.txt` 在工作区与 git 历史中都不存在（`Test-Path` 为 False），无需删除。
-- `docs/archive/README.md` 新建，说明“已结束的旧策略文档，只供查阅”并列出归档清单。
-- 新 `docs/tasks.md`（短文件）、`docs/00-当前目标.md`（≤ 60 行，只写规格）、`docs/research/p5p6_backlog.md`
-  （从旧清单原样摘出 P5/P6 两节与两条相关待决定事项）新建；`docs/design.md` 重写为当前文档索引。
-
 ### 5. data/ 与 artifacts/ 删除（按指令第 4.10 条清单）
 
 删除条件：服务器剩余空间 8.4 GB < 15 GB，必须删除；本地剩余 44.2 GB ≥ 30 GB，仍按清单删除
@@ -131,84 +182,12 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 本地 `data/bars/`（8.29 G）按指令“空间充足时可保留”保留；本地没有 `data/raw/`、`data/bars_r0_15/`、
   `data/raw_r0_15/`，`artifacts/` 为空目录。本地剩余空间 44.2 G → 94 G。
 
-### 6. 仓库规范改写
-
-- `AGENTS.md`：§1 改为“币安 USDⓈ-M 永续多策略研究与实盘工具，允许做多与做空”；§2 改为“读指令与
-  `docs/research/` 交接文件 → 执行 → 质量检查 → 写交接与 decisions → 提交推送到 develop”；§5 改为按
-  改动对象更新 `docs/13`、`docs/07`、`docs/09`、`docs/10`，只写规格，过程写入 `docs/research/decisions.md`；
-  §6 红线由 15 条改为指令指定的 14 条；§10 改为按所执行指令的规定写报告、进度写入 `docs/research/`。
-  §3、§4、§7、§8、§9 保留原有规范，只同步红线编号与文档章节引用。
-- `.clinerules/00-core.md`、`10-docs.md`、`20-quant.md` 按新 AGENTS.md 重新生成，红线与 §5.1 对照表逐条照抄。
-- `tests/test_agent_rules.py`：只改解析与期望常量（红线编号 1~14、量化子集 1/2/3/4/11/12/14、标题关键字
-  “红线 1~14”、10-docs 改为校验 §5 同步规则与 §5.1 对照表），“逐条完全相等”的断言未放宽。
-- `README.md` 开头改为新体系说明与“平时只发 `0_自动调度_每次发这个.txt`”，保留安装与质量检查命令。
-- `scripts/check_docs_sections.py`：`docs/archive/` 下的归档文档也算“文档 §章节”引用的有效目标，
-  新增的 `docs/00` 无基线时跳过前后比对并打印提示；过程记录改读 `docs/archive/records.md`。
-- `.clineignore` 增加 `docs/archive/`；`.gitignore` 增加 `/指令/`（`指令/` 此前未被 git 跟踪，无需 `git rm --cached`）。
-
-依据一次性准备任务指令授权自行决定：本任务要改写的规范文件（AGENTS.md、`.clinerules/`、
-`tests/test_agent_rules.py` 的解析部分、`docs/tasks.md`、`docs/design.md`、README、`.clineignore`、`.gitignore`）
-均属指令第三部分底线之外，按指令要求直接改写，不再另行征求确认。
-
-
 依据使用者指示自行决定（2026-11-23，准备完成之后）：
 分支名 `devlop` 是 `develop` 的拼写错误。已执行 `git branch -m devlop develop`，把本地分支改名为
 `develop`、推送到 `origin/develop`，并删除远端拼写错误的分支 `origin/devlop`（`develop` 与 `devlop`
 指向同一个提交，历史未改写）。AGENTS.md §2/§9、`.clinerules/00-core.md`、`docs/research/` 里的分支名
 同步改为 `develop`；README 重写为当前体系的使用说明（调度用法、目录结构、文档入口、质量检查、数据与制品、
 服务器与网络、分支与提交、安全与已知状态）。`docs/archive/tasks.md` 里的旧记录保持原样（归档文档不随代码改动更新）。
-
-## 2026-11-23 自动研究循环（第二次运行，R6 起）
-
-### 1. 新方向的设计取舍
-
-依据自动研究循环指令授权自行决定：R6~R10 属于指令第八部分的 `ai_proposed` 轮次，允许新增策略实现与网格
-（`src/trade/strategies/`、`configs/strategies/round_R6~R10.yaml`），规格同步写入 `docs/13-研究框架.md` §5。
-
-新方向统一采用两个约束，来自 R1~R5 的实际数字而不是猜测：
-
-- 低换手：R1 的 8h 调仓换手 229 倍、成本 / 毛收益 1.42；新方向先用 168h（周频）调仓，把成本压到 0.5~4.0 USDT。
-- 紧止损：R3 的 3 × ATR14(1d) 几乎总触及 15% 上限，100 USDT × 0.75% 风险 ≈ 4.9 USDT 名义低于最小下单额
-  5 × 1.1，训练期无交易；新方向沿用 3 × ATR14(4h)，单仓名义约 8~25 USDT。
-
-### 2. R6（资金费调整的横截面动量）结果
-
-- 9 组网格（λ ∈ {0,1,2} × L ∈ {14,28,56}，周频、K=5）全部不达标；选中组 L14 λ0 的训练夏普 1.631、
-  训练期 61 笔，验证折 0 笔，拼接夏普 0.000。
-- 单参数诊断：2021-10-07 当日亏损达 8%，触发 R6 `flatten_all`，`halt_mode: strict` 后全程不再交易；
-  停机前权益从 100 升到 160.0，停机时约 140。
-- `nohalt` 情景（关闭 R5~R8）在同参数下 4.5 年 +2.79%、年化夏普 0.124、最大回撤 41.6%、858 笔：
-  即使不停机也不达标；`shuffle` 年化 −0.188。
-- 结构性发现：`daily_loss_halt=8%` 与 `halt_mode: strict` 会让训练期的一次坏日子冻结全部验证折，
-  这是使用者确定的 R5~R8 口径（红线 5），Agent 不修改；新方向只能通过更低波动或暴露缩放规避，
-  因此暴露缩放作为 R8 的独立预登记方向。
-
-### 3. 数据说明
-
-2025-10 ~ 2026-07 曾被旧策略当作测试段看过一次（与 R1~R5 相同）；研究期 2021-02-01 ~ 2026-07-31 内所有
-轮次都只读 `data/klines_1h`、`data/klines_1d`、`data/funding`、`data/universe_hist`。
-
-### 4. R7~R10 结果（全部 FAILED）
-
-| 轮次 | 方向 | 组数 | 拼接年化夏普 | 最大回撤 | 关键诊断 |
-| :--- | :--- | ---: | ---: | ---: | :--- |
-| R7 | 低波动异常多空 | 6 | −0.026 | 22.4% | 多头（低波动）−16.69、空头 +8.73，与假设相反 |
-| R8 | 波动率择时动量 | 6 | 0.000 | 0.000 | 选中组训练期 2021-10-07 触发 R6 停机；σ0.5 组自身日频夏普最高 +0.031 |
-| R9 | BTC 对冲单边动量 | 4 | −0.317 | 19.5% | 多头 −19.05、空头 +5.30；2022-08-19 触发 R8 停机 |
-| R10 | 流动性分层动量 | 4 | −0.180 | 29.4% | 多头 −25.76、空头 +14.26；第 2 折后停机 |
-
-- 与 R1~R6 相同的结构：`halt_mode: strict` 下一次 20% 回撤或单日 8% 亏损就会把后续验证折全部置零；
-  R6、R8 在训练期被单日亏损停机，R7、R10 在前两折被回撤停机，R9 在第 2 折被回撤停机。
-- `nohalt` 情景在 R7（+53.5%）、R9（+32.3%）、R10（+36.6%）上为正，但那是风控禁止的路径，
-  不能作为达标依据；同一情景在 R6（+2.8%）、R8（−0.1%）上接近零，说明信号本身没有稳定的正期望。
-- 所有轮次都未做“一次修订”：可解释的修订都落在降低风险 / 修改停机模式（使用者决定，红线 5）或
-  在看到结果后挑方向（按结果拟合）两类，均不符合第七部分第 6 条。R6~R10 的预算为 9+6+6+4+4 = 29 次试验。
-
-### 5. 结论
-
-10 轮全部结束、`qualified_pool` 为空、`trials_used` 65 / 200。在当前市场与数据上未找到合格策略，
-没有产生候选，因此没有冻结、最终检验、影子盘与实盘环节。后续建议见本轮完成报告。
-
 
 
 ## 2026-11-23 实盘工程与看板（P5 / P6）
@@ -221,280 +200,3 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 依据实盘工程任务指令授权自行决定：`load_universe_history` 只读取 `YYYY-MM.json`，忽略同目录的 `aliases.json` / `summary.json`（服务器目录实测包含这两个文件，按快照解析会抛错）。
 - 发现但未修改：服务器 `data/universe_hist` 只到 `2026-07.json`，当前月份没有选币快照；引擎 `View.universe_symbols()` 会抛带上下文的 `KeyError`（符合红线 12），启动 shadow 前需补齐当月快照。
 - 部署：服务器 `sudo -n` 可用，已安装单元并启动看板与看门狗；未创建任何交易实例（总账无候选）。看板 `curl` 返回 200，`/api/status` 显示 `live_available=false`。
-
-
-## 2026-11-24 迁移 M3：数据补充与防幸存者偏差
-
-- 旧快照备份：`data/universe_hist` 共 72 个文件、1.3 MB（2026-11-24 11:16 UTC）完整复制到
-  `data/universe_hist_pre_m3/`；`2021-02.json` 复制前后 SHA256 均为
-  `1fa3a53e38dbf53028e4d29620f3ca379dca5c4758f986d982aa22a2ec5f0952`。覆盖只发生在
-  `data/universe_hist/` 内，由 0 号调度第六部分 M3 第 2 条授权。
-- 交易规则来源核实：`artifacts/exchange_info/exchangeInfo-20261031T105027Z.json` 共 942 个合约
-  （TRADING 804、SETTLING 137、PENDING_TRADING 1；underlyingType 为 COIN 703、非加密 239）。
-  旧 `rules.json` 缺 181 个币：150 个是 TradFi 合约（在当前快照中，contractType=
-  `TRADIFI_PERPETUAL` 或 underlyingType 非 COIN），31 个是已下架加密合约（当前快照中完全没有）。
-  处理方式：来源①保留 TradFi 的真实字段，由 `exclude_tradfi` 与 `contract_type != PERPETUAL`
-  排除，不合成；只有 31 个已下架加密合约走合成规则（1h 价格的最小正价差向下取 10 的整数次幂 +
-  0.1 USDT 的 step 名义上限 + 最小下单额 5 USDT）。
-- 代码：`scripts/fetch_history.py` 增加 `flow` / `premium` / `mark` 三类补充数据（独立目录与
-  manifest，`flow` 逐行核对 `open_time`）；新增 `src/trade/data/rules_research.py`；
-  `scripts/build_universe_hist.py` 改为按 exchange → snapshot → synthetic 取得规则，输出
-  `rules_source.json` 与 `summary.json`（含 TradFi 名单、合成币、来源计数、缺口）。合并后的规则写入
-  `artifacts/exchange_info/rules.json`，原文件备份为 `artifacts/exchange_info/rules_pre_m3.json`。
-- 下载结果（服务器 `systemd-run` 单元 `m3-fetch`，MemoryMax 1500M、nice 10，2020-10~2026-07）：
-  `flow` 20207 个文件（全部 `open_time_verified`）、`premium` 19320、`mark` 20488，状态全部 `ok`，
-  失败 0，62.1 文件/秒；体积 295 MB / 347 MB / 389 MB。覆盖差异：`mark` 覆盖全部 1h「币·月」，另有
-  281 个「币·月」有 mark 无 1h 文件；`premium` 缺 1044 个「币·月」（涉及 133 个币，集中在
-  2022-08 之后），这些缺口是 data.binance.vision 没有对应源文件，已由 manifest 逐月记录，使用
-  premium 的方向在缺失期间不参与；`flow` 与 1h 完全一一对应。
-- 选币快照重生成（`build_universe_hist.py --start 2020-10 --end 2026-07 --overwrite`）：70 个月，
-  规则 928 个币（exchange 897、synthetic 31），TradFi 241 个；入选「币·月」3348 个，全部有规则与
-  1h 数据。别名映射增至 330 个。
-- 新旧每月入选币数（旧 → 新，新增数 / 其中合成规则）：2021-01 9→12（3/3）、2021-02 20→25（5/5）、
-  2021-03 25→31（6/6）、2021-04 23→33（10/10）、2021-05 23→34（11/11）、2021-06 41→53（12/12）、
-  2021-07 37→48（11/11）、2021-08 29→39（10/10）、2021-09 38→51（13/13）、2021-10 42→55（13/13）、
-  2021-11 41→54（13/13）、2021-12 42→55（13/13）、2022-01 45→59（14/14）、2022-02 48→57（9/9）、
-  2022-03 34→40（7/7，移除 1）、2022-04 45→53（8/8）、2022-05 32→39（7/7）、2022-06 58→58
-  （新增 6、移除 6）、2022-07 49→55（6/6）、2022-08 36→41（5/5）、2022-09 42→48（6/6）、
-  2022-10 37→42（5/5）、2022-11 30→35（5/5）、2022-12 34→39（5/5）、2023-01 28→30（2/2）、
-  2023-02 44→48（4/4）、2023-03 56→59（5/5，移除 2）、2023-04 47→51（4/4）、2023-05 51→60（9/9）、
-  2023-06 43→50（7/7）、2023-07 53→59（6/6）、2023-08 44→49（5/5）、2023-09 39→44（5/5）、
-  2023-10 28→33（5/5）、2023-11 40→44（4/4）、2023-12 54→58（4/4）、2024-01 60→60（新增 4、移除 4）、
-  2024-02 60→60（3、3）、2024-03 58→60（4、2）、2024-04 60→60（5、5）、2024-05 60→60（5、5）、
-  2024-06 60→60（4、4）、2024-07 60→60（4、4）、2024-08 59→59（2、2）、2024-09 60→60（1、1）、
-  2024-10 50→50、2024-11 57→57、2024-12 60→60（2、2）、2025-01~2025-05 每月新增 1、移除 1、
-  2025-06 60→59（移除 1）、2025-07~2026-07 无变化。移除的币都是被新增的下架币挤出 top_n 的原有币。
-  研究期内至少入选一次的合成规则币 22 个：AKRO、ANT、AUDIO、BTS、BTT、BZRX、COCOS、DODO、EOS、
-  FOOTBALL、FRONT、GAL、HNT、KEEP、LUNA、MATIC、NU、RNDR、SRM、SXP、TOMO、YFII（均以 USDT 结尾）。
-- `research_start` 重新确定：新快照中第一个入选数 ≥ 20 的月份仍是 2021-02（25 个币），2021-01 为
-  12 个，总账保持 `research_start: 2021-02-01` 不变。
-- 可执行性预检（500 USDT、`position_frac 0.08`、5x → 每仓名义上限 200 USDT）：BTCUSDT 最小下单额
-  50 USDT（tick 0.1、step 0.001），ETHUSDT 20 USDT（tick 0.01、step 0.001）；2021-01~2026-07
-  共 67 个月，每月「最小下单额 > 200 USDT」的入选币数均为 0，合计 0/3337「币·月」。说明按每仓名义
-  上限判断没有币被必然丢弃；模式 A 下由止损距离决定的单仓名义仍可能低于 5 USDT，那部分丢弃由
-  研究循环的可执行性检查（第七部分第 5 条 i 款）统计。
-
-
-
-## 2026-11-24 迁移 M1：服务器改为 git 副本
-
-- 使用者决定：研究与最终检验的 R6/R8 停机改为 reset 模式停 7 天、实盘与影子盘保持 strict；研究达标判定用 10,000 USDT 信号口径并另加 500 USDT 可执行性检查；新增仓位模式 B（按波动率分配权重 + 15% 防灾止损，target_vol 默认 0.20），与模式 A 并行检验；中性策略改为 β 中性；实盘策略权益按 `live_capital_cap` 封顶计算；实盘资金 500 USDT 起步、可执行口径 500 USDT；新增标准 / 进取 / 激进三个风险档位（研究与达标用标准档，冻结时按 1 号第九部分第 2 条选档）；总名义上限改为权益 × 3、净敞口上限改为权益 × 1.5；方向侧重主流币、截面类新方向限定成交额前 30、不交易 TradFi 合约；实盘停机回撤线与 90 天评估改为与研究基准对照；`global_trial_budget` 改为 400；月化约 10% 只作期望、不是达标项（0 号调度第六部分）。
-- 备份：服务器 `~/trade` 除 `data/`、`artifacts/` 以外全部文件打成
-  `artifacts/server_backup/20261124T104404Z.tar.zst`，552 个文件、1.79 MB；
-  服务器 `data/` 现有 klines_1h 551 MB、klines_1d 162 MB、funding 121 MB、daily 55 MB、
-  universe_hist 1.3 MB，磁盘剩余 37 GB。
-- 差异核对（服务器 552 个文件 vs 本地 develop `b59c437`，用 bundle + 临时 git 目录逐文件比对，
-  未改动 `~/trade`）：共 25 处差异，**没有服务器独有的较新代码**，无需把服务器文件提交回本地。
-  - 服务器缺少（本地较新）：`docs/archive/07-实盘与风控.md`、`docs/archive/10-可视化看板.md`、
-    `docs/research/rounds/R6.md`、`R7.md`、`R8.md`、`R9.md`、`R10.md`、
-    `tests/dashboard/test_engine_api.py`、`tests/live/test_candidate.py`、`test_execution.py`、
-    `test_feed.py`、`test_killswitch.py`、`test_riskguard.py`、`test_stops.py`、`test_targets.py`。
-  - 内容不同（服务器为旧版，差异仅 UTF-8 BOM 或格式/节缺失）：`scripts/__init__.py`、
-    `src/trade/__init__.py`、`src/trade/common/logging.py`、`src/trade/live/__init__.py`、
-    `src/trade/models/__init__.py`、`tests/common/test_latency_probe.py`、`tests/common/test_logging.py`
-    （以上仅 BOM）、`tests/research/helpers.py`（旧排版）、
-    `tests/strategies/test_round_strategies.py`（旧版只有 R1~R4 用例）、
-    `docs/research/p5p6_backlog.md`（缺“新方案与旧清单的对照”一节）。
-  - 服务器独有、不属于仓库的遗留文件（转换后保持不动，加入服务器 `.git/info/exclude`）：
-    `.bak-code/`、`bak-code/`、`tmp_deploy/`、`.claude/`、`.github/`、`src/trade.egg-info/`、
-    根目录 `_*.py` / `_*.sh` 临时脚本、`scripts/run_live.py`、`tmp_train_lgbm.yaml` 与各类 `.log`。
-- `docs/research/` 交接文件以本地 git 为准；`ledger.trials_used = 65` 与服务器
-  `artifacts/reports/EXPERIMENTS.log` 中 `kind: tuning` 记录数 65 一致。
-- 转换：服务器 `~/trade` 执行 `git init`、从 `git bundle` fetch、`git checkout -f --detach b59c437`；
-  `git rev-parse HEAD` 与本地一致；`data/history/manifest.json` SHA256 前后均为
-  `bcb2dca37c5581416d5ceaaf17c3d40d98b5c9b6b75739dc4030a11cf27840ee`；服务器没有 `.env.*` 与私钥文件，
-  `~/.ssh/authorized_keys` 已是 600（无权限需要修改）；全程未执行 `git clean`。
-- 同步规则改为 1 号第十部分的 git 方式：`scripts/sync.ps1 push-code` 改为
-  bundle → scp → `git fetch` → `git checkout --detach <本地提交>` 并核对服务器 HEAD。
-  依据迁移指令自行决定：服务器 `.git/info/exclude` 追加上述遗留路径，使 `git status` 干净，
-  不影响仓库内容与其他机器。
-- 看板与看门狗：转换前均 active；转换后 `curl 127.0.0.1:8501` 返回 200，未重启。
-
-
-## 2026-11-24 迁移 M2：配置（停机方式、两种权益口径、风险档位）
-
-- 指令内部冲突处理：M2 第 1 条写“equity 节（signal: 10000、exec: 100）”且“sizing_research 的 initial_equity 保持 100”，
-  第 4 条写“initial_equity 改为 500”。按第 4 条与使用者决定（可执行口径 500 USDT）执行：
-  `equity.signal: 10000`、`equity.exec: 500`、`initial_equity: 500`。
-- 模型：新增 `trade.research.config.ResearchSizingConfig`（继承 `SizingConfig`，加 `tier` 与 `risk_tiers` 三档），
-  不改 `SizingConfig` 本身，避免影响 `configs/sizing.yaml`、旧回测与 rotation 路径；
-  `with_tier()` 把选中档位的 `risk_per_trade`、`max_risk_per_trade = max(0.025, disaster_loss_cap)` 与 R5~R8 阈值应用为纯 `SizingConfig`。
-  三个加载点（`scripts/portfolio_backtest.py`、`scripts/live_runner.py`、`scripts/check_live_env.py`）改为 `load_research_sizing(...).with_tier()`。
-- 停机：研究与最终检验改读 `configs/research.yaml: risk`（`reset`、7 天），不再读 `configs/backtest.yaml`；
-  实盘 / 测试网 / 影子盘固定 `strict`（`trade.live.runner.LIVE_HALT_MODE`，`load_risk_limits(sizing, mode)`），
-  新增 `tests/live/test_runner_halt.py` 断言三种模式都是 strict 且未知模式抛错。
-- 组合上限：`configs/research.yaml: portfolio` 改为 `total_notional_cap: 3.0`、`net_exposure_cap: 1.5`。
-- 实盘资金：`configs/live.yaml` 的 `live_capital_cap: 500`，pydantic 范围改为 `(0, 1000]`。
-- 总账：`global_trial_budget` 200 → 400（`trials_used` 仍为 65）。
-- 测试夹具：`tests/research/helpers.py` 的 `make_research_config` 补上新增的 `risk` / `equity` 必填节与新的组合上限，
-  断言未改动、未跳过任何测试（配置模型新增必填字段属于规格变更，不是放宽容差）。
-- 文档同步：`docs/00-当前目标.md` §1/§2（起始资金、两种权益口径、三档风险、总名义 3 倍与净敞口 1.5 倍、reset / strict 停机、
-  月化是期望不是达标项）；`docs/13-研究框架.md` §2（sizing_research 的档位与 with_tier 语义、research.yaml 的 risk / equity、停机来源）。
-- 校验：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
-  `mypy src/trade/dashboard`、`python scripts/check_docs_sections.py` 全部通过；`pytest -q` 为
-  `1 failed, 785 passed, 3 skipped`，唯一失败是与 SETUP_DONE 基线一致的 `tests/models/test_dataset.py::test_pinned_cpu_placement`（本机无 CUDA，未修改测试）。
-
-## 2026-11-24 M4 研究框架修复的取舍（0 号调度第六部分 M4）
-
-- 成交时点：按 1 号第五部分 B 第 4 条改为“决策在 t、成交在 `open_time = t` 的 K 线开盘”，仓位规模用截至 `t − 1h` 收盘的盯市值；
-  权益曲线按每根 K 线收盘记录，因此日收益仍以 23:00 K 线收盘为准。
-- 止损：改为按 `mark_1h` 的 low/high 触发、按成交价 K 线成交，成本 = `stop_slip_mult` 倍滑点（max(1bp, 平方根冲击)） + 半价差；
-  入场基准价取入场时刻已收盘的最后一根标记价格收盘价。缺标记价格时退回成交价并计数 `mark_fallback`。
-- 资金费断档判定：先用“相邻结算间隔中位数 × 1.5”，实测发现部分币的结算周期在 4h 与 8h 之间切换，导致 3 个月窗口内
-  `funding_estimated` 达 8754（明显误判）；改为“相邻结算间隔 99 分位 × 1.5（间隔夹在 1~24h）”，同一窗口降至 28，
-  真正缺数据的币（例如 TONUSDT 序列在窗口前结束）仍会被估算。
-- 拼接曲线：`Engine.run_path` 接受段列表，权益、持仓与风控状态跨段延续，段起点状态为空；训练期只用于选参与指标预热，
-  不再出现“训练期停机把验证折清零”的问题。
-- R5 成分参数：网格改为 `component_grids` 指向 R1/R2/R4 网格，`pipeline.component_params_by_fold` 逐折按折前数据选参；
-  `Ensemble.build` 缺成分时直接报错（不允许回退到全研究期参数）。成分参数的评估已在各自轮次登记，这里只复用结果、不重复登记试验。
-- 可执行性（i 款）：`plan_positions` 增加 `attempted` 与 `dropped_min_notional` 计数，可执行口径用同一选参结果重跑拼接路径；
-  三项判定（丢弃比例 ≤ 20%、净收益 > 0、夏普 ≥ 信号口径 70%）并入 `checks`。
-- `long_only` / `short_only` 情景：仍在决策层过滤方向。1 号 d 款要求“交易集合是 base 的子集”，但仓位大小与持仓决定
-  依赖权益路径，逐笔时间戳无法严格一致；测试改为核对方向过滤与两侧笔数上界，规格写入 `docs/13` §7。
-- 最小规模运行不写 `EXPERIMENTS.log`：`--smoke-months` 只输出结果文件与记录字段样例，避免把调试运行计入试验次数
-  （1 号第三部分第 5 条的试验指研究期网格评估）。
-- 服务器同步：本地 `git bundle` → scp → 服务器 `git fetch` + `git checkout --detach`，核对 `git rev-parse HEAD` 与本地一致；
-  本地到 GitHub 的推送仍未恢复（`git pull` 报 Empty reply），提交暂存在本地 develop。
-- 测试改动（`review_log.md` 已逐条说明）：`test_engine.py` 的成交时点断言与止损用例的标记价格数据、`test_view.py` 的资金费用例
-  改用 `funding_missing`；没有放宽任何容差、没有跳过任何测试。
-
-
-## 2026-11-24 迁移 M5：仓位模式 B 与 β 中性的取舍（0 号调度第六部分 M5）
-
-- 参数位置：`sizing_mode`、`target_vol`、`vol_lookback_days`、`cov_lookback_days`、`beta_lookback_days`、
-  `beta_abs_max`、`ls_ratio_range` 加进共享的 `trade.common.sizing.SizingConfig`（带默认值），而不是另建研究专用模型：
-  组合层由研究、影子盘、实盘共用（红线 4），实盘路径读同一份模型；旧配置（`configs/sizing.yaml`）未写这些字段时
-  按默认值保持模式 A，行为不变。`ResearchSizingConfig.with_tier()` 用选中档位的 `target_vol` 覆盖默认值。
-- 模式选择：`sizing_mode` 是网格参数维度。`run_param` 从 `params["sizing_mode"]` 取模式，`build_segments` 把它写进
-  `Segment`；同一组其余参数配 A、B 两种模式即两组参数、两次试验。`scripts/portfolio_backtest.py` 在网格参数未写明时
-  用 `configs/sizing_research.yaml` 的 `sizing_mode` 补齐（结果记录里始终带明确的模式）。
-- 模式 B 权重只用 `1/σ`（过去 30 天日收益标准差），策略给出的 `Target.weight` 不参与，避免与策略自身的波动加权重复；
-  防灾止损固定 `execution.stop_max`，策略的 `sl` 只做合法性校验，不参与名义计算。
-- 日线视图：新增 `View.daily_returns(symbol, days)`，只取 `open_time + 1d ≤ now_ms` 的日线（红线 1）；模式 B 的权重的
-  30 天波动、60 天协方差与 β 的 60 天回归都用它。模式 B 缺 30/60 天日线的币剔除并计入 `vol_missing`；β 样本不足 30 天
-  或 BTC 日收益方差为 0 时取 1.0 并计入 `beta_default`（1 号第二部分第 3 条的规则）。
-- β 调整顺序：先按 β 名义对齐两边使事前 β 为 0；再按 `ls_ratio_range` 缩小名义较大的一边；最后若 |β| 仍超
-  `beta_abs_max × 权益` 则两边等比缩小（保持多空比）。三步都用比例缩放，保证三个约束同时成立。
-- 删除 `portfolio.neutral_max_gap`：中性平衡改为由 β 与多空名义比定义，旧字段不再读取，避免留下死配置
-  （同步 `configs/research.yaml`、`PortfolioConfig` 与测试 fixture）。
-- 指标与达标项：`RunResult` 保存 BTCUSDT 日线（`benchmark_ts` / `benchmark_close`），`metrics.summarize` 计算
-  `realized_beta`（cov(r, b) ÷ var(b)，共同交易日对齐）与 `alpha_sharpe`（剔除 β × BTC 日收益后的年化夏普）；BTC 日收益
-  方差为 0 时 β 记 0；结果缺 BTC 日线时抛异常（红线 12）。达标项 j 只在 `exposure=neutral` 时加入 `checks`
-  （`beta_abs_le_030`、`alpha_sharpe_ge_08`）。
-- 最小规模运行：新增 `--smoke-sizing-mode {fixed_risk,vol_target}`，模式 A、B 各跑一次；仍只写
-  `artifacts/reports/smoke/`，不写 `EXPERIMENTS.log`。
-- 测试：新增 `tests/research/test_metrics.py`（β、alpha 夏普与 j 款）、`test_portfolio.py` 的模式 B 手算 / 单仓上限 /
-  β 中性 / β 样本不足、`test_credibility.py` 的 `test_h5_引擎按段使用模式B` 与 `test_h6_中性策略的β调整在引擎中生效`、
-  `test_config.py` 的新配置项与范围校验、`tests/common/test_sizing.py` 的 `size_from_notional` 与 `calc_notional` 状态一致。
-  没有修改或跳过任何既有断言。
-
-
-## 2026-11-24 M6 实盘安全修复与引擎对齐（取舍记录）
-
-- 使用者决定：研究与最终检验 R6/R8 停机改为 reset 模式停 7 天、实盘与影子盘保持 strict；研究达标用 10,000 USDT 信号口径并另加 500 USDT 可执行性检查；新增仓位模式 B（按波动率分配权重 + 15% 防灾止损，target_vol 默认 0.20）；中性策略改为 β 中性；实盘策略权益按 live_capital_cap 封顶；实盘资金 500 USDT 起步、可执行口径 500 USDT；三个风险档位；总名义上限权益 × 3、净敞口上限权益 × 1.5；方向侧重主流币、截面类新方向限定成交额前 30、不交易 TradFi 合约；实盘停机回撤线与 90 天评估改为与研究基准对照；global_trial_budget 改为 400；月化约 10% 只作期望、不是达标项（0 号调度第六部分）。
-- 看门狗重启权限：3 号第六部分第 10 条要求用 sudoers 规则授予重启权限，但服务器 sudo 版本不允许命令参数内通配符（`visudo` 报 “wildcards are not allowed in command arguments”）。
-  取舍：保留“最小命令”原则，改为 sudoers 只授予一个白名单校验脚本 `/usr/local/sbin/trade-restart-unit`（规则不含通配符），脚本从标准输入读实例名，只接受 `trade-runner@*.service` 与 `trade-runner-live@*.service`，其他输入返回 64。
-  权限等价于“只能重启 trade-runner 实例”，不授予 systemctl 其他子命令。已同步 `docs/07` §12/§13、`docs/02` §5。
-- 看门狗单元不设 `NoNewPrivileges=true`：sudo 是 setuid 程序，该选项会让 sudo 失效；改用 `ProtectSystem=full` + `PrivateTmp` + `ReadWritePaths`，在 `docs/07` §13 写明例外原因。
-- 紧急停机需要停止 systemd 实例：sudoers 只授予看门狗的重启脚本，没有授予 stop；因此 `scripts/kill_switch.py` 建议以 `sudo` 运行（未确认停止时直接中止，不操作账户）。
-- 新增状态库表 `strategy_positions` 与 `equity_baseline`：前者保存引擎实际持仓快照（重启后止损对账与专用账户检查的依据，替代原先一直为空的旧 `positions` 查询）；后者保存策略权益启动基准，重启不重置。
-- 候选文件新增可选字段 `sizing_mode` 与 `risk_tier`：冻结时按 1 号第九部分第 2 条选档、按 1 号第二部分第 3 条选仓位模式；缺省用 `configs/sizing_research.yaml` 的取值。单笔风险仍以候选 `risk_per_trade` 为准。
-- 止损基准改为 `mark_1h`：与实盘 `workingType=MARK_PRICE`、研究框架 1 号 B 第 5 条一致；缺标记价格时退回成交价并告警。
-- 影子盘止损改用已收盘 K 线：原先 `last_index_before(now_ms)` 会把当前未收盘 K 线当触发依据（红线 1），改为按决策整点取上一根已收盘 K 线。
-- 影子盘权益与 `risk_state` 写入：原实现重复计算未实现、且当日无 `risk_state` 行时已实现盈亏被静默丢弃；改为 `initial_equity + 累计已实现 + 未实现`，`update_risk_state` 改为 upsert（红线 12：不静默丢数据）。
-- 看板控制 PIN 改从 `configs/dashboard.yaml: control.pin_file` 读取：systemd 直接调用 python 后不能再经 `bash -lc` 导出环境变量；文件不存在时控制接口返回 503，不提供默认 PIN。
-- 部署文件改用 LF：Windows 工作区的 CRLF 会让 sudoers / systemd 解析失败（实测 “garbage at end of line”）。
-
-
-## 2026-11-24 M7 旧判定作废与重跑准备（取舍记录）
-
-- ledger 采用 `void` 子字段保存原判定（status / trials / result / reason），不删除原数字；`trials_used` 保持 65，`EXPERIMENTS.log` 全部保留并继续计入 Deflated Sharpe（0 号调度第六部分 M7 第 1 条）。
-- 一致性检查口径改为：`trials_used = Σ rounds[].trials + Σ rounds[].void.trials + 冻结仓位选择的试验`；M7 后当前为 0 + 65 + 0 = 65。
-- 网格按 1 号第八部分开头在 `configs/strategies/round_R*.yaml` 内显式乘 `sizing_mode ∈ {fixed_risk, vol_target}`（R1~R10 共 130 组），不改其他参数、方向、规则与选币范围。
-- R5 成分网格的 `sizing_mode` 不参与成分选参：`component_params_by_fold` 读取时去掉该键并去重，R5 的组合层模式由 R5 自己的网格决定；新增 `tests/research/test_component_params.py` 固定这一行为。
-- 重跑顺序按 M7 第 3 条：R3 最先，然后 R1、R2、R4、R5、R6~R10；只调整执行顺序，网格与判定规则不变。
-- rounds/*.md 保留首次判定原文，顶部加作废标记，重跑结果写在新加的“重跑（迁移后）”一节。
-
-
-## 2026-11-24 R3 重跑发现 D19、D20（取舍记录）
-
-- R3 第一次重跑（`round_R3.yaml`，16 组，服务器 HEAD `ee6f1e5`）的拼接路径在第 1 折之后没有交易：
-  `fold1 net=-0.1745`、`fold2~5 net=0.0000 trades=0`。单独复算同一参数同一折的路径得到 227 条风控事件，
-  其中 `R8:flatten_all` 从 2022-04-07 起每 7 天一次 → 判定为 reset 模式停机到期没有重设回撤峰值（D19）。
-- 处理：按 1 号第三部分第 8 条先写复现测试再改代码（`tests/common/test_risk_rules.py` 两项）；
-  R3 第一次重跑结果与判定作废、试验照常计入（+16 次）、整轮重跑；原始报告在服务器留档
-  `artifacts/reports/R3/grid_before_D19_fix.json`。
-- 顺带修复 D20：`code_hash` 增加 `src/trade/common/**/*.py`。理由：风控（R5~R8）与仓位（取整、最小下单额）
-  是研究、最终检验、影子盘与实盘共用的执行口径（红线 4），改动它们改变结果；不含进哈希时，断点续跑会把
-  修复前的组结果当新口径复用。代价：每次改动 `trade.common` 都会让未完成的轮次整轮重跑（正确性的必要代价）。
-- 记录口径变化：从此 `code_hash` 覆盖 `src/trade/common`，`docs/13` §8 已同步。
-
-
-
-## 2026-11-24 R3 重跑判定（迁移后第 1 轮）
-
-- 结果（服务器 HEAD `64a0dde`，16 组）：拼接年化夏普 0.070、最大回撤 59.89%、5 折仅 2 折为正、DSR 0.054、
-  cost2x 净 -27.76%、可执行口径丢弃 45.7% 且净 -13.35% → FAILED，详见 `rounds/R3.md`。
-- 不做修订（1 号第七部分第 6 条只允许改一条规则或加一个过滤条件）：分折方向反复、`cost2x` 与 `delay1` 同时恶化，
-  找不到单一可解释的失效点；用修订组去拟合分折噪声会消耗预算并抬高 Deflated Sharpe 的试验数。理由记此一行。
-- 运行成本：一轮 16 组约 4 小时 10 分（单进程、2 核服务器）。修复后拼接路径在全研究期持续交易，是主要成本来源；
-  1 号 B 第 13 条要求的 `artifacts/research_cache/` 特征缓存目前没有实现，策略每次 decide 都重算截面特征。
-  这项优化会改变运行时间但不改变结果（红线 14），留待重跑完成后再评估，避免中途改研究框架。
-
-## 2026-11-24 复核与 D21（0 号调度第五部分）
-
-- D21（g 款对 R11 / R12 的 delay1 例外）实现为网格可选字段 `delay1_max_excess`，默认 0 保持 R1~R10 的严格口径，
-  不一次性改掉在跑 R1 的判定口径；R11、R12 开跑时登记 0.10。理由：只补上 1 号第八部分已登记的口径，
-  不改变任何已登记轮次的判定标准，也不触碰运行中结果。
-- R1 首轮（已作废）的报告与日收益在服务器复制为 `grid_first_run_void.json`、`selected_daily_returns_first_run_void.csv`；
-  只复制不删除，保留作废判定的原始证据（0 号调度第五部分第 4 条的原始输出核对要求）。
-
-
-## 2026-11-25 00:15 UTC R11 / R12 的 500 USDT 可执行性预检（1 号第八部分 R11~R12 通用要求）
-
-- 依据：预计丢弃比例 > 20% 的组从网格中去掉；预检不计试验次数、不读验证折收益、不读最终检验窗口。
-- 方法：只读服务器 `data/universe_hist/{YYYY-MM}.json`（U(R) 与上线天数、成交额中位数）、`data/klines_1d/`（收盘价与日收益）、
-  `artifacts/exchange_info/rules.json`（`step_size` / `min_notional`）。按 docs/13 §3 的模式 B 手算：权重 = 1/过去 30 天日收益标准差，
-  用过去 60 天日收益协方差把组合事前年化波动缩放到 0.20，单仓上限取 `risk_cap = 500 × 0.025 ÷ 0.15 = 83.33`、`position_cap = 500 × 0.08 × 5 = 200`
-  与流动性上限的最小值；最小可下单名义 = `max(min_notional, step_size × 收盘价)`，再按 `step_size` 向下取整判断是否被丢弃。
-  样本为 2025-01-31 起的 10 个月末（均在 research_end 之内）。脚本 `~/precheck_r11_r12.py`（服务器，未入库），
-  输出 `~/precheck_out.log`，2026-11-24 23:28 UTC 以 `nice -n 19` 在 R1 运行期间执行（只读，约 45 秒）。
-- 交易规则事实（服务器 `rules.json`）：`BTCUSDT` `min_notional = 50`、`step_size = 0.001` → 1 步 = 0.001 BTC =
-  62.86～115.70 USDT（样本期收盘价）；`ETHUSDT` `min_notional = 20`、`step_size = 0.001` → 最小可下单名义恒为 20 USDT。
-- R11（只做空，K ∈ {3, 5} 个山寨）：单仓名义中位数 12.65～41.60 USDT，所选币的最小可下单名义均为 5.00 USDT → 丢弃率 0%
-  （age_max = 180：K=3 有 6 个可比日期、K=5 有 3 个；age_max = 120：K=3 有 2 个日期、K=5 无可比日期）→ 未触及 20% 门槛。
-  另一个事实：成交额前 30 的山寨里上线 ≤ 120 天的币在多数月份为 0～4 个（2026-01 之后多为 0～1 个），上线 ≤ 180 天为 0～3 个
-  → 该方向在 2026 年的多数调仓时刻只能持有很少甚至没有仓位（属于候选不足，不影响可执行性判定）。
-- R12（空山寨 + 多 BTC）：空头腿单仓名义中位数 11.59～60.40 USDT（最小可下单名义 5 USDT）；BTC 腿按 β 中性所需名义
-  127～300 USDT，缩放后 76～125 USDT，丢弃率 0%～16.7%（平均约 2%，10 个日期中 1 次丢弃，出现在重缩放后 BTC 腿低于 1 步时）。
-  已知可执行性局限：模式 B 单仓上限 83.33 USDT，而 1 步 BTC = 0.001 × 收盘价，BTC 价格高于约 83.3k 的月份（样本中 4/10）
-  BTC 腿会因达不到最小下单额被丢弃，该月组合实际只剩空头腿（占目标数 1/6 = 16.7%，仍在 20% 门槛内）。
-  该局限须写入 `rounds/R12.md`，并用可执行口径的 `exec_metrics` 丢弃比例在运行后核对。
-- 结论：R11 的 8 组与 R12 的 8 组全部低于 20% 丢弃门槛，按预登记网格照抄执行，不删组、不替换参数。
-  本次预检不产生 `kind=tuning` 记录，`trials_used` 仍为 97。
-
-
-## 2026-11-25 14:10 UTC R2 重跑的异常收益检查与执行方式取舍
-
-- R2 拼接曲线单月最高 +22.03%（2023-05）超过 1 号第三部分第 8 条“月化 > 20%”的门槛，按该条做四项检查并记录：
-  信号整体延后一个调仓周期（delay1 年化 −0.746、净 −56.85%）、成本 ×2（−0.913、−66.05%）、打分随机打乱
-  （shuffle −3.862、−91.44%）、未来数据检查（`tests/research/test_credibility.py` 的“未来数据扰动”，t 之后数据
-  随机改写后 t 之前逐值不变）全部通过且方向符合“非泄露”的预期；整条路径年化夏普 −0.491 为负。
-  结论：不做泄露修复，按原始结果判定 FAILED。
-- 轮次串行执行：R1 与 R2 都按“一次只跑一轮”的方式运行，未并行。理由：单进程 RSS 约 1.0 GB（`MemoryMax=2000M`），
-  服务器总内存 3.6 GB、可用约 2.0 GB，并行会让两轮同时暴露在 OOM 风险下；两进程同时向 `EXPERIMENTS.log` 追加
-  试验记录也可能交错，影响 Deflated Sharpe 的试验集合。串行只牺牲墙钟时间，不影响任何计算结果。
-- 轮次结果核对方式：在服务器上用与 `compute_hashes` 相同的文件清单复算 `code_hash` / `config_hash`，与 `grid.json`
-  逐字比对（`_hash_files` 把绝对路径计入哈希，本地与服务器路径不同，因此不能跨机比对，只能同机复算）。
-
-
-## 2026-11-25 23:25 UTC R4 重跑的取舍
-
-- R4（短期反转，12 组）判定 FAILED：拼接年化 −0.519、最大回撤 47.70%、DSR 0.004、5 折中 2 折为正、
-  成本合计 2738.64 USDT（成本占毛收益 4.90 倍）、可执行口径丢弃 5.60% 但净收益 −23.70%。
-- 不做修订：12 组自身拼接曲线全部为负、各折训练夏普全负，说明反转溢价在样本期不存在；能降低成本的改动
-  （延长回看、减少持仓数）已在网格内（L2/L3、K3）并有对照组，仍为负；去掉多头或把方向反过来属按结果挑选方向，
-  违反 1 号第七部分第 6 条。12 次试验照常登记。
-- `exec_sharpe_ge_70pct` 在信号夏普为负时按字面比较会自然通过，本轮报告中按字面解释、不当作正面证据；
-  是否改为“仅当信号夏普为正时比较”属口径变更，留给使用者决定（见 `review_log.md` 观察项）。
-
