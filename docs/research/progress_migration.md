@@ -11,12 +11,38 @@
 | M1 服务器改为 git 副本 | 完成 | `816c31b` |
 | M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成（含第三批补做：`block_days`、`shuffle`、四档含极限） | `35ee65a` + 本次提交 |
 | M3 数据补充与防幸存者偏差 | 完成 | `18cbdee` |
-| M4 研究框架修复（D1~D7、D12~D17、D20~D22）与可信度测试 | 进行中：D1~D7、D12~D17、D20~D22 已修，四档可执行性与 g/i/l 款已实现；待办见下 | `9c82edc`、`a2bafb4`、本次提交 |
-| M5 仓位模式 B 与 β 中性 | 进行中：D18 的顺序已实现并有测试；D19（R5 成分仓位模式）待办 | `5381f16`、本次提交 |
-| M6 实盘安全修复（D8~D11）与引擎对齐 | 完成 | `982df27`（代码改动后需按 M6 第 6 条复核 engine.md） |
+| M4 研究框架修复（D1~D7、D12~D17、D20~D22）与可信度测试 | 完成（含第三批补做与新方向） | `9c82edc`、`a2bafb4`、`d891327`、`64dc8f7`、`d5ed53e` |
+| M5 仓位模式 B 与 β 中性 | 完成（含 D19、模式 B 权重、R12 对冲腿） | `5381f16`、`64dc8f7` |
+| M6 实盘安全修复（D8~D11）与引擎对齐 | 完成（`engine.md` 已于 2026-11-27 复核，`feed.py` 哈希更新） | `982df27`、`d891327` |
 | M7 旧判定作废并准备重跑 | 完成 | `5c3b674` |
 
 ## 当前状态（本轮）
+
+## 2026-11-27 UTC 完成 M4/M5 与 M6 复核（本轮）
+
+- M4 补齐：D19（R5 成分按仓位模式，1 号 B 第 15 条 k 款）、X0~X4 与 R11/R12 的策略模块与网格
+  （注册表追加 7 个家族）、`View` 的溢价指数 / 主动买入 / 日线访问器；另修 D23（max_positions
+  对称截断与 R12 的 N + 1 ≤ 10 冲突）与 D24（模式 B 忽略 `target.weight`，R8 与 R12 的对冲腿失效）。
+  详见 `review_log.md` 2026-11-27 13:37 UTC 一节。
+- 质量命令：`ruff format --check .`（382 files）、`ruff check .`、`mypy --strict`（56 files）、
+  `mypy src/trade/dashboard`（8 files）通过；`pytest -q` = `1 failed, 907 passed, 3 skipped`
+  （唯一失败为本机无 CUDA 的既有 `tests/models/test_dataset.py::test_pinned_cpu_placement`，未改测试）。
+- 服务器最小规模运行（`HEAD = d5ed53e`，3 个月 = 研究窗口最后 3 个月，不写 EXPERIMENTS.log）：
+  - R3 模式 A（`artifacts/reports/smoke/20261127T134759Z.json`）：信号口径 154 笔、丢弃 0、
+    实现 β −0.216、alpha 夏普 −0.390；可执行口径 138 笔、应开仓 230、丢弃 92（40.0%）、α −0.330。
+  - R3 模式 B（`20261127T135038Z.json`）：信号 139 笔、丢弃 0、β −0.416、alpha −0.540；
+    可执行 122 笔、应开仓 175、丢弃 53（30.3%）、alpha +0.038。
+  - X0 模式 B（`20261127T135042Z.json`，新方向）：信号 39 笔、丢弃 0、β −0.525、alpha −0.419；
+    可执行 38 笔、应开仓 39、丢弃 1（2.6%）、alpha −0.406。
+  - 三次运行 `mark_fallback` 为 216~240（部分币缺标记价格，按成交价 K 线触发并计数），
+    `funding_missing 0`；均未写 `EXPERIMENTS.log`。
+- M6 复核：`engine.md` 文件清单逐项复算，只有 `src/trade/live/feed.py` 变化（`d891327` 增加
+  标记价格与主动买入回补），README 中的哈希已更新；服务器 `HEAD = d5ed53e`、看板 active、
+  `curl 127.0.0.1:8501` = 200、看门狗 timer active、无 `trade-runner*` 实例。
+- 服务器 `artifacts/reports/smoke/` 目录原属 root（历史 sudo 运行），已 `chown` 给 ubuntu
+  （只改属主，不删不改任何结果文件）。
+- 下一步：按 1 号第六部分执行 X0（纯做空基准），本轮起进入普通研究轮次。
+
 
 - M2 补做完成：`configs/research.yaml` 增加 `bootstrap.block_days: 7` 与 `shuffle` 节（`seed: 42`、`n_seeds: 20`），
   `ResearchConfig` 两个字段均为必填（缺失或非法即报错）；`configs/sizing_research.yaml` 按 `docs/00` §2 改为

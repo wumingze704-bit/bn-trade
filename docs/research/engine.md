@@ -3,7 +3,8 @@
 # 通用低频实盘引擎与看板（P5 / P6，M6 对齐后）
 
 执行文件：`指令/自动多轮/3-实盘工程与看板.txt`；对齐与安全修复见 `0-自动调度-每次发这个.txt` 第六部分 M6。
-最近一次部署验证：2026-11-24 15:49 UTC（服务器 `HEAD = 982df27`）。
+最近一次部署验证：2026-11-27 13:55 UTC（服务器 `HEAD = d5ed53e`；看板 active、`curl 127.0.0.1:8501` = 200、看门狗 timer active、无 `trade-runner*` 实例）。
+文件清单复核：除 `src/trade/live/feed.py`（`d891327` 增加标记价格与主动买入回补）外，其余文件哈希与 M6 部署时一致（见 §七）。
 
 ## 一、架构
 
@@ -116,7 +117,7 @@ trade.strategies.*（10 个方向 + common + registry）
 | :-- | :-- |
 | src/trade/live/killswitch.py | c40ab6e9478eea12177ae203cd4998153ae7325ebfea4c86b1b9d0220bf6cda2 |
 | src/trade/live/runner.py | d1e81c61f00e835119caf8fd8c422ece73ad098fd99ae576456abf12a55d414a |
-| src/trade/live/feed.py | 91c4c399c4f79ed63f879b6e5f612d28a25a1e0d073c2285014ad382507fc563 |
+| src/trade/live/feed.py | bab98606ddb588ab89f547a162a873cfb42d2a8656dbe07fb57f9501e260a0bd |
 | src/trade/live/candidate.py | 39f6a54e16f34465762ab9aab1486a0681e91de63d2f6c02fa2aa2eaefecc73c |
 | src/trade/live/config.py | d860abbd9ac09e1b60ff4940690153d0d6116a55a58a494b351f0acf09e93f62 |
 | src/trade/live/credentials.py | ac9571450b943c5d739f07f3dffad1df2fb95703f6f9603e63f720af37b69734 |
