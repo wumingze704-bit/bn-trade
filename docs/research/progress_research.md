@@ -15,7 +15,13 @@
 
 ## X1
 
-未运行。
+- 第一次启动（2026-11-27 16:02 UTC，服务器 `HEAD = cccce68`）12 秒即退出：
+  `ValueError: 1612137600000 BTCUSDT 日线不足 50 根`（训练曲线从 `research_start` 起跑时 BTC 日线
+  只有 1 根）。已按 0 号调度第五部分第 5 条 b 款登记缺陷 **D25** 并修复（`View.daily_warmup` 区分
+  预热段与缺数据；X1 / R11 / R12 在预热段空仓；`docs/13` §5 增加规格；3 项复现测试），
+  详见 `review_log.md` 2026-11-27 16:45 UTC 一节。此次崩溃发生在任何试验登记之前，
+  `EXPERIMENTS.log` 仍为 6 行（2 条 tuning + 4 条 exec），`trials_used` 不变。
+- 重启后状态见下一节（运行结束后追加）。
 
 ## X0
 

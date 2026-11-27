@@ -35,14 +35,19 @@ class ShortBasketBtcRegime:
         self.stop_max = stop_max
         self.universe_top_n = universe_top_n
 
-    def bearish(self, view: View) -> bool:
+    def bearish(self, view: View) -> bool | None:
         """BTC 是否处于下降趋势（低于日线均线）。
 
+        Returns:
+            True / False 为趋势状态；日线仍处于预热段时返回 None（调用方空仓，docs/13 §5）。
+
         Raises:
-            ValueError: BTCUSDT 日线不足 `ma_days` 根（红线 12：不得当作牛市静默跳过）。
+            ValueError: 日线存在但窗口不足（缺数据，红线 12）。
         """
         below = view.daily_close_below_ma("BTCUSDT", self.ma_days)
         if below is None:
+            if view.daily_warmup("BTCUSDT", self.ma_days):
+                return None
             raise ValueError(
                 f"{view.now_ms} BTCUSDT 日线不足 {self.ma_days} 根，无法判断 X1 的市场状态"
                 "（docs/13 §10，红线 12）"
@@ -50,8 +55,9 @@ class ShortBasketBtcRegime:
         return below
 
     def decide(self, view: View, held: Mapping[str, int]) -> Decision:
-        """熊市状态持有 X0 的篮子，否则在该调仓时刻全部平掉。"""
-        if not self.bearish(view):
+        """熊市状态持有 X0 的篮子，否则在该调仓时刻全部平掉；预热段空仓（docs/13 §5）。"""
+        bearish = self.bearish(view)
+        if bearish is None or not bearish:
             return Decision((), EXPOSURE_DIRECTIONAL)
         pool = alt_universe(view, self.universe_top_n)
         excluded = short_exclusions(view, pool)

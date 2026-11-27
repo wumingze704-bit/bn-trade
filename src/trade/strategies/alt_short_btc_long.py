@@ -102,14 +102,19 @@ class AltShortBtcLong:
                 break
         return picked
 
-    def alt_season(self, view: View) -> bool:
+    def alt_season(self, view: View) -> bool | None:
         """山寨/BTC 比值最新值是否高于其 60 日均线（山寨季则空仓）。
 
+        Returns:
+            True / False 为过滤状态；日线仍处于预热段时返回 None（调用方空仓，docs/13 §5）。
+
         Raises:
-            ValueError: BTCUSDT 日线不足，或没有一个候选币有 60 根以上日线（红线 12）。
+            ValueError: 日线存在但窗口不足、或候选币都凑不出 60 根日线（缺数据，红线 12）。
         """
         btc = view.daily_closes("BTCUSDT", _INDEX_DAYS)
         if btc is None:
+            if view.daily_warmup("BTCUSDT", _INDEX_DAYS):
+                return None
             raise ValueError(
                 f"{view.now_ms} BTCUSDT 日线不足 {_INDEX_DAYS} 根，无法构造 R12 的山寨/BTC 指数"
                 "（docs/13 §5，红线 12）"
@@ -147,7 +152,7 @@ class AltShortBtcLong:
             )
         return bool(ratio[-1] > float(np.mean(window)))
 
-    def btc_hedge_weight(self, view: View, shorts: list[str]) -> float:
+    def btc_hedge_weight(self, view: View, shorts: list[str]) -> float | None:
         """BTC 多头腿的相对权重，使组合事前 β 为 0（1 号第八部分 R12、docs/13 §5）。
 
         模式 B 的名义 ∝ `target.weight ÷ σ`（§3 第 2 条），因此使
@@ -158,13 +163,15 @@ class AltShortBtcLong:
             shorts: 空头腿的币。
 
         Returns:
-            BTC 多头腿的相对权重（> 0）。
+            BTC 多头腿的相对权重（> 0）；任一腿的日线仍处于预热段时返回 None（调用方空仓）。
 
         Raises:
-            ValueError: BTC 或空头腿缺少日线波动数据（红线 12：不得静默按等权处理）。
+            ValueError: BTC 或空头腿的日线存在但窗口不足（缺数据，红线 12）。
         """
         sigma_btc = daily_sigma(view, "BTCUSDT")
         if sigma_btc is None:
+            if view.daily_warmup("BTCUSDT", _VOL_LOOKBACK_DAYS + 1):
+                return None
             raise ValueError(
                 f"{view.now_ms} BTCUSDT 日线不足 {_VOL_LOOKBACK_DAYS} 天，无法确定 R12 的对冲腿"
                 "（docs/13 §5，红线 12）"
@@ -173,6 +180,8 @@ class AltShortBtcLong:
         for symbol in shorts:
             sigma = daily_sigma(view, symbol)
             if sigma is None:
+                if view.daily_warmup(symbol, _VOL_LOOKBACK_DAYS + 1):
+                    return None
                 raise ValueError(
                     f"{view.now_ms} {symbol} 日线不足 {_VOL_LOOKBACK_DAYS} 天，"
                     "无法确定 R12 的对冲腿（docs/13 §5，红线 12）"
@@ -181,20 +190,25 @@ class AltShortBtcLong:
         return sigma_btc * weighted_beta
 
     def decide(self, view: View, held: Mapping[str, int]) -> Decision:
-        """山寨季或没有空头腿时空仓；否则做空山寨篮子并做多 BTC。"""
-        if self.alt_index_filter and self.alt_season(view):
-            return Decision((), EXPOSURE_NEUTRAL)
+        """山寨季或预热段空仓；否则做空山寨篮子并做多 BTC（docs/13 §5）。"""
+        if self.alt_index_filter:
+            season = self.alt_season(view)
+            if season is None or season:
+                return Decision((), EXPOSURE_NEUTRAL)
         shorts = self.short_leg(view)
         targets: list[Target] = [
             Target(symbol=symbol, side=-1, sl=self.stop_max, weight=1.0) for symbol in shorts
         ]
         if shorts and view.has("BTCUSDT"):
+            weight = self.btc_hedge_weight(view, shorts)
+            if weight is None:
+                return Decision((), EXPOSURE_NEUTRAL)
             targets.append(
                 Target(
                     symbol="BTCUSDT",
                     side=1,
                     sl=self.stop_max,
-                    weight=self.btc_hedge_weight(view, shorts),
+                    weight=weight,
                 )
             )
         return Decision(tuple(targets), EXPOSURE_NEUTRAL)

@@ -156,8 +156,18 @@ def test_X1只在BTC跌破均线时持仓() -> None:
     assert strategy.decide(view, {}).targets == ()
 
 
-def test_X1日线不足时抛出异常而不是当作牛市() -> None:
+def test_X1预热段日线不足时空仓() -> None:
+    """研究期开头的预热段（BTC 日线还没攒够 ma_days 根）不建仓，也不猜方向（docs/13 §5）。"""
     market = _with_daily(make_market(n=240, history_days=_HISTORY_DAYS), "BTCUSDT", [100.0] * 30)
+    view = View(market, _NOW_MS)
+    strategy = ShortBasketBtcRegime(basket_n=2, ma_days=50, stop_max=_STOP_MAX)
+    assert strategy.decide(view, {}).targets == ()
+
+
+def test_X1没有BTC日线时仍报错() -> None:
+    """完全没有 BTC 日线属缺数据（不是预热段），必须抛出带上下文的异常（红线 12）。"""
+    market = make_market(n=240, history_days=_HISTORY_DAYS)
+    market.daily.pop("BTCUSDT")
     view = View(market, _NOW_MS)
     strategy = ShortBasketBtcRegime(basket_n=2, ma_days=50, stop_max=_STOP_MAX)
     with pytest.raises(ValueError, match="日线不足"):
@@ -289,6 +299,39 @@ def test_R12在山寨季时空仓() -> None:
     for symbol in ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"):
         alt_returns = 0.03 + rng.normal(0.0, 0.005, 130)
         market.daily[symbol] = make_daily_returns_bars(symbol, alt_returns)
+    view = View(market, _NOW_MS)
+    strategy = build_strategy(
+        "alt_short_btc_long",
+        {"short_n": 2, "drop_negative_funding": 0, "alt_index_filter": 1},
+        stop_max=_STOP_MAX,
+    )
+    assert strategy.decide(view, {}).targets == ()
+
+
+def test_R11预热段日线不足时空仓() -> None:
+    """R11 的 BTC 200 日均线在预热段不可判定时保持空仓（docs/13 §5），不按熊市开仓。"""
+    market = make_market(n=240, history_days=_HISTORY_DAYS)
+    market.universe = _universe_with_ages({"AAAUSDT": 100.0, "BBBUSDT": 150.0})
+    market = _with_daily(market, "BTCUSDT", [100.0 - index for index in range(60)])
+    view = View(market, _NOW_MS)
+    strategy = build_strategy(
+        "short_seasoned_listing",
+        {"age_max": 120, "top_k": 2, "btc_ma_filter": 1},
+        stop_max=_STOP_MAX,
+    )
+    assert strategy.decide(view, {}).targets == ()
+
+
+def test_R12预热段日线不足时空仓() -> None:
+    """R12 的山寨/BTC 指数在预热段凑不出 120 根日线时保持空仓（docs/13 §5）。"""
+    market = make_market(n=240, history_days=_HISTORY_DAYS)
+    market.universe = _universe_with_ages(
+        {"AAAUSDT": 400.0, "BBBUSDT": 400.0, "CCCUSDT": 400.0, "DDDUSDT": 400.0}
+    )
+    rng = np.random.default_rng(13)
+    market.daily["BTCUSDT"] = make_daily_returns_bars("BTCUSDT", rng.normal(0.0, 0.01, 60))
+    for symbol in ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"):
+        market.daily[symbol] = make_daily_returns_bars(symbol, rng.normal(0.0, 0.01, 60))
     view = View(market, _NOW_MS)
     strategy = build_strategy(
         "alt_short_btc_long",

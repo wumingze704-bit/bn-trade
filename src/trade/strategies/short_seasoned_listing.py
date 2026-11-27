@@ -42,14 +42,19 @@ class ShortSeasonedListing:
         self.stop_max = stop_max
         self.universe_top_n = universe_top_n
 
-    def bull_market(self, view: View) -> bool:
+    def bull_market(self, view: View) -> bool | None:
         """BTC 最近已收盘日线收盘价是否高于 200 日均线（牛市环境则空仓）。
 
+        Returns:
+            True / False 为市场状态；日线仍处于预热段时返回 None（调用方空仓，docs/13 §5）。
+
         Raises:
-            ValueError: BTCUSDT 日线不足 200 根（红线 12：不得当作熊市静默开仓）。
+            ValueError: 日线存在但窗口不足（缺数据，红线 12）。
         """
         below = view.daily_close_below_ma("BTCUSDT", BTC_MA_DAYS)
         if below is None:
+            if view.daily_warmup("BTCUSDT", BTC_MA_DAYS):
+                return None
             raise ValueError(
                 f"{view.now_ms} BTCUSDT 日线不足 {BTC_MA_DAYS} 根，无法判断 R11 的市场状态"
                 "（docs/13 §5，红线 12）"
@@ -71,9 +76,11 @@ class ShortSeasonedListing:
         return sorted(ages, key=lambda symbol: ages[symbol])
 
     def decide(self, view: View, held: Mapping[str, int]) -> Decision:
-        """牛市环境空仓；否则做空最年轻的前 K 个候选。"""
-        if self.btc_ma_filter and self.bull_market(view):
-            return Decision((), EXPOSURE_DIRECTIONAL)
+        """牛市环境或预热段空仓；否则做空最年轻的前 K 个候选（docs/13 §5）。"""
+        if self.btc_ma_filter:
+            bull = self.bull_market(view)
+            if bull is None or bull:
+                return Decision((), EXPOSURE_DIRECTIONAL)
         picked = self.candidates(view)[: self.top_k]
         return Decision(tuple(flat_stop_targets(picked, -1, self.stop_max)), EXPOSURE_DIRECTIONAL)
 
