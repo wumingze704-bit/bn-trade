@@ -1,37 +1,38 @@
 # 研究循环进度（1 号自动研究循环）
 
-## 当前状态（2026-11-27 14:00 UTC）
+## 当前状态（2026-11-27 16:10 UTC）
 
 - 研究重置后首次进入普通研究轮次。迁移 M1~M7 全部完成（见 `progress_migration.md`）。
-- `ledger`：`trials_used: 0`、`global_trial_budget: 400`、全部轮次 pending（X0 已置 researching）、
-  `qualified_pool: []`、`candidates: []`；`void_history` 记录研究重置前作废的 153 次试验。
+- `ledger`：`trials_used: 2`（= X0 的 2 组 `kind=tuning`）、`global_trial_budget: 400`；
+  X0 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
+  `void_history` 记录研究重置前作废的 153 次试验。
 - 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 纯做空探索轨最先 → R3 → R1、R2、R4、R5 →
   R6~R10 → R11、R12。
-- 当前轮次：**X0**（`configs/strategies/round_X0.yaml`，2 组，模式 B）。
-  - 假设与网格见 `rounds/X0.md`；服务器 `HEAD = d5ed53e`。
-  - 运行命令（服务器 `~/trade`）：`nice -n 10 /home/ubuntu/trade-venv/bin/python
-    scripts/portfolio_backtest.py --grid configs/strategies/round_X0.yaml`，日志
-    `artifacts/reports/X0.log`。
-  - 启动时间与结果：见下方“X0”一节（运行结束后追加）。
+- 当前轮次：**X1**（`configs/strategies/round_X1.yaml`，6 组，模式 B）。
 - 数据：`data/klines_1h`、`klines_1d`、`funding`、`klines_1h_flow`、`premium_1h`、`mark_1h`、
-  `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、
-  `research_end = 2026-07-31`。
-- 代码与文档：本轮补齐 X0~X4、R11、R12 方向与 `View` 访问器，修 D19/D23/D24（见 `review_log.md`）；
-  §8 质量命令全部通过（`pytest -q` 唯一失败为本机无 CUDA 的既有测试）。
-- 服务器最小规模运行（3 个月）已在服务器完成并通过：R3 模式 A/B 与 X0 模式 B，输出在
-  `artifacts/reports/smoke/20261127T134759Z.json`、`20261127T135038Z.json`、`20261127T135042Z.json`。
+  `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、`research_end = 2026-07-31`。
+- 服务器 `HEAD = d5ed53e`（代码树与本地一致；本地只多出 `.gitignore` 与 `docs/research/` 提交）。
+
+## X1
+
+未运行。
 
 ## X0
 
-启动：2026-11-27 13:52 UTC（服务器 `HEAD = d5ed53e`，`tmux` 会话 `X0`，
-`nice -n 10`，日志 `artifacts/reports/X0.log`）。
+已完成并判定 `reported_fail`（2026-11-27 13:52 UTC 启动、15:51 UTC 结束，约 2 小时）。
 
-状态（2026-11-27 14:00 UTC 检查）：进程运行中，服务器内存 used 1.6 GB / 3.65 GB（含看板与系统），
-尚无 `artifacts/reports/X0/groups/` 结果文件（数据加载与第 1 组运行中）。本次会话在上下文耗尽前
-停止，结果与判定由下一次会话接着做：
+- 选中参数 `basket_n = 20`（5 折全部选中），信号口径 10,000 USDT 拼接曲线：年化夏普 **0.1243**、
+  净收益 **−10.50%**、复合月化 −0.2056%、最大回撤 48.86%、最长水下 1,054 天、最差月 −18.80%、
+  最差单周 −16.43%；交易 1,204 笔、换手 97.6 倍、成本 488.09（占毛收益 0.485）、资金费收入 +443.49、
+  空头毛 −1,005.52、实现 β −0.5245、alpha 夏普 0.6270、DSR 0.0137、bootstrap 90% [−0.000648, +0.000910]。
+- 5 折净收益 +24.83% / +4.88% / −24.23% / −0.17% / −9.63%（2/5 为正）；情景：cost2x −22.29%、
+  nohalt +19.74%、delay1 +51.12%（> base + 0.30，g 款不通过）。
+- 四档 500 USDT：标准 夏普 0.1179 / 月化 −0.165% / 丢弃 20.2%；进取 −0.2681 / −2.276% / 54.6%；
+  激进 −0.4938 / −3.925% / 78.2%；极限 −0.1501 / −3.705% / 77.7% → `qualified_exec_tiers = []`。
+- 达标：仅 shuffle（不适用）一条通过，其余 a、b、c、d、e、g（delay1）、h、i 均不通过 →
+  `reported_fail`。结论：做空山寨篮子本身不赚钱（毛亏损 −1,006 + 成本 488，资金费 +443 只补回四成），
+  且对执行时点高度敏感（delay1 反而 +51%）。
+- 试验登记：`EXPERIMENTS.log` 新增 2 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 0 改为 2。
+- 结果与诊断全文见 `rounds/X0.md`；`grid.json` 的 `code_hash 77eed9e4…`、`data_hash c847434d…`、
+  `config_hash 32a9a2d2…`。
 
-- 检查 `tmux ls` 与 `artifacts/reports/X0/groups/`；两个组的 JSON 落盘即代表该组完成。
-- 完成后运行 `tail -40 artifacts/reports/X0.log`，把数字追加到本节与 `rounds/X0.md` 的“结果”一节，
-  并把 `ledger` 的 X0 `status` 改为 `reported_pass` / `reported_fail`、`trials` 改为
-  `EXPERIMENTS.log` 中本轮新增的 `kind=tuning` 条数（2 组 = 2 条）。
-- `trials_used` 同步为 `EXPERIMENTS.log` 的 `kind=tuning` 总条数。

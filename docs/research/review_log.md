@@ -552,3 +552,47 @@ src/trade/backtest src/trade/live`（56 files）、`mypy src/trade/dashboard`（
 结论：D19、D23、D24 已 CLOSED；新方向与访问器补齐后 M4/M5 的代码子项全部符合，
 剩余“服务器最小规模运行”与 `engine.md` 复核在本次会话继续执行。
 
+## 2026-11-27 15:30 UTC 会话级一致性检查与执行 1 号前的前置复核（X0 运行中）
+
+- 会话前检查（0 号调度第二部分）：当前目录是 git 仓库（origin = `https://github.com/wumingze704-bit/bn-trade.git`），
+  分支 `develop`，工作区干净，本地 HEAD `a0c536c`；`git pull --rebase origin develop` 因 GitHub 连接被重置
+  （`Recv failure: Connection was reset`）失败，按第五部分第 5 条 d 款记“无法核实远端是否领先”，继续本地工作；
+  `ssh tokyo` 可连通；服务器无 `trade-runner@*` 实例，只有 `portfolio_backtest.py --grid configs/strategies/round_X0.yaml`
+  在运行（tmux `X0`，2026-11-27 13:52 UTC 启动，单进程 CPU 99%）。
+- 会话级总账一致性（第五部分第 1 条）：`ledger.trials_used = 0` = Σ rounds[].trials 0 + 冻结仓位选择的试验 0
+  **符合**；服务器 `artifacts/reports/EXPERIMENTS.log` 现有 2 条 `kind=tuning`（X0 的 2 组，`ts` 均为
+  2026-11-27T14:27:10Z）与 0 条 `kind=exec`。这 2 条属于仍在运行的 X0（每完成一组即登记），按 1 号第三部分第 5 条
+  ledger 由本地在轮次结束后按日志更新，因此记为“X0 结束后更新为 2”，不属于不一致。
+- 复核对象与最新提交哈希（`git log -1 --format=%h -- <路径>`）：`src/trade/research/`（`64dc8f7`）、
+  `src/trade/strategies/`（`64dc8f7`）、`tests/research/`（`64dc8f7`）、`scripts/portfolio_backtest.py`（`d5ed53e`）、
+  `configs/research.yaml` 与 `configs/sizing_research.yaml`（`d891327`）、`src/trade/common/risk_rules.py`（`64a0dde`）、
+  `src/trade/common/sizing.py`（`5381f16`）、`src/trade/live/`（`d891327`）。
+- 逐项结论：
+  - `SETUP_DONE.md` 与 `RESET_DONE.md` 第一行为“结论：DONE”；AGENTS.md §1.1 已是“服务器 `~/trade` 是 git 副本、
+    只通过 bundle 同步、禁止 `git clean`”的规则 → **符合**。
+  - 1 号第五部分 B 第 1~15 条：上述代码对象的最新提交与 2026-11-27 13:37 UTC 复核相同
+    （`git diff 64dc8f7..HEAD -- src` 只有本轮已复核的 `portfolio_backtest.py`，见下一条）→ 未变化，
+    沿用 13:37 UTC 的“B1~B15（含 a~n 款）符合”结论。
+  - `scripts/portfolio_backtest.py` 的唯一变化（`d5ed53e`）：最小规模运行（`--smoke-months`）按方向加载
+    `klines_1h_flow` / `premium_1h`；网格评估路径不受影响 → **符合**。
+  - 判定实现逐条对照 1 号第七部分第 5 条（`src/trade/research/pipeline.py`）：`_MIN_ANNUALIZED_SHARPE = 0.8`、
+    `_MIN_POSITIVE_FOLDS = 3`、bootstrap `lower_90 > 0`、`_MIN_DSR = 0.50`、cost2x 净收益 > 0、
+    shuffle 全部种子 `< base`（不适用的方向视为通过）与 `delay1 ≤ base + 0.30`（`_MAX_DELAY1_EXCESS`）、
+    中性 h 款用“多空价差毛收益”（`long_gross + short_gross`）逐折 >= 3 折、方向性 h 款看 long_only / short_only、
+    i 款 `_EXEC_DROP_RATIO_MAX = 0.25` / 净收益 > 0 / `_EXEC_SHARPE_RATIO_MIN = 0.60`、j 款 `_MAX_BETA_ABS = 0.30`
+    且 `_MIN_ALPHA_SHARPE = 0.6`、l 款 `_MIN_SHORT_EXCESS_SHARPE = 0.6` → **符合**。
+  - B 第 14 条结果可信度测试：`python -m pytest -q tests/research tests/strategies` → **110 passed** → **符合**。
+  - 服务器代码与本地一致：服务器 `git rev-parse HEAD` = `d5ed53e`；
+    `git diff --name-only d5ed53e..HEAD -- src scripts configs tests deploy` 输出为空（本地此后只有 `.gitignore` 与
+    `docs/research/` 的提交）→ 代码树一致 **符合**。
+  - 已完成轮次数字核对：研究重置后尚无已判定轮次（X0 运行中，X0 尚无 `grid.json`；R 轮全部 pending），
+    本轮无可核对项。
+  - X0 网格与预登记一致：`configs/strategies/round_X0.yaml` 为 `basket_n ∈ {10, 20}`、`sizing_mode: vol_target`，
+    与 `rounds/X0.md` 的假设与网格一节逐项相同 → **符合**。
+- §8 质量命令（本次运行，代码 `64dc8f7`/`d5ed53e`）：`ruff format --check .` = 384 files already formatted；
+  `ruff check .` = All checks passed；`mypy --strict src/trade/common src/trade/backtest src/trade/live` = 56 files 通过；
+  `mypy src/trade/dashboard` = 8 files 通过；`pytest -q` = `1 failed, 907 passed, 3 skipped in 188.55s`
+  （唯一失败为本机无 CUDA 的既有 `tests/models/test_dataset.py::test_pinned_cpu_placement`，未修改任何测试）。
+- 未发现新缺陷；`review_log.md` 无 OPEN 项。结论：**前置复核全部符合**，按第四部分第 8 条 a 款执行 1 号
+  （当前轮次 X0 运行中，等其结束再写判定）。
+
