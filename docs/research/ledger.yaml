@@ -1,12 +1,12 @@
 global_trial_budget: 400
-trials_used: 8
+trials_used: 12
 void_history: {trials: 153, rounds: "R1~R10 首次运行", log: "artifacts/reports/_void_20261127T120139Z/EXPERIMENTS.log", reason: "D1~D16 口径缺陷，研究重置时作废"}
 research_start: "2021-02-01"
 research_end: "2026-07-31"
 rounds:                           # 按列出的顺序执行：X 轨（纯做空，仅报告）→ R3 → R1、R2、R4、R5 → R6~R10 → R11、R12
   - {id: X0, track: short_report, family: short_basket_baseline, status: reported_fail, trials: 2, result: "信号口径夏普 0.1243、净 -10.50%、最大回撤 48.86%、5 折 2 折为正；delay1 0.4317 > base + 0.30；四档净收益均为负 → reported_fail（rounds/X0.md）"}
   - {id: X1, track: short_report, family: short_basket_btc_regime, status: reported_fail, trials: 6, result: "信号口径夏普 -0.1244、净 -38.62%、最大回撤 59.29%、5 折 3 折为正；delay1 0.0387 通过；扣除 X0 超额夏普 -0.2368、四档净收益均为负 → reported_fail（rounds/X1.md）"}
-  - {id: X2, track: short_report, family: short_crowded_pump, status: pending, trials: 0, result: null}
+  - {id: X2, track: short_report, family: short_crowded_pump, status: reported_fail, trials: 4, result: "信号口径夏普 0.1522、净 +4.31%、最大回撤 37.60%、5 折 3 折为正；shuffle 20 种子全部低于 base、delay1 0.3292 通过；h、i 通过（标准/进取档）；cost2x -12.80%、扣除 X0 超额夏普 +0.0971 → reported_fail（rounds/X2.md）"}
   - {id: X3, track: short_report, family: short_premium_rich, status: pending, trials: 0, result: null}
   - {id: X4, track: short_report, family: short_taker_exhaustion, status: pending, trials: 0, result: null}
   - {id: R3, family: ts_trend, status: pending, trials: 0, result: null}
