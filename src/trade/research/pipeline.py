@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -28,7 +29,14 @@ from trade.common.sizing import SizingConfig
 from trade.research.config import ResearchConfig
 from trade.research.data import load_market_data
 from trade.research.engine import Engine, RunResult, ScenarioOptions, Segment, Trade
-from trade.research.metrics import annualized_sharpe, summarize
+from trade.research.interface import EXPOSURE_NEUTRAL
+from trade.research.metrics import (
+    annualized_sharpe,
+    compound_monthly,
+    longest_drawdown_days,
+    summarize,
+    worst_week,
+)
 from trade.research.rolling import (
     Fold,
     FoldChoice,
@@ -41,9 +49,33 @@ from trade.research.rolling import (
 from trade.strategies.registry import build_strategy
 
 _CTX: dict[str, Any] = {}
-# 可执行性检查：丢弃比例上限与夏普下限比例（1 号第七部分第 5 条 i 款）
-_EXEC_DROP_RATIO_MAX = 0.20
-_EXEC_SHARPE_RATIO_MIN = 0.70
+# 可执行性检查的阈值（docs/13 §7 第 9 条）：丢弃仓位 ≤ 应开仓位的 25%、年化夏普 ≥ 信号口径的 60%
+_EXEC_DROP_RATIO_MAX = 0.25
+_EXEC_SHARPE_RATIO_MIN = 0.60
+# 达标阈值（docs/13 §7 第 1、2、4、5、7、10、11 条）
+_MIN_ANNUALIZED_SHARPE = 0.8
+_MIN_POSITIVE_FOLDS = 3
+_MIN_DSR = 0.50
+_MAX_DELAY1_EXCESS = 0.30
+_MAX_BETA_ABS = 0.30
+_MIN_ALPHA_SHARPE = 0.6
+_MIN_SHORT_EXCESS_SHARPE = 0.6
+# X 轨与 R11、R12 的 Deflated Sharpe 主口径包含作废旧试验（docs/13 §7）
+_VOID_IN_MAIN_ROUNDS = frozenset({"R11", "R12"})
+# shuffle 不适用的方向（打分不决定选币与方向，docs/13 §7）
+_SHUFFLE_NOT_APPLICABLE = frozenset(
+    {"short_basket_baseline", "short_basket_btc_regime", "alt_short_btc_long"}
+)
+# 只做空的方向性策略：与 X0 的 N = 20 组比较超额夏普（docs/13 §7 第 11 条）
+_SHORT_ONLY_FAMILIES = frozenset(
+    {
+        "short_seasoned_listing",
+        "short_basket_btc_regime",
+        "short_crowded_pump",
+        "short_premium_rich",
+        "short_taker_exhaustion",
+    }
+)
 
 
 def params_key(params: Mapping[str, object]) -> str:
@@ -287,38 +319,102 @@ def _hash_files(paths: Sequence[Path]) -> str:
     return digest.hexdigest()
 
 
+def _module_file(root: Path, module: str) -> Path | None:
+    """把 `trade.x.y` 映射到仓库内的模块文件（不存在返回 None）。"""
+    parts = module.split(".")
+    if not parts or parts[0] != "trade":
+        return None
+    base = root / "src" / "trade"
+    for part in parts[1:]:
+        base = base / part
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _code_closure(root: Path, entries: Sequence[Path]) -> list[Path]:
+    """代码闭包：入口文件 + 经 ast 静态解析递归导入的本仓库模块（docs/13 §8）。
+
+    `src/trade/strategies/registry.py` 与其他方向的策略模块不计入（registry 只按名字分派，
+    新增方向只追加条目）；R5 的成分模块由调用方作为入口传入。
+    """
+    registry = root / "src" / "trade" / "strategies" / "registry.py"
+    seen: set[Path] = set()
+    queue: list[Path] = [path for path in entries if path.is_file()]
+    while queue:
+        path = queue.pop()
+        if path in seen or path == registry:
+            continue
+        seen.add(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules = [node.module]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            for module in modules:
+                target = _module_file(root, module)
+                if target is not None and target not in seen:
+                    queue.append(target)
+    return sorted(seen)
+
+
 def compute_hashes(
     *,
     config: ResearchConfig,
     root: Path,
     grid_path: Path | None,
     extra_configs: Sequence[Path] = (),
+    family: str | None = None,
+    component_families: Sequence[str] = (),
 ) -> RecordHashes:
-    """计算 code_hash / data_hash / config_hash（1 号第三部分第 5 条）。
+    """计算 code_hash / data_hash / config_hash（1 号第三部分第 5 条、docs/13 §8）。
 
     Args:
         config: 研究配置（取 manifest 与数据根）。
         root: 仓库根。
         grid_path: 本次网格文件。
         extra_configs: 其他参与计算的配置文件（例如仓位配置、费率配置）。
+        family: 本轮方向（其策略模块是代码闭包的一部分）；None 表示只算框架。
+        component_families: R5 的成分方向（成分模块计入 R5 的闭包）。
 
     Returns:
         RecordHashes。
 
     Raises:
-        FileNotFoundError: 缺少 manifest 或配置文件（红线 12）。
+        FileNotFoundError: 缺少策略模块、manifest、选币快照或配置文件（红线 12）。
     """
-    code_files = [
+    entries: list[Path] = [
         *(root / "src" / "trade" / "research").rglob("*.py"),
-        *(root / "src" / "trade" / "strategies").rglob("*.py"),
-        # 风控（R5~R8）与仓位（取整、最小下单额）是研究、最终检验、影子盘与实盘共用的执行口径
-        # （AGENTS.md 红线 4）：改动它们同样改变结果，因此必须进入 code_hash。
-        *(root / "src" / "trade" / "common").rglob("*.py"),
         root / "scripts" / "portfolio_backtest.py",
     ]
-    manifest = root / config.paths.data_root / "history" / "manifest.json"
-    if not manifest.is_file():
-        raise FileNotFoundError(f"缺少数据 manifest：{manifest}（红线 12）")
+    families = [name for name in (family, *component_families) if name]
+    if family == "ensemble":
+        # 组合方向通过 registry 分派成分方向的 build，本身不导入成分模块：
+        # 按 component_families 显式加入闭包（docs/13 §8）。
+        families = [name for name in component_families if name]
+    for name in families:
+        module = root / "src" / "trade" / "strategies" / f"{name}.py"
+        if not module.is_file():
+            raise FileNotFoundError(f"缺少策略模块：{module}（红线 12）")
+        entries.append(module)
+    code_files = _code_closure(root, entries)
+    data_root = root / config.paths.data_root
+    data_files: list[Path] = [
+        data_root / "history" / name
+        for name in (
+            "manifest.json",
+            "manifest_flow.json",
+            "manifest_premium.json",
+            "manifest_mark.json",
+        )
+    ]
+    data_files.extend(sorted((data_root / "universe_hist").glob("*.json")))
+    missing_data = [str(path) for path in data_files if not path.is_file()]
+    if missing_data:
+        raise FileNotFoundError(f"缺少数据清单或选币快照：{missing_data}（红线 12）")
     config_files = [root / "configs" / "research.yaml", *extra_configs]
     if grid_path is not None:
         config_files.append(grid_path)
@@ -326,8 +422,8 @@ def compute_hashes(
     if missing:
         raise FileNotFoundError(f"缺少配置文件：{missing}（红线 12）")
     return RecordHashes(
-        code_hash=_hash_files([path for path in code_files if path.is_file()]),
-        data_hash=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        code_hash=_hash_files(code_files),
+        data_hash=_hash_files(data_files),
         config_hash=_hash_files(config_files),
     )
 
@@ -523,6 +619,29 @@ def read_trial_sharpes(log_path: Path) -> list[float]:
         if entry.get("kind") == "tuning" and "daily_sharpe" in entry:
             values.append(float(entry["daily_sharpe"]))
     return values
+
+
+def read_void_trial_sharpes(reports_dir: Path) -> list[float]:
+    """读取研究重置时移到 `_void_*/` 的旧 `kind=tuning` 记录的日频夏普（docs/13 §7）。"""
+    values: list[float] = []
+    for log_path in sorted(reports_dir.glob("_void_*/EXPERIMENTS.log")):
+        values.extend(read_trial_sharpes(log_path))
+    return values
+
+
+def trial_sharpes_for(
+    round_id: str, log_path: Path, reports_dir: Path
+) -> tuple[list[float], list[float]]:
+    """返回 (主口径 trial_sharpes, 含旧记录的敏感性口径)。
+
+    R11、R12 与 X0~X4 的主口径另加入 00 号研究重置时移到 `_void_*/` 的旧记录；
+    其余轮次主口径只读当前 `EXPERIMENTS.log`，另输出包含旧记录的敏感性值（docs/13 §7）。
+    """
+    current = read_trial_sharpes(log_path)
+    void = read_void_trial_sharpes(reports_dir)
+    if round_id in _VOID_IN_MAIN_ROUNDS or round_id.startswith("X"):
+        return current + void, current + void
+    return current, current + void
 
 
 def append_experiments(log_path: Path, entries: list[dict[str, Any]]) -> None:
@@ -770,8 +889,13 @@ def run_selected_path(
     segments: Sequence[Segment],
     end_ms: int,
     options: ScenarioOptions | None = None,
+    seed: int | None = None,
 ) -> RunResult:
-    """以给定仓位口径与初始权益连续运行整条拼接路径（docs/13 §6 第 10 条 b 款）。"""
+    """以给定仓位口径与初始权益连续运行整条拼接路径（docs/13 §6 第 10 条 b 款）。
+
+    Args:
+        seed: shuffle 情景的随机种子；None 表示用 `config.bootstrap.seed`。
+    """
     engine = Engine(
         market=market,
         sizing_cfg=sizing,
@@ -780,7 +904,7 @@ def run_selected_path(
         fee_taker=fee_taker,
         risk_limits=risk_limits,
         options=options or ScenarioOptions(),
-        seed=config.bootstrap.seed,
+        seed=config.bootstrap.seed if seed is None else seed,
     )
     return engine.run_path(list(segments), int(end_ms))
 
@@ -997,6 +1121,9 @@ def _block_metrics(result: RunResult) -> dict[str, float]:
         "daily_sharpe": float(daily.mean() / std) if std > 0.0 else 0.0,
         "net_return": float(equity.iloc[-1] - 1.0) if equity.size else 0.0,
         "max_drawdown": drawdown,
+        "longest_drawdown_days": longest_drawdown_days(equity),
+        "compound_monthly": compound_monthly(equity),
+        "worst_week": worst_week(equity),
         "trades": float(len(result.trades)),
         "net_pnl": float(sum(trade.net_pnl for trade in result.trades)),
         "dropped": float(result.dropped),
@@ -1036,86 +1163,120 @@ def _fold_stats(
     return stats
 
 
-def _delay1_max_excess(grid: Mapping[str, Any]) -> float:
-    """读取网格的 delay1 容忍度（docs/13 §7；1 号第八部分 R11/R12）。
-
-    默认 0 表示 g 款的严格要求 `delay1 年化夏普 < base`；正数表示按登记的例外口径
-    `delay1 年化夏普 ≤ base + 容忍度`（R11、R12 登记为 0.10）。
-
-    Args:
-        grid: 网格配置。
+def _x0_reference_daily(root: Path, out_dir: Path) -> pd.Series | None:
+    """X0 中 N = 20 那组自身拼接曲线的日收益（docs/13 §7 第 11 条）。
 
     Returns:
-        非负容忍度（年化夏普）。
-
-    Raises:
-        ValueError: 字段不是非负数。
+        日收益序列；X0 网格或结果不存在时返回 None（第 11 条无法判定）。
     """
-    value = grid.get("delay1_max_excess", 0.0)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0.0:
-        raise ValueError(f"网格 delay1_max_excess 必须是非负数：{grid.get('round')} {value!r}")
-    return float(value)
+    grid_path = root / "configs" / "strategies" / "round_X0.yaml"
+    if not grid_path.is_file():
+        return None
+    grid = load_grid(grid_path)
+    params = next(
+        (dict(item) for item in grid["params"] if int(dict(item).get("basket_n", 0)) == 20), None
+    )
+    if params is None:
+        return None
+    family = str(grid["family"])
+    path = group_cache_path(out_dir / "X0" / "groups", family, params_key(params))
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _series_from_json(payload["own"]["daily"])
+
+
+def _short_excess_sharpe(daily: pd.Series, reference: pd.Series | None) -> float | None:
+    """扣除 X0 后的超额年化夏普：日收益对 X0 日收益回归取残差（docs/13 §7 第 11 条）。"""
+    if reference is None or daily.empty or reference.empty:
+        return None
+    frame = pd.concat(
+        [daily.rename("strategy"), reference.rename("x0")], axis=1, join="inner"
+    ).dropna()
+    if frame.shape[0] < 3:
+        return None
+    variance = float(frame["x0"].var(ddof=1))
+    if variance <= 0.0:
+        return annualized_sharpe(frame["strategy"])
+    beta = float(frame["strategy"].cov(frame["x0"]) / variance)
+    excess = frame["strategy"] - beta * frame["x0"]
+    return annualized_sharpe(excess)
+
+
+def _tier_passes(stats: Mapping[str, float], signal_sharpe: float) -> bool:
+    """单个档位的可执行性检查（docs/13 §7 第 9 条）。"""
+    attempted = stats.get("attempted", 0.0)
+    dropped = stats.get("dropped_min_notional", 0.0)
+    ratio = dropped / attempted if attempted > 0.0 else 0.0
+    return (
+        ratio <= _EXEC_DROP_RATIO_MAX
+        and stats.get("net_return", -1.0) > 0.0
+        and float(stats.get("annualized_sharpe", 0.0)) >= _EXEC_SHARPE_RATIO_MIN * signal_sharpe
+    )
 
 
 def _checks(
     *,
+    family: str,
     exposure: str,
     base_sharpe: float,
     metrics: Mapping[str, object],
     fold_stats: list[dict[str, Any]],
     scenario_stats: Mapping[str, Mapping[str, float]],
-    exec_stats: Mapping[str, float],
-    delay1_max_excess: float = 0.0,
+    shuffle_sharpes: Sequence[float] | None,
+    exec_tiers: Mapping[str, Mapping[str, float]],
+    short_excess_sharpe: float | None,
 ) -> dict[str, bool]:
-    """达标项 a~h 与 j 判定（第七部分第 5 条，信号口径），返回逐项布尔值。
+    """达标项 a~k（docs/13 §7 第 1~11 条，信号口径），返回逐项布尔值。
 
     Args:
-        delay1_max_excess: delay1 容忍度（年化夏普），0 表示要求低于 base。
+        family: 方向（判断 shuffle 是否适用、是否只做空）。
+        exposure: `neutral` / `directional`。
+        base_sharpe: 拼接曲线年化夏普。
+        metrics: `summarize` 的输出。
+        fold_stats: 分折统计。
+        scenario_stats: 情景统计。
+        shuffle_sharpes: 全部种子的 shuffle 年化夏普；不适用时为 None。
+        exec_tiers: 四个档位的 500 USDT 口径统计。
+        short_excess_sharpe: 扣除 X0 后的超额年化夏普（只做空方向）。
     """
+    if family in _SHUFFLE_NOT_APPLICABLE:
+        shuffle_ok = True
+    elif not shuffle_sharpes:
+        raise ValueError(f"{family} 的 shuffle 情景缺少种子结果（docs/13 §7）")
+    else:
+        shuffle_ok = all(value < base_sharpe for value in shuffle_sharpes)
     delay1_sharpe = scenario_stats.get("delay1", {}).get("annualized_sharpe", 1.0)
+    bootstrap = metrics["bootstrap"]
+    assert isinstance(bootstrap, Mapping)
     checks: dict[str, bool] = {
-        "sharpe_ge_1": base_sharpe >= 1.0,
-        "folds_positive_ge_4": sum(1 for item in fold_stats if item["net_return"] > 0.0) >= 4,
-        "bootstrap_lower_gt_0": float(metrics["bootstrap"]["lower_bp"]) > 0.0,  # type: ignore[index]
-        "dsr_ge_080": float(metrics["deflated_sharpe"]) >= 0.80,
+        "sharpe_ge_080": base_sharpe >= _MIN_ANNUALIZED_SHARPE,
+        "folds_positive_ge_3": sum(1 for item in fold_stats if item["net_return"] > 0.0)
+        >= _MIN_POSITIVE_FOLDS,
+        "bootstrap_lower_gt_0": float(bootstrap["lower_90"]) > 0.0,
+        "dsr_ge_050": float(metrics["deflated_sharpe"]) >= _MIN_DSR,
         "cost2x_positive": scenario_stats.get("cost2x", {}).get("net_return", -1.0) > 0.0,
-        "mdd_le_020": float(metrics["max_drawdown"]) <= 0.20,
-        "shuffle_le_03": scenario_stats.get("shuffle", {}).get("annualized_sharpe", 1.0) <= 0.3,
-        "delay1_lt_base": (
-            delay1_sharpe <= base_sharpe + delay1_max_excess
-            if delay1_max_excess > 0.0
-            else delay1_sharpe < base_sharpe
-        ),
+        "shuffle_all_below_base": shuffle_ok,
+        "delay1_le_base_plus_030": delay1_sharpe <= base_sharpe + _MAX_DELAY1_EXCESS,
+        "exec_tier_ok": any(_tier_passes(stats, base_sharpe) for stats in exec_tiers.values()),
     }
-    if exposure == "neutral":
+    if exposure == EXPOSURE_NEUTRAL:
         checks["side_condition"] = (
-            sum(1 for item in fold_stats if item["long_gross"] - item["short_gross"] > 0.0) >= 4
+            sum(1 for item in fold_stats if item["long_gross"] + item["short_gross"] > 0.0)
+            >= _MIN_POSITIVE_FOLDS
         )
-        # j 款：中性策略的实现 β 与 alpha 夏普（不能主要靠大盘涨跌）
-        checks["beta_abs_le_030"] = abs(float(metrics["realized_beta"])) <= 0.30
-        checks["alpha_sharpe_ge_08"] = float(metrics["alpha_sharpe"]) >= 0.8
+        checks["beta_abs_le_030"] = abs(float(metrics["realized_beta"])) <= _MAX_BETA_ABS
+        checks["alpha_sharpe_ge_06"] = float(metrics["alpha_sharpe"]) >= _MIN_ALPHA_SHARPE
     else:
         checks["side_condition"] = (
             scenario_stats.get("long_only", {}).get("net_pnl", 0.0) > 0.0
             or scenario_stats.get("short_only", {}).get("net_pnl", 0.0) > 0.0
         )
+    if family in _SHORT_ONLY_FAMILIES:
+        checks["short_excess_sharpe_ge_06"] = (
+            short_excess_sharpe is not None and short_excess_sharpe >= _MIN_SHORT_EXCESS_SHARPE
+        )
     return checks
-
-
-def _executable_checks(
-    *, signal_metrics: Mapping[str, object], exec_stats: Mapping[str, float]
-) -> dict[str, bool]:
-    """可执行性检查（i 款，500 USDT 口径，用同一选参结果重跑拼接路径）。"""
-    attempted = exec_stats.get("attempted", 0.0)
-    dropped = exec_stats.get("dropped_min_notional", 0.0)
-    ratio = dropped / attempted if attempted > 0.0 else 0.0
-    signal_sharpe = float(signal_metrics["annualized_sharpe"])
-    return {
-        "exec_drop_ratio_le_020": ratio <= _EXEC_DROP_RATIO_MAX,
-        "exec_net_positive": exec_stats.get("net_return", -1.0) > 0.0,
-        "exec_sharpe_ge_70pct": float(exec_stats.get("annualized_sharpe", 0.0))
-        >= _EXEC_SHARPE_RATIO_MIN * signal_sharpe,
-    }
 
 
 def _write_report(
@@ -1208,7 +1369,7 @@ def _no_selection_report(
         "fold_stats": [],
         "selected_params": {},
         "selected_metrics": {},
-        "exec_metrics": {},
+        "exec_tiers": {},
         "scenarios": {},
         "checks": {},
         "passed": False,
@@ -1251,6 +1412,7 @@ def evaluate_grid(
     ),
     with_flow: bool = False,
     with_premium: bool = False,
+    exec_tiers: Mapping[str, tuple[SizingConfig, RiskLimits]] | None = None,
 ) -> dict[str, Any]:
     """评估一轮的完整网格，写出报告并登记试验（docs/13 §6、§7、§9）。
 
@@ -1283,14 +1445,27 @@ def evaluate_grid(
         start_ms, end_ms, train_months=config.rolling.train_months, folds=config.rolling.folds
     )
     root = Path.cwd()
+    component_families: tuple[str, ...] = ()
+    mapping = grid.get("component_grids")
+    if isinstance(mapping, Mapping) and mapping:
+        component_families = tuple(str(name) for name in mapping)
     hashes = compute_hashes(
         config=config,
         root=root,
         grid_path=grid_path,
         extra_configs=[root / "configs" / "sizing_research.yaml", root / "configs" / "base.yaml"],
+        family=family,
+        component_families=component_families,
     )
     signal_sizing = sizing.model_copy(update={"initial_equity": config.equity.signal})
-    exec_sizing = sizing.model_copy(update={"initial_equity": config.equity.exec})
+    if exec_tiers is None:
+        # 未给出四个档位时退回单一默认档（调试用；正式评估必须传四档，docs/13 §7 第 9 条）
+        exec_tiers = {
+            sizing.sizing_mode: (
+                sizing.model_copy(update={"initial_equity": config.equity.exec}),
+                risk_limits,
+            )
+        }
     payload = {
         "config": config.model_dump(mode="json"),
         "sizing": signal_sizing.model_dump(mode="json"),
@@ -1393,7 +1568,7 @@ def evaluate_grid(
         grid=grid,
         market=market,
         signal_sizing=signal_sizing,
-        exec_sizing=exec_sizing,
+        exec_tiers=exec_tiers,
         fee_taker=fee_taker,
         risk_limits=risk_limits,
         payload=payload,
@@ -1424,7 +1599,7 @@ def _evaluate_selected(
     grid: Mapping[str, Any],
     market,
     signal_sizing: SizingConfig,
-    exec_sizing: SizingConfig,
+    exec_tiers: Mapping[str, tuple[SizingConfig, RiskLimits]],
     fee_taker: float,
     risk_limits: RiskLimits,
     payload: dict[str, Any],
@@ -1440,7 +1615,7 @@ def _evaluate_selected(
     root: Path,
     components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
 ) -> dict[str, Any]:
-    """按折选中参数跑连续路径、两种权益口径与全部情景，并汇总达标项。"""
+    """按折选中参数跑连续路径、四个档位的 500 USDT 口径与全部情景，并汇总达标项。"""
 
     def _segments() -> list[Segment]:
         return build_segments(
@@ -1452,67 +1627,105 @@ def _evaluate_selected(
             components_by_fold=components_by_fold,
         )
 
-    def _run(sizing: SizingConfig, options: ScenarioOptions | None = None) -> RunResult:
+    def _run(
+        sizing: SizingConfig,
+        options: ScenarioOptions | None = None,
+        *,
+        tier_risk: RiskLimits | None = None,
+        seed: int | None = None,
+    ) -> RunResult:
         return run_selected_path(
             market,
             config=config,
             sizing=sizing,
             fee_taker=fee_taker,
-            risk_limits=risk_limits,
+            risk_limits=tier_risk or risk_limits,
             segments=_segments(),
             end_ms=end_ms,
             options=options,
+            seed=seed,
         )
 
     signal_path = _run(signal_sizing)
-    exec_path = _run(exec_sizing)
     scenario_stats = {
-        name: _block_metrics(_run(signal_sizing, SCENARIO_OPTIONS[name])) for name in scenarios
+        name: _block_metrics(_run(signal_sizing, SCENARIO_OPTIONS[name]))
+        for name in scenarios
+        if name != "shuffle"
     }
-    metrics = summarize(
-        signal_path, bootstrap=config.bootstrap, trial_sharpes=read_trial_sharpes(log_path)
-    )
+    shuffle_sharpes: list[float] | None = None
+    if family not in _SHUFFLE_NOT_APPLICABLE and "shuffle" in scenarios:
+        # 达标判定用全部种子（docs/13 §7）；第一个种子的结果记为参考
+        shuffle_sharpes = []
+        for offset in range(config.shuffle.n_seeds):
+            seeded = _run(
+                signal_sizing,
+                SCENARIO_OPTIONS["shuffle"],
+                seed=config.shuffle.seed + offset,
+            )
+            shuffle_sharpes.append(annualized_sharpe(seeded.daily_returns()))
+        scenario_stats["shuffle"] = _block_metrics(
+            _run(signal_sizing, SCENARIO_OPTIONS["shuffle"], seed=config.shuffle.seed)
+        )
+    tier_stats: dict[str, dict[str, float]] = {}
+    exec_records: list[dict[str, Any]] = []
+    now = datetime.now(UTC).isoformat()
+    for tier_name, (tier_sizing, tier_risk) in exec_tiers.items():
+        tier_path = _run(tier_sizing, tier_risk=tier_risk)
+        stats = _block_metrics(tier_path)
+        tier_stats[tier_name] = stats
+        exec_records.append(
+            {
+                "ts": now,
+                "kind": "exec",
+                "round": round_id,
+                "family": family,
+                "tier": tier_name,
+                "params": {
+                    str(fold.index + 1): choice.params_key
+                    for fold, choice in zip(folds, choices, strict=True)
+                },
+                "daily_sharpe": float(stats["daily_sharpe"]),
+                "annualized_sharpe": float(stats["annualized_sharpe"]),
+                "trades": int(stats["trades"]),
+                "equity_basis": config.equity.exec,
+                **hashes.as_dict(),
+            }
+        )
+    append_experiments(log_path, exec_records)
+    trial_main, trial_sensitivity = trial_sharpes_for(round_id, log_path, out_dir)
+    metrics = summarize(signal_path, bootstrap=config.bootstrap, trial_sharpes=trial_main)
+    dsr_sensitivity = signal_path.deflated(trial_sensitivity)
     fold_stats = _fold_stats(signal_path, folds, choices)
-    exec_stats = _block_metrics(exec_path)
-    delay1_max_excess = _delay1_max_excess(grid)
+    short_excess = None
+    if family in _SHORT_ONLY_FAMILIES:
+        short_excess = _short_excess_sharpe(
+            signal_path.daily_returns(), _x0_reference_daily(root, out_dir)
+        )
     checks = _checks(
+        family=family,
         exposure=exposure,
         base_sharpe=float(metrics["annualized_sharpe"]),
         metrics=metrics,
         fold_stats=fold_stats,
         scenario_stats=scenario_stats,
-        exec_stats=exec_stats,
-        delay1_max_excess=delay1_max_excess,
+        shuffle_sharpes=shuffle_sharpes,
+        exec_tiers=tier_stats,
+        short_excess_sharpe=short_excess,
     )
-    checks.update(_executable_checks(signal_metrics=metrics, exec_stats=exec_stats))
-    append_experiments(
-        log_path,
-        [
-            {
-                "ts": datetime.now(UTC).isoformat(),
-                "kind": "exec",
-                "round": round_id,
-                "family": family,
-                "params": {
-                    str(fold.index + 1): choice.params_key
-                    for fold, choice in zip(folds, choices, strict=True)
-                },
-                "daily_sharpe": float(exec_stats["daily_sharpe"]),
-                "annualized_sharpe": float(exec_stats["annualized_sharpe"]),
-                "trades": int(exec_stats["trades"]),
-                "equity_basis": config.equity.exec,
-                **hashes.as_dict(),
-            }
-        ],
-    )
+    qualified_tiers = [
+        name
+        for name, stats in tier_stats.items()
+        if _tier_passes(stats, float(metrics["annualized_sharpe"]))
+    ]
     report: dict[str, Any] = {
         "round": round_id,
         "family": family,
         "exposure": exposure,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": now,
         "hashes": hashes.as_dict(),
         "equity_basis": {"signal": config.equity.signal, "exec": config.equity.exec},
-        "delay1_max_excess": delay1_max_excess,
+        "shuffle_sharpes": shuffle_sharpes,
+        "short_excess_sharpe": short_excess,
         "folds": [
             {
                 "index": fold.index + 1,
@@ -1532,7 +1745,9 @@ def _evaluate_selected(
         "component_params": components_by_fold,
         "segments": signal_path.segments,
         "selected_metrics": metrics,
-        "exec_metrics": exec_stats,
+        "dsr_sensitivity": dsr_sensitivity,
+        "exec_tiers": tier_stats,
+        "qualified_exec_tiers": qualified_tiers,
         "scenarios": scenario_stats,
         "checks": checks,
         "passed": all(checks.values()),

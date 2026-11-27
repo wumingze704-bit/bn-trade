@@ -26,7 +26,8 @@ beta_lookback_days: 60 # β = 过去 60 天日收益对 BTCUSDT 日收益的回�
 beta_abs_max: 0.10 # 中性策略组合事前 |β| ≤ 0.10
 ls_ratio_range: [0.5, 2.0] # 中性策略多头总名义 ÷ 空头总名义
 
-# 风险档位（1 号第二部分第 3 条）：研究与达标判定用 standard；冻结时在三档中选实盘档位。
+# 风险档位（1 号第二部分第 3 条、docs/00 §2）：研究与达标判定用 standard；冻结时在满足可执行性
+# 检查的档位中选实盘档位（红线 5：数值由使用者确定）。
 tier: standard
 risk_tiers:
   standard:
@@ -37,16 +38,23 @@ risk_tiers:
     daily_loss_halt: 0.08
     max_drawdown_halt: 0.20
   progressive:
-    risk_per_trade: 0.0125
-    target_vol: 0.30
-    disaster_loss_cap: 0.04
-    daily_loss_stop: 0.07
-    daily_loss_halt: 0.12
-    max_drawdown_halt: 0.30
-  aggressive:
-    risk_per_trade: 0.02
+    risk_per_trade: 0.015
     target_vol: 0.40
-    disaster_loss_cap: 0.06
-    daily_loss_stop: 0.10
-    daily_loss_halt: 0.15
-    max_drawdown_halt: 0.40
+    disaster_loss_cap: 0.05
+    daily_loss_stop: 0.08
+    daily_loss_halt: 0.12
+    max_drawdown_halt: 0.35
+  aggressive:
+    risk_per_trade: 0.0225
+    target_vol: 0.60
+    disaster_loss_cap: 0.075
+    daily_loss_stop: 0.12
+    daily_loss_halt: 0.18
+    max_drawdown_halt: 0.50
+  extreme:
+    risk_per_trade: 0.03
+    target_vol: 0.80
+    disaster_loss_cap: 0.10
+    daily_loss_stop: 0.15
+    daily_loss_halt: 0.22
+    max_drawdown_halt: 0.60

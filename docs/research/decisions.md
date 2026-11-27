@@ -210,3 +210,11 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 依据实盘工程任务指令授权自行决定：`load_universe_history` 只读取 `YYYY-MM.json`，忽略同目录的 `aliases.json` / `summary.json`（服务器目录实测包含这两个文件，按快照解析会抛错）。
 - 发现但未修改：服务器 `data/universe_hist` 只到 `2026-07.json`，当前月份没有选币快照；引擎 `View.universe_symbols()` 会抛带上下文的 `KeyError`（符合红线 12），启动 shadow 前需补齐当月快照。
 - 部署：服务器 `sudo -n` 可用，已安装单元并启动看板与看门狗；未创建任何交易实例（总账无候选）。看板 `curl` 返回 200，`/api/status` 显示 `live_available=false`。
+
+## 2026-11-27 第三批补做的两项取舍
+
+- 使用者决定：R1~R10 的 `max_positions` 截断按 docs/13 §3 第 6 条执行（多空交替、每侧至多 ⌊max/2⌋）。该规则对单边
+  方向性策略同样生效，因此 R3 一次最多 5 个同向仓位；按文档执行，未另设例外（0 号调度第六部分 M4）。
+- 使用者决定：中性策略被情景过滤成单边（`long_only` / `short_only`）时按 docs/13 §3 第 4 条“任一侧没有可成交目标
+  时本次不开新仓”，两个情景对中性方向都保持空仓；方向性策略的 long_only / short_only 判定不受影响。
+

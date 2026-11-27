@@ -9,12 +9,49 @@
 | 步骤 | 状态 | 提交 |
 | :-- | :-- | :-- |
 | M1 服务器改为 git 副本 | 完成 | `816c31b` |
-| M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成 | `35ee65a` |
+| M2 配置（risk / equity / 风险档位 / 500 USDT） | 完成（含第三批补做：`block_days`、`shuffle`、四档含极限） | `35ee65a` + 本次提交 |
 | M3 数据补充与防幸存者偏差 | 完成 | `18cbdee` |
-| M4 研究框架修复（D1~D7、D12、D13）与可信度测试 | 完成 | `9c82edc`、`a2bafb4` |
-| M5 仓位模式 B 与 β 中性 | 完成 | `5381f16` |
-| M6 实盘安全修复（D8~D11）与引擎对齐 | 完成 | `982df27` |
+| M4 研究框架修复（D1~D7、D12~D17、D20~D22）与可信度测试 | 进行中：D1~D7、D12~D17、D20~D22 已修，四档可执行性与 g/i/l 款已实现；待办见下 | `9c82edc`、`a2bafb4`、本次提交 |
+| M5 仓位模式 B 与 β 中性 | 进行中：D18 的顺序已实现并有测试；D19（R5 成分仓位模式）待办 | `5381f16`、本次提交 |
+| M6 实盘安全修复（D8~D11）与引擎对齐 | 完成 | `982df27`（代码改动后需按 M6 第 6 条复核 engine.md） |
 | M7 旧判定作废并准备重跑 | 完成 | `5c3b674` |
+
+## 当前状态（本轮）
+
+- M2 补做完成：`configs/research.yaml` 增加 `bootstrap.block_days: 7` 与 `shuffle` 节（`seed: 42`、`n_seeds: 20`），
+  `ResearchConfig` 两个字段均为必填（缺失或非法即报错）；`configs/sizing_research.yaml` 按 `docs/00` §2 改为
+  标准 / 进取 / 激进 / 极限四档（含 `target_vol` 0.80 与防灾止损上限 0.10）。
+- M4 补做已完成的部分：
+  - 逐仓强平（D22）：`Position` 记录入场标记价、强平价（多 = 标记 × (1 − 1/杠杆 + 维持保证金率)，空对称）与逐仓保证金；
+    标记价格开盘越过强平价、或止损成交价比强平价更差时按强平处理（损失全部保证金），强平次数与损失单独统计；
+    `MarkBars` 增加 `open` 列（研究数据层与实盘 feed 同步）。
+  - 反向反手（D14）：目标方向与持仓相反时同一根 K 线先平旧仓再开新仓。
+  - 中性约束（D15）：`_apply_caps` 一侧为空时不再单边建仓；`plan_positions` 按多空交替顺序截断；
+    上限缩放后复检最小下单额与取整；每个 UTC 日 00:00 检查事前 β 与多空名义比并只缩不放（部分平仓）；
+    一侧被止损 / 强平清空时同一时刻平掉另一侧；`View.listing_age_days` 改用选币快照的 `first_listing_ms`
+    （缺失时退回该币 1d 第一根），不再用加载窗口第一根。
+  - 规格对齐（D16）：R1 只做多打分 > 0、只做空打分 < 0；R3 权重固定为 1（不再叠加 1/波动）；
+    半价差 = max(0.5 × tickSize ÷ 价格, 分层最小值)；168h 调仓锚定 UTC 周一 00:00。
+  - D17：`code_hash` 改为 ast 静态解析的代码闭包（`research/` + `portfolio_backtest.py` + 本轮策略模块 +
+    递归导入的本仓库模块；registry 与其他策略模块不计入）；`data_hash` 覆盖四个 manifest 与
+    `universe_hist/` 全部月度快照和 `rules_source.json`。
+  - D20：Deflated Sharpe 在研究框架内实现（`trade/research/dsr.py`），SR0 的均值项取 max(0, 均值)。
+  - D21：`block_bootstrap_mean` 为按 UTC 日的移动块 bootstrap，输出 90% 与 95% 区间；
+    `summarize` 的 `bootstrap` 改用它，`bootstrap_trade_bp` 保留为 `trade_bp` 参考。
+  - 指标新增复合月化、最长回撤持续天数、最差单周、多空价差毛收益。
+  - g 款改为 20 个种子的 shuffle 全部低于 base、delay1 ≤ base + 0.30（所有方向统一，删除网格例外字段）；
+    i 款四档各跑一次（阈值 25% / 60%），kind=exec 每档一条；l 款只做空方向扣除 X0 的超额夏普 ≥ 0.6；
+    R11、R12 与 X0~X4 的 DSR 主口径包含 `_void_*/` 旧记录，其余轮次另输出敏感性值。
+- M4/M5 待办（下次继续）：
+  - D19：R5 每组按自己的 `sizing_mode` 取同模式成分组（需把成分选择按模式拆分并让拼接路径按组取成分）。
+  - X0~X4 与 R11、R12 的策略模块与网格尚未实现（注册表当前只有 R1~R10）；`View` 尚无溢价指数与主动买入访问器。
+  - 冻结时的四档选档（复合月化 ≥ 5%、1 年回撤概率、停机次数、实现波动）属于 1 号第九部分，随冻结实现。
+  - 服务器最小规模运行（模式 A、B 各一次）与 `engine.md` 的 M6 复核待代码补齐后执行。
+- 测试：`tests/research` 70 项通过；全量 `pytest -q` = `1 failed, 883 passed, 3 skipped`，
+  唯一失败为本机无 CUDA 的既有 `tests/models/test_dataset.py::test_pinned_cpu_placement`（未修改该测试）。
+- 质量命令：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
+  `mypy src/trade/dashboard` 全部通过。
+
 
 
 

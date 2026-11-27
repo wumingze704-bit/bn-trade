@@ -97,6 +97,8 @@ class XsMomentumLs:
             held=held,
             high_side_long=True,
             stop_for=stop_for,
+            require_long_positive=True,
+            require_short_negative=True,
         )
         return Decision(tuple(targets), EXPOSURE_NEUTRAL)
 

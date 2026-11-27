@@ -164,6 +164,7 @@ def price_from_rows(symbol: str, rows: Iterable[list[Any]], *, label: str) -> Ma
     return MarkBars(
         symbol=symbol,
         open_time=open_time[order],
+        open=np.array([float(row[1]) for row in data], dtype=np.float64)[order],
         high=np.array([float(row[2]) for row in data], dtype=np.float64)[order],
         low=np.array([float(row[3]) for row in data], dtype=np.float64)[order],
         close=np.array([float(row[4]) for row in data], dtype=np.float64)[order],
@@ -239,12 +240,15 @@ def _merge_price(old: MarkBars | None, new: MarkBars) -> MarkBars:
     """按 `open_time` 合并标记价格 / 溢价指数（后到的数据覆盖重复行）。"""
     if old is None:
         return new
-    merged: dict[int, tuple[float, float, float]] = {
-        int(ts): (float(high), float(low), float(close))
-        for ts, high, low, close in zip(old.open_time, old.high, old.low, old.close, strict=True)
+    merged: dict[int, tuple[float, float, float, float]] = {
+        int(ts): (float(open_), float(high), float(low), float(close))
+        for ts, open_, high, low, close in zip(
+            old.open_time, old.open, old.high, old.low, old.close, strict=True
+        )
     }
     for index, ts in enumerate(new.open_time):
         merged[int(ts)] = (
+            float(new.open[index]),
             float(new.high[index]),
             float(new.low[index]),
             float(new.close[index]),
@@ -253,9 +257,10 @@ def _merge_price(old: MarkBars | None, new: MarkBars) -> MarkBars:
     return MarkBars(
         symbol=new.symbol,
         open_time=times,
-        high=np.array([merged[int(ts)][0] for ts in times], dtype=np.float64),
-        low=np.array([merged[int(ts)][1] for ts in times], dtype=np.float64),
-        close=np.array([merged[int(ts)][2] for ts in times], dtype=np.float64),
+        open=np.array([merged[int(ts)][0] for ts in times], dtype=np.float64),
+        high=np.array([merged[int(ts)][1] for ts in times], dtype=np.float64),
+        low=np.array([merged[int(ts)][2] for ts in times], dtype=np.float64),
+        close=np.array([merged[int(ts)][3] for ts in times], dtype=np.float64),
     )
 
 

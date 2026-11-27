@@ -35,6 +35,8 @@ class PlannedPosition:
     sl: float
     notional: float
     price_estimate: float
+    step_size: float = 0.0
+    min_notional: float = 0.0
 
 
 @dataclass
@@ -73,9 +75,31 @@ class _Candidate:
 def half_spread_for(
     view: View, symbol: str, exec_cfg: ExecutionConfig, top_symbols: frozenset[str]
 ) -> float:
-    """按成交额分层的半价差（docs/13 §4）。"""
+    """半价差 = max(0.5 × tickSize ÷ 价格, 按成交额分层的最小值)（docs/13 §4）。"""
     bp = exec_cfg.half_spread_top_bp if symbol in top_symbols else exec_cfg.half_spread_other_bp
-    return bp * _BP
+    floor = 0.0
+    price = view.close(symbol)
+    tick = view.meta(symbol).tick_size
+    if price is not None and price > 0.0 and tick is not None and tick > 0.0:
+        floor = 0.5 * tick / price
+    return max(floor, bp * _BP)
+
+
+def symbol_betas(view: View, symbols: set[str], sizing_cfg: SizingConfig) -> dict[str, float]:
+    """各币对 BTCUSDT 日收益的 β（样本不足 30 天取 1.0，docs/13 §3）。
+
+    Args:
+        view: 决策时刻视角。
+        symbols: 需要的币。
+        sizing_cfg: 风险包络（β 回看窗口）。
+
+    Returns:
+        {symbol: β}。
+
+    Raises:
+        ValueError: 缺少 BTCUSDT 日线（红线 12）。
+    """
+    return _symbol_betas(view, set(symbols), sizing_cfg, PlanStats())
 
 
 def top_volume_symbols(view: View, symbols: frozenset[str], top_n: int) -> frozenset[str]:
@@ -162,9 +186,9 @@ def plan_positions(
             top_symbols=top_symbols,
             stats=stats,
         )
-    # 持仓数不超过 max_positions（策略按强度排序，保留靠前的目标）
-    planned = planned[: portfolio_cfg.max_positions]
-    return _apply_caps(
+    # 持仓数不超过 max_positions：按多空交替顺序截断，每侧至多 ⌊max_positions ÷ 2⌋（docs/13 §3）
+    planned = _truncate_alternating(planned, portfolio_cfg.max_positions)
+    capped, stats = _apply_caps(
         planned,
         decision=decision,
         view=view,
@@ -173,6 +197,52 @@ def plan_positions(
         portfolio_cfg=portfolio_cfg,
         stats=stats,
     )
+    return _drop_unexecutable(capped, decision=decision, stats=stats), stats
+
+
+def _truncate_alternating(
+    planned: list[PlannedPosition], max_positions: int
+) -> list[PlannedPosition]:
+    """按多空交替顺序截断（每侧至多 ⌊max_positions ÷ 2⌋，docs/13 §3 第 6 条）。"""
+    per_side = max(1, max_positions // 2)
+    longs = [position for position in planned if position.side > 0][:per_side]
+    shorts = [position for position in planned if position.side < 0][:per_side]
+    result: list[PlannedPosition] = []
+    for index in range(max(len(longs), len(shorts))):
+        if index < len(longs):
+            result.append(longs[index])
+        if index < len(shorts):
+            result.append(shorts[index])
+    return result
+
+
+def _drop_unexecutable(
+    planned: list[PlannedPosition], *, decision: Decision, stats: PlanStats
+) -> list[PlannedPosition]:
+    """上限缩放后复检最小下单额与取整；中性策略任一侧为空时本次不开新仓（docs/13 §3）。
+
+    上限（单仓、流动性、总名义、净敞口、保证金）只缩不放，缩放后的仓位可能低于最小下单额，
+    必须丢弃并计数，不得静默保留。
+    """
+    kept: list[PlannedPosition] = []
+    for position in planned:
+        if position.step_size <= 0.0 or position.min_notional <= 0.0:
+            raise ValueError(
+                f"{position.symbol} 缺少 stepSize / minNotional，无法复检仓位（红线 12）"
+            )
+        notional = position.notional
+        qty = math.floor(notional / position.price_estimate / position.step_size + 1e-9)
+        filled = qty * position.step_size * position.price_estimate
+        if filled < position.min_notional * 1.1 or filled < 0.9 * notional:
+            stats.dropped += 1
+            stats.dropped_min_notional += 1
+            continue
+        kept.append(position)
+    if decision.exposure == EXPOSURE_NEUTRAL and len({p.side for p in kept}) < 2:
+        # 任一侧没有可成交目标：本次不开新仓，另一侧按目标为空平掉（engine 平掉不在 keep 的仓位）
+        stats.dropped += len(kept)
+        return []
+    return kept
 
 
 def _valid_candidates(
@@ -284,6 +354,8 @@ def _fixed_risk_positions(
                     sl=target.sl,
                     notional=notional,
                     price_estimate=candidate.price,
+                    step_size=candidate.step_size,
+                    min_notional=candidate.min_notional,
                 ),
             )
         )
@@ -362,6 +434,8 @@ def _vol_target_positions(
                 sl=stop_max,
                 notional=notional,
                 price_estimate=candidate.price,
+                step_size=candidate.step_size,
+                min_notional=candidate.min_notional,
             )
         )
     return planned
@@ -469,6 +543,9 @@ def _apply_caps(
     if not planned:
         return planned, stats
     if decision.exposure == EXPOSURE_NEUTRAL:
+        if len({position.side for position in planned}) < 2:
+            # 任一侧没有可成交目标时本次不开新仓（docs/13 §3 第 4 条）
+            return [], stats
         planned = _neutral_balance(
             planned, view=view, equity=equity, sizing_cfg=sizing_cfg, stats=stats
         )
@@ -556,4 +633,6 @@ def _scaled(position: PlannedPosition, scale: float) -> PlannedPosition:
         sl=position.sl,
         notional=position.notional * scale,
         price_estimate=position.price_estimate,
+        step_size=position.step_size,
+        min_notional=position.min_notional,
     )

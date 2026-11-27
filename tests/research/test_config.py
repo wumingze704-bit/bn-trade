@@ -1,6 +1,6 @@
 """研究配置与研究期风险包络的加载校验。
 
-规格：docs/13-研究框架.md §2（停机方式、两种权益口径、三个风险档位）。
+规格：docs/13-研究框架.md §2（停机方式、两种权益口径、四个风险档位、bootstrap 与 shuffle）。
 """
 
 from __future__ import annotations
@@ -36,6 +36,38 @@ def test_研究配置含停机方式两种权益口径与组合上限() -> None:
     assert config.portfolio.net_exposure_cap == 1.5
 
 
+def test_研究配置含bootstrap块长与shuffle种子数() -> None:
+    """research.yaml：bootstrap.block_days = 7、shuffle.seed = 42、shuffle.n_seeds = 20。"""
+    config = load_research_config(RESEARCH_YAML)
+    assert config.bootstrap.block_days == 7
+    assert config.shuffle.seed == 42
+    assert config.shuffle.n_seeds == 20
+
+
+def test_bootstrap块长非正时拒绝加载(tmp_path: Path) -> None:
+    """block_days ≤ 0 时拒绝加载（红线 12：不得静默回退成逐日重抽）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        bootstrap = values["bootstrap"]
+        assert isinstance(bootstrap, dict)
+        bootstrap["block_days"] = 0
+
+    path = _copy_yaml(RESEARCH_YAML, tmp_path / "research.yaml", mutate)
+    with pytest.raises(ConfigError):
+        load_research_config(path)
+
+
+def test_research_yaml缺shuffle节时拒绝加载(tmp_path: Path) -> None:
+    """shuffle 节缺失时拒绝加载（红线 12：缺少配置项不得用默认值继续）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        del values["shuffle"]
+
+    path = _copy_yaml(RESEARCH_YAML, tmp_path / "research.yaml", mutate)
+    with pytest.raises(ConfigError):
+        load_research_config(path)
+
+
 def test_可执行口径不得大于等于信号口径(tmp_path: Path) -> None:
     """equity.exec ≥ equity.signal 时拒绝加载（两种口径的用途不同）。"""
 
@@ -58,12 +90,12 @@ def test_停机方式只接受strict与reset(tmp_path: Path) -> None:
         load_research_config(path)
 
 
-def test_风险包络含三个档位且默认标准档() -> None:
-    """sizing_research.yaml：初始权益 500、默认标准档、三档齐全。"""
+def test_风险包络含四个档位且默认标准档() -> None:
+    """sizing_research.yaml：初始权益 500、默认标准档、四档齐全（docs/00 §2）。"""
     cfg = load_research_sizing(SIZING_YAML)
     assert cfg.initial_equity == 500.0
     assert cfg.tier == "standard"
-    assert set(cfg.risk_tiers) == {"standard", "progressive", "aggressive"}
+    assert set(cfg.risk_tiers) == {"standard", "progressive", "aggressive", "extreme"}
     applied = cfg.with_tier()
     assert applied.risk_per_trade == pytest.approx(0.0075)
     assert applied.max_risk_per_trade == pytest.approx(0.025)
@@ -73,24 +105,40 @@ def test_风险包络含三个档位且默认标准档() -> None:
 
 
 def test_切到激进档放大仓位与停机阈值(tmp_path: Path) -> None:
-    """档位只放大仓位与停机阈值，不改变其他风险包络项。"""
+    """档位只放大仓位与停机阈值，不改变其他风险包络项（docs/00 §2 四档表）。"""
 
     def mutate(values: dict[str, object]) -> None:
         values["tier"] = "aggressive"
 
     path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
     applied = load_research_sizing(path).with_tier()
-    assert applied.risk_per_trade == pytest.approx(0.02)
-    assert applied.max_risk_per_trade == pytest.approx(0.06)
-    assert applied.daily_loss_stop == pytest.approx(0.10)
-    assert applied.daily_loss_halt == pytest.approx(0.15)
-    assert applied.max_drawdown_halt == pytest.approx(0.40)
+    assert applied.risk_per_trade == pytest.approx(0.0225)
+    assert applied.max_risk_per_trade == pytest.approx(0.075)
+    assert applied.daily_loss_stop == pytest.approx(0.12)
+    assert applied.daily_loss_halt == pytest.approx(0.18)
+    assert applied.max_drawdown_halt == pytest.approx(0.50)
     assert applied.position_frac == pytest.approx(0.08)
     assert applied.leverage == 5
 
 
+def test_切到极限档用四档表取值(tmp_path: Path) -> None:
+    """极限档：risk_per_trade 0.03、target_vol 0.80、防灾止损上限 0.10（docs/00 §2）。"""
+
+    def mutate(values: dict[str, object]) -> None:
+        values["tier"] = "extreme"
+
+    path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
+    applied = load_research_sizing(path).with_tier()
+    assert applied.risk_per_trade == pytest.approx(0.03)
+    assert applied.target_vol == pytest.approx(0.80)
+    assert applied.max_risk_per_trade == pytest.approx(0.10)
+    assert applied.daily_loss_stop == pytest.approx(0.15)
+    assert applied.daily_loss_halt == pytest.approx(0.22)
+    assert applied.max_drawdown_halt == pytest.approx(0.60)
+
+
 def test_缺少档位或档位缺失时报错(tmp_path: Path) -> None:
-    """三档必须齐全，缺一个就拒绝加载（红线 12）。"""
+    """四档必须齐全，缺一个就拒绝加载（红线 12）。"""
 
     def mutate(values: dict[str, object]) -> None:
         tiers = values["risk_tiers"]
@@ -147,4 +195,4 @@ def test_切档同时改模式B的目标波动(tmp_path: Path) -> None:
 
     path = _copy_yaml(SIZING_YAML, tmp_path / "sizing_research.yaml", mutate)
     applied = load_research_sizing(path).with_tier()
-    assert applied.target_vol == pytest.approx(0.40)
+    assert applied.target_vol == pytest.approx(0.60)

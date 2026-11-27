@@ -127,6 +127,7 @@ def make_market(
         symbol: MarkBars(
             symbol=symbol,
             open_time=bars.open_time,
+            open=bars.open,
             high=bars.high,
             low=bars.low,
             close=bars.close,
@@ -206,7 +207,8 @@ def make_research_config() -> ResearchConfig:
             "data_root": "data",
         },
         rolling={"train_months": 12, "folds": 5},
-        bootstrap={"iters": 100, "seed": 42},
+        bootstrap={"iters": 100, "seed": 42, "block_days": 7},
+        shuffle={"seed": 42, "n_seeds": 20},
         execution={
             "half_spread_top_n": 20,
             "half_spread_top_bp": 1.0,

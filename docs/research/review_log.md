@@ -472,3 +472,31 @@ ValueError: R5 的成分参数必须逐折给出（1 号第八部分 R5）
 不涉及任何成分参数），其结果与报告不受影响；R5 的第一次启动未产生 `kind=tuning` 记录（崩溃在写入之前），
 `trials_used` 仍为 145。修复后重新启动 R5。
 
+
+## 2026-11-27 UTC 会话级一致性检查与 M2/M4/M5 补做
+
+- 状态判断（第四部分）：`RESET_DONE.md` 第一行“结论：DONE”；ledger 有 `void_history`（153 条）且 `trials_used: 0`、
+  全部轮次 pending、`candidates` 与 `qualified_pool` 为空；服务器无 `trade-runner*` 单元、看板 active、看门狗 inactive；
+  服务器 `~/trade` HEAD 与本地 `db893cb` 一致。
+- 复核发现：`progress_migration.md` 把 M2/M4/M5 标为完成，但第三批决定（0 号调度第六部分）对应的子项在代码中缺失：
+  `bootstrap` 无 `block_days`、无 `shuffle` 节、风险档位只有三档且数值与 `docs/00` §2 不同；`data_hash` 只含 `manifest.json`；
+  研究框架仍用 `trade.backtest.sanity.deflated_sharpe`、逐日 bootstrap、单种子 shuffle、旧达标阈值；
+  引擎没有逐仓强平、反向目标不反手、中性策略一侧为空时单边建仓、`max_positions` 先排多头再截断、
+  `View.listing_age_days` 用加载窗口第一根；R1 未执行打分正负过滤、R3 叠加 1/波动权重、半价差无 tick 下限、
+  168h 调仓落在周四。按第六部分把这些步骤改回“进行中”，先补做子项。
+- 本轮已修复并加测试（缺陷编号沿用 0 号调度第六部分：D14~D17、D20~D22）：逐仓强平、反向反手、中性约束
+  （一侧为空不建仓 / 交替截断 / 上限后重检最小下单额 / 每日 β 检查 / 一侧清空即平另一侧 / 上市天数取快照）、
+  R1 打分符号过滤、R3 权重为 1、半价差 tick 下限、周一锚定、代码闭包与完整数据哈希、DSR 基准均值不为负、
+  7 天移动块 bootstrap、四档可执行性与 g/i/l 款。复现测试：`tests/research/test_metrics.py`（13 项）、
+  `tests/research/test_engine.py::test_止损触发按止损价加滑点成交并进入冷却`、
+  `tests/research/test_credibility.py::test_h6_中性策略的β调整在引擎中生效`、
+  `tests/research/test_records.py::test_代码哈希覆盖共享风控与仓位模块` 等。
+- 因使用者第三批决定改变了规格而同步修改的既有测试（红线 11 的授权范围）：`test_config.py` 的四档数值与
+  `target_vol`；`test_metrics.py` 的达标项名称与阈值；`test_credibility.py::test_d`（中性策略被过滤成单边后按
+  docs/13 §3 第 4 条保持空仓）；`test_engine.py` 的止损用例把跌幅从 20% 改为 10%（20% 已越过 5x 逐仓强平价，
+  按 D22 应先强平）。未删除测试、未放宽其他断言。
+- 仍未完成（记为 M4/M5 的未完成部分）：D19（R5 成分按 R5 组自身的仓位模式选择）、X0~X4 与 R11、R12 的策略
+  与网格、`View` 的溢价指数与主动买入访问器、冻结时的四档选档、服务器最小规模运行与 `engine.md` 复核。
+- 质量命令：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
+  `mypy src/trade/dashboard` 通过；`pytest -q` = `1 failed, 883 passed, 3 skipped`，唯一失败为本机无 CUDA 的既有测试。
+

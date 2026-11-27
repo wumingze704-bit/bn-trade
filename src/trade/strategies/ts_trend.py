@@ -44,17 +44,14 @@ class TsTrend:
         return symbols
 
     def decide(self, view: View, held: Mapping[str, int]) -> Decision:
-        """按趋势方向等风险配置。"""
+        """按趋势方向配置：模式 A 权重固定为 1，模式 B 由组合层按波动率定权重。"""
         hours = self.lookback_days * 24
         returns: dict[str, float] = {}
-        vols: dict[str, float] = {}
         for symbol in self.universe(view):
             value = view.log_return(symbol, hours)
-            vol = view.hourly_vol(symbol, hours)
-            if value is None or vol is None or vol <= 0.0:
+            if value is None:
                 continue
             returns[symbol] = value
-            vols[symbol] = vol
         btc_return = returns.get("BTCUSDT")
         picks: list[tuple[str, int]] = []
         for symbol, value in returns.items():
@@ -68,8 +65,6 @@ class TsTrend:
             ):
                 continue
             picks.append((symbol, 1 if value > 0.0 else -1))
-        inverse = {symbol: 1.0 / vols[symbol] for symbol, _ in picks}
-        mean_inverse = sum(inverse.values()) / len(inverse) if inverse else 0.0
         targets: list[Target] = []
         for symbol, side in picks:
             price = view.close(symbol)
@@ -79,8 +74,8 @@ class TsTrend:
             stop = min(self.stop_mult * atr / price, self.stop_max)
             if stop <= 0.0:
                 continue
-            weight = inverse[symbol] / mean_inverse if mean_inverse > 0.0 else 1.0
-            targets.append(Target(symbol=symbol, side=side, sl=stop, weight=weight))
+            # 不再叠加 1/波动 权重：组合层模式 B 已按波动率定权重，模式 A 权重固定为 1（docs/13 §3）
+            targets.append(Target(symbol=symbol, side=side, sl=stop, weight=1.0))
         return Decision(tuple(targets), EXPOSURE_DIRECTIONAL)
 
 

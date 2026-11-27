@@ -53,13 +53,15 @@ class Bars:
 
 @dataclass(frozen=True)
 class MarkBars:
-    """标记价格 1h 数组（止损触发基准，docs/13 §1、§4）。
+    """标记价格 1h 数组（止损与强平触发基准，docs/13 §1、§4）。
 
-    只保留触发与定基准需要的列（high/low/close），减少内存占用。
+    只保留触发与定基准需要的列（open/high/low/close），减少内存占用。
+    `open` 用于逐仓强平的“开盘已越过强平价”判断。
     """
 
     symbol: str
     open_time: np.ndarray
+    open: np.ndarray
     high: np.ndarray
     low: np.ndarray
     close: np.ndarray
@@ -361,6 +363,7 @@ def load_price_dir(
     return MarkBars(
         symbol=symbol,
         open_time=frame["open_time"].to_numpy(dtype="int64"),
+        open=frame["open"].to_numpy(dtype="float64"),
         high=frame["high"].to_numpy(dtype="float64"),
         low=frame["low"].to_numpy(dtype="float64"),
         close=frame["close"].to_numpy(dtype="float64"),

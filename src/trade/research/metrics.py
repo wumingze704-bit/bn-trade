@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 
 from trade.research.config import BootstrapConfig
+from trade.research.dsr import deflated_sharpe_research as _deflated
 from trade.research.engine import RunResult, Trade
 
 
@@ -55,6 +56,107 @@ def yearly_returns(equity: pd.Series) -> dict[str, float]:
         return {}
     returns = yearly.pct_change().dropna()
     return {str(index.year): float(value) for index, value in returns.items()}
+
+
+def compound_monthly(equity: pd.Series) -> float:
+    """复合月化 = (期末 ÷ 期初)^(1 ÷ 月数) − 1（docs/13 §7）。"""
+    if equity.size < 2 or float(equity.iloc[0]) <= 0.0:
+        return 0.0
+    months = max(1.0, (equity.index[-1] - equity.index[0]).days / 30.4375)
+    growth = float(equity.iloc[-1]) / float(equity.iloc[0])
+    if growth <= 0.0:
+        return -1.0
+    return float(growth ** (1.0 / months) - 1.0)
+
+
+def longest_drawdown_days(equity: pd.Series) -> float:
+    """最长回撤持续天数（日权益在水下连续天数，docs/13 §7）。"""
+    if equity.size < 2:
+        return 0.0
+    peak = equity.cummax()
+    under = equity < peak
+    longest = 0
+    current = 0
+    for flag in under.to_numpy():
+        current = current + 1 if bool(flag) else 0
+        longest = max(longest, current)
+    return float(longest)
+
+
+def worst_week(equity: pd.Series) -> float:
+    """最差单周收益（按 UTC 周重采样，docs/13 §7）。"""
+    if equity.size < 2:
+        return 0.0
+    weekly = equity.resample("1W").last().dropna()
+    if weekly.size < 2:
+        return 0.0
+    returns = weekly.pct_change().dropna()
+    return float(returns.min()) if returns.size else 0.0
+
+
+def block_bootstrap_mean(
+    values: np.ndarray, *, block_days: int, iters: int, seed: int
+) -> dict[str, float]:
+    """日收益均值的移动块 bootstrap 置信区间（docs/13 §7，块长按 UTC 日）。
+
+    块长 `block_days` 天、`iters` 次、`seed`；输出均值的 90% 与 95% 置信区间。
+
+    Args:
+        values: 日收益数组（已按 UTC 日补齐）。
+        block_days: 块长（天），必须 ≥ 1。
+        iters: 重抽次数。
+        seed: 随机种子。
+
+    Returns:
+        {`mean`, `lower_90`, `upper_90`, `lower_95`, `upper_95`, `n_obs`}。
+
+    Raises:
+        ValueError: 块长非正（红线 12：不得静默退回逐日独立重抽）。
+    """
+    array = np.asarray(values, dtype="float64")
+    if block_days <= 0:
+        raise ValueError(f"bootstrap 块长必须为正：{block_days}（docs/13 §7）")
+    if array.size == 0:
+        return {
+            "mean": 0.0,
+            "lower_90": 0.0,
+            "upper_90": 0.0,
+            "lower_95": 0.0,
+            "upper_95": 0.0,
+            "n_obs": 0.0,
+        }
+    n_obs = int(array.size)
+    block = min(int(block_days), n_obs)
+    n_blocks = int(np.ceil(n_obs / block))
+    rng = np.random.default_rng(seed)
+    means = np.empty(iters, dtype="float64")
+    for index in range(iters):
+        starts = rng.integers(0, n_obs - block + 1, size=n_blocks)
+        sample = np.concatenate([array[start : start + block] for start in starts])[:n_obs]
+        means[index] = float(sample.mean())
+    return {
+        "mean": float(array.mean()),
+        "lower_90": float(np.quantile(means, 0.05)),
+        "upper_90": float(np.quantile(means, 0.95)),
+        "lower_95": float(np.quantile(means, 0.025)),
+        "upper_95": float(np.quantile(means, 0.975)),
+        "n_obs": float(n_obs),
+    }
+
+
+def deflated_sharpe_research(
+    sharpe: float,
+    trial_sharpes: list[float],
+    *,
+    skew: float,
+    kurtosis: float,
+    n_obs: int,
+) -> float:
+    """Deflated Sharpe（研究框架口径，docs/13 §7、1 号 B 第 15 条 l 款）。
+
+    实现在 `trade.research.dsr`，此处保留同名入口供指标层调用。
+    """
+    return _deflated(sharpe, trial_sharpes, skew=skew, kurtosis=kurtosis, n_obs=n_obs)
 
 
 def bootstrap_trade_bp(
@@ -177,9 +279,12 @@ def summarize(
         "realized_beta": beta,
         "alpha_sharpe": alpha_sharpe(returns, benchmark),
         "max_drawdown": max_drawdown(equity),
+        "longest_drawdown_days": longest_drawdown_days(equity),
+        "compound_monthly": compound_monthly(equity),
         "monthly_returns": {str(index.date()): float(value) for index, value in monthly.items()},
         "loss_months": int((monthly < 0.0).sum()),
         "worst_month": float(monthly.min()) if monthly.size else 0.0,
+        "worst_week": worst_week(equity),
         "yearly_returns": yearly_returns(equity),
         "trades": len(result.trades),
         "turnover": result.turnover / float(result.trades[0].entry_equity)
@@ -206,7 +311,14 @@ def summarize(
         if exposures.size
         else 0.0,
         "exit_reasons": reasons,
-        "bootstrap": bootstrap_trade_bp(result.trades, iters=bootstrap.iters, seed=bootstrap.seed),
+        "spread_gross": result.long_gross + result.short_gross,
+        "bootstrap": block_bootstrap_mean(
+            returns.to_numpy(),
+            block_days=bootstrap.block_days,
+            iters=bootstrap.iters,
+            seed=bootstrap.seed,
+        ),
+        "trade_bp": bootstrap_trade_bp(result.trades, iters=bootstrap.iters, seed=bootstrap.seed),
         "deflated_sharpe": result.deflated(trial_sharpes),
         "risk_events": len(result.risk_events),
     }

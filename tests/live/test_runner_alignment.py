@@ -124,6 +124,7 @@ def test_影子盘止损只用已收盘K线(tmp_path: Path) -> None:
     mark = MarkBars(
         symbol="AAAUSDT",
         open_time=open_time,
+        open=np.array([100.0, 100.0, 100.0, 95.0]),
         high=np.array([101.0, 101.0, 101.0, 101.0]),
         low=np.array([100.0, 100.0, 100.0, 90.0]),
         close=np.array([100.5, 100.5, 100.5, 95.0]),

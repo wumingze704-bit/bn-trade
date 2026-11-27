@@ -113,11 +113,17 @@ class View:
         return series.mean_between(self.now_ms - hours * HOUR_MS, self.now_ms)
 
     def listing_age_days(self, symbol: str) -> float | None:
-        """该币在已收盘数据中的上市天数（首根 1h 至今）。"""
-        bars = self.market.bars(symbol)
-        if bars.open_time.size == 0:
-            return None
-        first = int(bars.open_time[0])
+        """该币的上市天数（第一根 1d 的 `open_time`，含已下架合约，docs/13 §1）。
+
+        不得用本次加载窗口的第一根 K 线（会把研究期开头所有币都当成新币）。
+        选币快照里有 `first_listing_ms` 时优先使用，否则退回该币 1d 数据的第一根。
+        """
+        first = self.market.universe.first_listing_ms(symbol)
+        if first is None:
+            bars = self.market.daily.get(symbol)
+            if bars is None or bars.open_time.size == 0:
+                return None
+            first = int(bars.open_time[0])
         return (self.now_ms - first) / DAY_MS
 
     def atr_hours(self, symbol: str, period: int, bucket_hours: int) -> float | None:

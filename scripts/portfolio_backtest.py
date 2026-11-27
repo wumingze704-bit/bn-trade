@@ -272,6 +272,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = _ROOT / config.paths.artifacts / "reports"
     log_path = _ROOT / config.paths.experiments_log
     scenarios = () if args.no_scenarios else tuple(config.scenarios)
+    # 可执行性检查：四个档位各跑一次 500 USDT 拼接路径（docs/13 §7 第 9 条）
+    exec_tiers: dict[str, tuple[SizingConfig, RiskLimits]] = {}
+    for tier_name in ("standard", "progressive", "aggressive", "extreme"):
+        tier_cfg = research_sizing.with_tier(tier_name)
+        exec_tiers[tier_name] = (
+            tier_cfg.model_copy(update={"initial_equity": config.equity.exec}),
+            _risk_limits(config, tier_cfg),
+        )
 
     report = evaluate_grid(
         config=config,
@@ -291,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         scenarios=scenarios,
         with_flow=args.with_flow,
         with_premium=args.with_premium,
+        exec_tiers=exec_tiers,
     )
     print(f"轮次 {round_id}：{len(grid['params'])} 组参数，试验已登记（kind=tuning）")
     print("ledger 未修改：按 EXPERIMENTS.log 的 kind=tuning 条数在本地更新 trials_used")
@@ -300,13 +309,14 @@ def main(argv: list[str] | None = None) -> int:
     metrics = report.get("selected_metrics") or {}
     if metrics:
         print(f"拼接夏普（信号口径）：{metrics['annualized_sharpe']:.3f}")
-        exec_metrics = report.get("exec_metrics") or {}
-        if exec_metrics:
+        tiers = report.get("exec_tiers") or {}
+        for name, stats in tiers.items():
             print(
-                f"可执行口径：夏普 {exec_metrics['annualized_sharpe']:.3f}，"
-                f"丢弃 {exec_metrics['dropped_min_notional']:.0f}/"
-                f"{exec_metrics['attempted']:.0f}"
+                f"可执行口径 [{name}]：夏普 {stats['annualized_sharpe']:.3f}，"
+                f"复合月化 {stats['compound_monthly']:.2%}，"
+                f"丢弃 {stats['dropped_min_notional']:.0f}/{stats['attempted']:.0f}"
             )
+        print(f"满足可执行性检查的档位：{report.get('qualified_exec_tiers')}")
     else:
         print(f"无法选参：{report.get('failure', '未知原因')}")
     return 0

@@ -30,6 +30,7 @@ from trade.research.interface import (
     Target,
 )
 from trade.research.pipeline import build_segments, params_key, run_param, run_selected_path
+from trade.research.portfolio import symbol_betas
 from trade.research.rolling import Fold, select_for_fold
 from trade.research.view import View
 
@@ -186,7 +187,12 @@ def _market_with(returns: Mapping[str, np.ndarray], *, n: int = 960) -> MarketDa
         bars = _bars_with_returns(market.bars(symbol), series)
         market.hourly[symbol] = bars
         market.mark[symbol] = MarkBars(
-            symbol=symbol, open_time=bars.open_time, high=bars.high, low=bars.low, close=bars.close
+            symbol=symbol,
+            open_time=bars.open_time,
+            open=bars.open,
+            high=bars.high,
+            low=bars.low,
+            close=bars.close,
         )
     return market
 
@@ -351,17 +357,15 @@ def test_d_成本单调性与情景子集() -> None:
         end_ms=end_ms,
         options=ScenarioOptions(name="short_only", short_only=True),
     )
-    # 1 号 d 款的“交易集合是 base 的子集”在实现上以方向过滤保证：同一决策时刻只执行允许的方向；
-    # 路径依赖的仓位大小与持仓决定使逐笔时间戳无法与 base 严格相同，因此这里核对方向与笔数上界。
+    # 1 号 d 款的“交易集合是 base 的子集”在实现上以方向过滤保证：同一决策时刻只执行允许的方向。
+    # 中性策略被过滤成单边后，按 docs/13 §3 第 4 条“任一侧没有可成交目标时本次不开新仓”，
+    # 因此 long_only / short_only 两情景都保持空仓。
     assert all(trade.side > 0 for trade in long_only.trades)
     assert all(trade.side < 0 for trade in short_only.trades)
     assert len(long_only.trades) <= len(base.trades)
     assert len(short_only.trades) <= len(base.trades)
-    assert (
-        sum(trade.net_pnl for trade in long_only.trades)
-        + sum(trade.net_pnl for trade in short_only.trades)
-        != 0.0
-    )
+    assert not long_only.trades
+    assert not short_only.trades
     flat = _engine_run(market, _NoSignal(), START_MS, end_ms)
     np.testing.assert_allclose(flat.equity, 10_000.0, rtol=0.0, atol=1e-9)
     assert not flat.trades
@@ -436,7 +440,12 @@ def test_f_独立参考实现逐值一致() -> None:
     flat.high[:] = 100.0
     flat.low[:] = 100.0
     market.mark["AAAUSDT"] = MarkBars(
-        symbol="AAAUSDT", open_time=flat.open_time, high=flat.high, low=flat.low, close=flat.close
+        symbol="AAAUSDT",
+        open_time=flat.open_time,
+        open=flat.open,
+        high=flat.high,
+        low=flat.low,
+        close=flat.close,
     )
     market.rules["AAAUSDT"] = replace(market.rules["AAAUSDT"], step_size=1.0, min_notional=5.0)
     result = _engine_run(market, _AlwaysLong("AAAUSDT", sl=0.03), START_MS, START_MS + n * HOUR_MS)
@@ -527,7 +536,12 @@ def _flat_market(
     bars.low[:] = pattern * (1.0 - noise)
     bars.quote_volume[:] = volume
     market.mark["AAAUSDT"] = MarkBars(
-        symbol="AAAUSDT", open_time=bars.open_time, high=bars.high, low=bars.low, close=bars.close
+        symbol="AAAUSDT",
+        open_time=bars.open_time,
+        open=bars.open,
+        high=bars.high,
+        low=bars.low,
+        close=bars.close,
     )
     return market
 
@@ -672,7 +686,11 @@ def test_h5_引擎按段使用模式B() -> None:
 
 
 def test_h6_中性策略的β调整在引擎中生效() -> None:
-    """h 款：β 调整后多头总名义 ÷ 空头总名义 ∈ [0.5, 2.0]，组合实现 β 绝对值 ≤ 0.10。"""
+    """h 款：β 调整后多头总名义 ÷ 空头总名义 ∈ [0.5, 2.0]，组合实现 β 绝对值 ≤ 0.10。
+
+    窗口在 00:00 检查后立即结束，避免检查之间的漂移；这批测试币的日线样本不足 30 天，
+    β 按 1.0 处理（docs/13 §3），因此组合 β ≈ (多头总名义 − 空头总名义) ÷ 权益。
+    """
     btc = _daily_series(7, 0.03)
     betas = {"AAAUSDT": 0.5, "BBBUSDT": 1.5, "CCCUSDT": 1.5, "DDDUSDT": 1.5}
     series = {symbol: beta * btc for symbol, beta in betas.items()}
@@ -688,12 +706,13 @@ def test_h6_中性策略的β调整在引擎中生效() -> None:
         ),
         EXPOSURE_NEUTRAL,
     )
-    result = _engine_run(market, strategy, START_MS + 24 * HOUR_MS, START_MS + 72 * HOUR_MS)
-    assert len(result.trades) == 4
-    long_total = sum(trade.notional for trade in result.trades if trade.side > 0)
-    short_total = sum(trade.notional for trade in result.trades if trade.side < 0)
+    result = _engine_run(market, strategy, START_MS + 24 * HOUR_MS, START_MS + 49 * HOUR_MS)
+    closing = [trade for trade in result.trades if trade.reason == "end"]
+    assert len(closing) == 4
+    long_total = sum(trade.notional for trade in closing if trade.side > 0)
+    short_total = sum(trade.notional for trade in closing if trade.side < 0)
     assert 0.5 <= long_total / short_total <= 2.0
-    beta_exposure = sum(
-        trade.side * trade.notional * betas[trade.symbol] for trade in result.trades
-    )
-    assert abs(beta_exposure) / 10_000.0 <= 0.10
+    # 用框架自身的 β 口径（同样不足 30 天时取 1.0）核对组合事前 β
+    used = symbol_betas(View(market, START_MS + 48 * HOUR_MS), set(betas), _sizing(10_000.0))
+    exposure = sum(trade.side * trade.notional * used[trade.symbol] for trade in closing)
+    assert abs(exposure) / 10_000.0 <= 0.10

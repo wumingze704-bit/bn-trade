@@ -33,18 +33,37 @@ from trade.research.pipeline import (
 
 
 def _tree(root: Path) -> Path:
-    """搭出 compute_hashes 需要的最小仓库结构，返回配置。"""
+    """搭出 compute_hashes 与 evaluate_grid 需要的最小仓库结构，返回网格路径。"""
     (root / "src" / "trade" / "research").mkdir(parents=True)
     (root / "src" / "trade" / "strategies").mkdir(parents=True)
+    (root / "src" / "trade" / "common").mkdir(parents=True)
     (root / "scripts").mkdir()
     (root / "configs").mkdir()
     (root / "data" / "history").mkdir(parents=True)
-    (root / "src" / "trade" / "research" / "dummy.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "data" / "universe_hist").mkdir(parents=True)
+    (root / "src" / "trade" / "research" / "dummy.py").write_text(
+        "from trade.common.risk_rules import RiskLimits\n\nx = 1\n", encoding="utf-8"
+    )
     (root / "src" / "trade" / "strategies" / "dummy.py").write_text("y = 2\n", encoding="utf-8")
+    (root / "src" / "trade" / "common" / "risk_rules.py").write_text(
+        "class RiskLimits:\n    pass\n", encoding="utf-8"
+    )
     (root / "scripts" / "portfolio_backtest.py").write_text("z = 3\n", encoding="utf-8")
-    (root / "data" / "history" / "manifest.json").write_text('{"files": []}\n', encoding="utf-8")
+    for manifest in (
+        "manifest.json",
+        "manifest_flow.json",
+        "manifest_premium.json",
+        "manifest_mark.json",
+    ):
+        (root / "data" / "history" / manifest).write_text('{"files": []}\n', encoding="utf-8")
+    (root / "data" / "universe_hist" / "2024-01.json").write_text("{}\n", encoding="utf-8")
+    (root / "data" / "universe_hist" / "rules_source.json").write_text("{}\n", encoding="utf-8")
     for name in ("research.yaml", "sizing_research.yaml", "base.yaml"):
         (root / "configs" / name).write_text("placeholder: 1\n", encoding="utf-8")
+    for family in ("xs_reversal_ls", "xs_momentum_ls", "funding_carry_ls", "ensemble"):
+        (root / "src" / "trade" / "strategies" / f"{family}.py").write_text(
+            "w = 4\n", encoding="utf-8"
+        )
     grid = root / "configs" / "round_test.yaml"
     grid.write_text("family: xs_reversal_ls\nparams: []\n", encoding="utf-8")
     return grid
@@ -94,7 +113,7 @@ def test_代码哈希覆盖共享风控与仓位模块(tmp_path, monkeypatch) ->
     """
     grid = _tree(tmp_path)
     common = tmp_path / "src" / "trade" / "common"
-    common.mkdir(parents=True)
+    common.mkdir(parents=True, exist_ok=True)
     (common / "risk_rules.py").write_text("HALT = 'reset'\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     config = _config(tmp_path)
@@ -132,6 +151,10 @@ def test_网格评估写出记录与逐组文件并可断点续跑(tmp_path, mon
     grid = {"family": _FAMILY, "exposure": "neutral", "params": _PARAMS}
     out_dir = tmp_path / "artifacts" / "reports"
     log_path = tmp_path / "artifacts" / "reports" / "EXPERIMENTS.log"
+    tiers = {
+        name: (sizing.model_copy(update={"initial_equity": 500.0}), risk)
+        for name in ("standard", "progressive", "aggressive", "extreme")
+    }
     kwargs = {
         "config": config,
         "sizing": sizing,
@@ -147,7 +170,8 @@ def test_网格评估写出记录与逐组文件并可断点续跑(tmp_path, mon
         "out_dir": out_dir,
         "log_path": log_path,
         "grid_path": grid_path,
-        "scenarios": ("cost2x",),
+        "scenarios": ("cost2x", "shuffle"),
+        "exec_tiers": tiers,
     }
     report = pipeline.evaluate_grid(**kwargs)
     assert report["hashes"]["code_hash"]
@@ -159,11 +183,17 @@ def test_网格评估写出记录与逐组文件并可断点续跑(tmp_path, mon
     tuning = [entry for entry in entries if entry["kind"] == "tuning"]
     execs = [entry for entry in entries if entry["kind"] == "exec"]
     assert len(tuning) == len(_PARAMS)
-    assert len(execs) == 1
+    assert len(execs) == 4
+    assert {entry["tier"] for entry in execs} == {
+        "standard",
+        "progressive",
+        "aggressive",
+        "extreme",
+    }
     for entry in tuning + execs:
         assert entry["code_hash"] and entry["data_hash"] and entry["config_hash"]
     assert tuning[0]["equity_basis"] == 10_000.0
-    assert execs[0]["equity_basis"] == 500.0
+    assert all(entry["equity_basis"] == 500.0 for entry in execs)
     # 断点续跑：哈希一致时复用逐组结果，不再追加 tuning 记录
     pipeline.evaluate_grid(**kwargs)
     again = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]

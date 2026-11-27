@@ -101,14 +101,20 @@ def test_决策时刻所在K线开盘成交且含成本() -> None:
 def test_止损触发按止损价加滑点成交并进入冷却() -> None:
     market = make_market(n=160)
     bars = make_bars("AAAUSDT", n=160, drift=0.0, amplitude=0.002)
-    bars.close[100:] = 80.0
-    bars.open[100:] = 80.0
-    bars.high[100:] = 80.2
-    bars.low[100:] = 79.8
+    # 跌到 90：低于 3% 止损价（97）但高于逐仓强平价（81），止损按标记价格触发
+    bars.close[100:] = 90.0
+    bars.open[100:] = 90.0
+    bars.high[100:] = 90.2
+    bars.low[100:] = 89.8
     market.hourly["AAAUSDT"] = bars
     # D6：止损按标记价格触发（与实盘 working_type=MARK_PRICE 一致），因此标记价格同步替换
     market.mark["AAAUSDT"] = MarkBars(
-        symbol="AAAUSDT", open_time=bars.open_time, high=bars.high, low=bars.low, close=bars.close
+        symbol="AAAUSDT",
+        open_time=bars.open_time,
+        open=bars.open,
+        high=bars.high,
+        low=bars.low,
+        close=bars.close,
     )
     engine = _engine(market, AlwaysLong(sl=0.03))
     start = START_MS + 72 * HOUR_MS

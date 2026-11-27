@@ -21,6 +21,10 @@ rolling:
 bootstrap:
   iters: 10000
   seed: 42
+  block_days: 7 # 移动块长度（UTC 日）；所有 bootstrap 共用（docs/13 §7）
+shuffle:
+  seed: 42 # 达标判定用 seed、seed + 1、…、seed + n_seeds − 1（1 号第七部分第 5 条 g 款）
+  n_seeds: 20
 
 execution:
   half_spread_top_n: 20 # 当月 30 天成交额前 20 名

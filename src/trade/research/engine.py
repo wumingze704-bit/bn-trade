@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 
-from trade.backtest.sanity import deflated_sharpe
 from trade.common.risk_rules import (
     RiskLimits,
     RiskState,
@@ -30,7 +29,9 @@ from trade.common.risk_rules import (
 from trade.common.sizing import SizingConfig
 from trade.research.config import ExecutionConfig, PortfolioConfig
 from trade.research.data import DAY_MS, HOUR_MS, MarketData
+from trade.research.dsr import deflated_sharpe_research
 from trade.research.interface import (
+    EXPOSURE_NEUTRAL,
     Decision,
     Strategy,
     Target,
@@ -40,6 +41,7 @@ from trade.research.portfolio import (
     PlannedPosition,
     half_spread_for,
     plan_positions,
+    symbol_betas,
     top_volume_symbols,
 )
 from trade.research.view import View
@@ -98,6 +100,10 @@ class Position:
     entry_fee: float
     entry_equity: float
     funding: float = 0.0
+    # 逐仓强平（docs/13 §4）：入场标记价、强平价与逐仓保证金
+    entry_mark: float = 0.0
+    liquidation_price: float = 0.0
+    margin: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -132,6 +138,8 @@ class RunResult:
     funding_estimated: int = 0
     funding_missing: int = 0
     mark_fallback: int = 0
+    liquidations: int = 0
+    liquidation_loss: float = 0.0
     segments: list[str] = field(default_factory=list)
     params: dict[str, float] = field(default_factory=dict)
     # BTCUSDT 日线（β 与 alpha 夏普的基准，docs/13 §7）
@@ -157,13 +165,13 @@ class RunResult:
         return float(returns.mean() / std) if std > 0.0 else 0.0
 
     def deflated(self, trial_sharpes: list[float]) -> float:
-        """Deflated Sharpe（docs/13 §7，日频非年化夏普同单位）。"""
+        """Deflated Sharpe（docs/13 §7，日频非年化夏普同单位，SR0 的均值项不为负）。"""
         returns = self.daily_returns()
         if returns.size < 3 or not trial_sharpes:
             return 0.0
-        return deflated_sharpe(
-            sharpe=self.daily_sharpe(),
-            trial_sharpes=trial_sharpes,
+        return deflated_sharpe_research(
+            self.daily_sharpe(),
+            trial_sharpes,
             skew=float(returns.skew()),
             kurtosis=float(returns.kurt()),
             n_obs=int(returns.size),
@@ -252,11 +260,14 @@ class Engine:
             equity_known = self._step_risk(ts, equity_known)
             # 4) 调仓：决策后在该 K 线（open_time = t）开盘成交
             self._maybe_decide_and_execute(ts, equity_known)
-            # 5) 止损（标记价格触发）
+            # 5) 中性策略每个 UTC 日 00:00 检查事前 β 与多空名义比（只缩不放）
+            if ts % DAY_MS == 0:
+                self._adjust_neutral_positions(ts)
+            # 6) 逐仓强平与止损（标记价格触发）
             self._check_stops(ts)
-            # 6) 下架 / 断档
+            # 7) 下架 / 断档
             self._handle_gaps(ts)
-            # 7) 收盘盯市并记录权益
+            # 8) 收盘盯市并记录权益
             self.equity_ts.append(ts)
             self.equity.append(self._mark_at(ts))
             self.last_funding_ts = ts
@@ -284,6 +295,8 @@ class Engine:
             funding_estimated=self.funding_estimated,
             funding_missing=self.funding_missing,
             mark_fallback=self.mark_fallback,
+            liquidations=self.liquidations,
+            liquidation_loss=self.liquidation_loss,
             segments=labels,
             benchmark_ts=benchmark_ts,
             benchmark_close=benchmark_close,
@@ -320,6 +333,8 @@ class Engine:
         self.funding_estimated = 0
         self.funding_missing = 0
         self.mark_fallback = 0
+        self.liquidations = 0
+        self.liquidation_loss = 0.0
         self.cost_total = 0.0
         self.funding_total = 0.0
         self.long_gross = 0.0
@@ -392,6 +407,10 @@ class Engine:
         self.cash -= fee
         self.cost_total += fee
         self.turnover += notional
+        # 逐仓强平价（docs/13 §4）：多头 × (1 − 1/杠杆 + 维持保证金率)，空头 × (1 + 1/杠杆 − r)
+        leverage = float(self.sizing_cfg.leverage)
+        buffer = 1.0 / leverage - self.sizing_cfg.maint_margin_rate
+        liquidation_price = base_price * (1.0 - planned.side * buffer)
         self.positions[planned.symbol] = Position(
             symbol=planned.symbol,
             side=planned.side,
@@ -403,6 +422,9 @@ class Engine:
             entry_ts=ts,
             entry_fee=fee,
             entry_equity=equity,
+            entry_mark=base_price,
+            liquidation_price=liquidation_price,
+            margin=notional / leverage,
         )
 
     def _half_spread(self, symbol: str, ts: int) -> float:
@@ -548,10 +570,12 @@ class Engine:
         return float(np.median(np.asarray(values, dtype="float64")))
 
     def _check_stops(self, ts: int) -> None:
-        """用当前 1h 标记价格的 low/high 判断止损，按成交价 K 线成交（docs/13 §4）。
+        """逐仓强平与止损（docs/13 §4）；强平判断先于止损成交计算。
 
-        成交价 = 止损价（开盘已越过止损价时用开盘价）加 `stop_slip_mult` 倍滑点再加半价差；
-        该币该小时缺标记价格时退回成交价 K 线并计数。
+        强平：本根 1h 的标记价格开盘已越过强平价，或止损成交价比强平价更差时，
+        该仓损失全部逐仓保证金，不再计止损成交。
+        止损：用 `mark_1h` 的 low/high 判断触发，成交价 = 止损价（开盘已越过时取开盘价）
+        加 `stop_slip_mult` 倍滑点再加半价差；缺标记价格时退回成交价 K 线并计数。
         """
         for position in list(self.positions.values()):
             bars = self.market.bars(position.symbol)
@@ -563,20 +587,186 @@ class Engine:
             if mark is not None and mark_index is not None:
                 low = float(mark.low[mark_index])
                 high = float(mark.high[mark_index])
+                mark_open = float(mark.open[mark_index])
             else:
                 low = float(bars.low[index])
                 high = float(bars.high[index])
+                mark_open = float(bars.open[index])
                 self.mark_fallback += 1
+            if (position.side > 0 and mark_open <= position.liquidation_price) or (
+                position.side < 0 and mark_open >= position.liquidation_price
+            ):
+                self._liquidate(position, ts)
+                continue
             open_price = float(bars.open[index])
             spread = self._half_spread(position.symbol, ts)
             slip = self._slip(ts, position.symbol, position.notional)
             cost = spread + slip * self.exec_cfg.stop_slip_mult
+            fill: float | None = None
             if position.side > 0 and low <= position.stop_price:
-                fill = min(open_price, position.stop_price)
-                self._close(position, ts, "stop", explicit_price=fill * (1.0 - cost))
+                fill = min(open_price, position.stop_price) * (1.0 - cost)
             elif position.side < 0 and high >= position.stop_price:
-                fill = max(open_price, position.stop_price)
-                self._close(position, ts, "stop", explicit_price=fill * (1.0 + cost))
+                fill = max(open_price, position.stop_price) * (1.0 + cost)
+            if fill is None:
+                continue
+            worse_than_liquidation = (position.side > 0 and fill <= position.liquidation_price) or (
+                position.side < 0 and fill >= position.liquidation_price
+            )
+            if worse_than_liquidation:
+                self._liquidate(position, ts)
+                continue
+            self._close(position, ts, "stop", explicit_price=fill)
+            self._flatten_neutral_other_side(ts)
+
+    def _flatten_neutral_other_side(self, ts: int) -> None:
+        """中性策略一侧被止损 / 强平清空时同一时刻平掉另一侧（docs/13 §3 第 4 条）。
+
+        另一侧为空后多空名义比必然越界（0 或 ∞），无法通过缩小满足区间，故全部平掉。
+        """
+        if self.strategy is None or self.strategy.exposure != EXPOSURE_NEUTRAL:
+            return
+        sides = {position.side for position in self.positions.values()}
+        if len(sides) > 1:
+            return
+        for position in list(self.positions.values()):
+            self._close(position, ts, "neutral_flatten", use_open=True)
+
+    def _liquidate(self, position: Position, ts: int) -> None:
+        """逐仓强平：损失全部逐仓保证金，不计止损成交（docs/13 §4）。"""
+        loss = position.margin
+        gross = -loss
+        net = gross - position.entry_fee - position.funding
+        self.cash += gross
+        self.trades.append(
+            Trade(
+                symbol=position.symbol,
+                side=position.side,
+                entry_ts=position.entry_ts,
+                exit_ts=ts,
+                notional=position.notional,
+                fees=position.entry_fee,
+                funding=position.funding,
+                gross_pnl=gross,
+                net_pnl=net,
+                reason="liquidation",
+                entry_equity=position.entry_equity,
+                entry_price=position.entry_price,
+            )
+        )
+        if position.side > 0:
+            self.long_gross += gross
+        else:
+            self.short_gross += gross
+        self.liquidations += 1
+        self.liquidation_loss += loss
+        register_exit(self.risk, ts_ms=ts, net_pnl=net, hit_stop_type=True)
+        register_pause_if_needed(self.risk, ts_ms=ts, limits=self.risk_limits)
+        del self.positions[position.symbol]
+        self._flatten_neutral_other_side(ts)
+
+    def _adjust_neutral_positions(self, ts: int) -> None:
+        """中性策略每个 UTC 日检查一次事前 β 与多空名义比，只缩不放（docs/13 §3 第 4 条）。
+
+        不换币、不加币：只按比例减少超出范围一侧的现有仓位名义。
+        """
+        if self.strategy is None or self.strategy.exposure != EXPOSURE_NEUTRAL:
+            return
+        if not self.positions:
+            return
+        equity = self._mark_at(ts - HOUR_MS)
+        if equity <= 0.0:
+            return
+        betas = symbol_betas(View(self.market, ts - HOUR_MS), set(self.positions), self.sizing_cfg)
+        long_beta = sum(
+            position.notional * betas[position.symbol]
+            for position in self.positions.values()
+            if position.side > 0
+        )
+        short_beta = sum(
+            position.notional * betas[position.symbol]
+            for position in self.positions.values()
+            if position.side < 0
+        )
+        exposure = (long_beta - short_beta) / equity
+        if abs(exposure) > self.sizing_cfg.beta_abs_max:
+            reduce_side = 1 if exposure > 0.0 else -1
+            self._shrink_side(ts, reduce_side, self.sizing_cfg.beta_abs_max / abs(exposure))
+        ratio_min, ratio_max = self.sizing_cfg.ls_ratio_range
+        long_total = sum(p.notional for p in self.positions.values() if p.side > 0)
+        short_total = sum(p.notional for p in self.positions.values() if p.side < 0)
+        if long_total <= 0.0 or short_total <= 0.0:
+            self._flatten_neutral_other_side(ts)
+            return
+        ratio = long_total / short_total
+        if ratio > ratio_max:
+            self._shrink_side(ts, 1, ratio_max / ratio)
+        elif ratio < ratio_min:
+            self._shrink_side(ts, -1, ratio / ratio_min)
+
+    def _shrink_side(self, ts: int, side: int, scale: float) -> None:
+        """按比例缩小某一侧的现有仓位名义（只缩不放）。"""
+        for position in list(self.positions.values()):
+            if position.side != side:
+                continue
+            self._reduce(position, ts, position.notional * scale)
+
+    def _reduce(self, position: Position, ts: int, target_notional: float) -> None:
+        """在 `open_time = ts` 的开盘价部分平仓，把名义降到目标值（docs/13 §3 第 4 条）。
+
+        Args:
+            position: 现有仓位。
+            ts: 成交 K 线的 `open_time`。
+            target_notional: 目标名义（USDT）；不小于当前名义时不操作。
+
+        Raises:
+            ValueError: 取不到该 K 线或 stepSize（红线 12：不得静默保留原仓位）。
+        """
+        if target_notional >= position.notional or position.qty <= 0.0:
+            return
+        bars = self.market.bars(position.symbol)
+        index = bars.bar_index(ts)
+        if index is None:
+            raise ValueError(f"{ts} 调整 {position.symbol} 仓位缺少该 K 线（红线 12）")
+        rule = self.market.rule(position.symbol)
+        if rule.step_size is None or rule.step_size <= 0.0:
+            raise ValueError(f"{ts} 调整 {position.symbol} 仓位缺少 stepSize（红线 12）")
+        base = float(bars.open[index])
+        spread = self._half_spread(position.symbol, ts)
+        slip = self._slip(ts, position.symbol, position.notional)
+        price = base * (1.0 - position.side * (spread + slip))
+        ratio = max(0.0, 1.0 - target_notional / position.notional)
+        qty = math.floor(position.qty * ratio / rule.step_size + 1e-9) * rule.step_size
+        if qty <= 0.0 or qty >= position.qty:
+            return
+        gross = position.side * qty * (price - position.entry_price)
+        fee = qty * price * self.fee_taker * self.options.cost_mult
+        self.cash += gross - fee
+        self.cost_total += fee
+        self.turnover += qty * price
+        position.qty -= qty
+        position.notional = position.qty * position.entry_price
+        if position.side > 0:
+            self.long_gross += gross
+        else:
+            self.short_gross += gross
+        self.trades.append(
+            Trade(
+                symbol=position.symbol,
+                side=position.side,
+                entry_ts=position.entry_ts,
+                exit_ts=ts,
+                notional=qty * position.entry_price,
+                fees=fee,
+                funding=0.0,
+                gross_pnl=gross,
+                net_pnl=gross - fee,
+                reason="neutral_adjust",
+                entry_equity=position.entry_equity,
+                entry_price=position.entry_price,
+            )
+        )
+        if position.qty <= 0.0:
+            del self.positions[position.symbol]
 
     def _handle_gaps(self, ts: int) -> None:
         """下架或断档超过 24 小时：按最后收盘价加 `stop_slip_mult` 倍滑点与 1% 惩罚强平。"""
@@ -637,6 +827,15 @@ class Engine:
             targets = [t for t in targets if t.side < 0]
         if self.options.shuffle:
             targets = self._shuffle_targets(targets, view)
+        # 反向：目标方向与持仓相反时，同一根 K 线开盘先平旧仓再开新仓，两笔成本都计入（docs/13 §4）
+        desired = {target.symbol: target.side for target in targets}
+        for symbol in [
+            symbol
+            for symbol, position in self.positions.items()
+            if desired.get(symbol) not in (None, position.side)
+        ]:
+            self._close(self.positions[symbol], ts, "rebalance", use_open=True)
+        held = {symbol: position.side for symbol, position in self.positions.items()}
         blocked = {symbol for symbol, until in self.cooldown.items() if until > ts}
         used_margin = sum(p.notional for p in self.positions.values()) / float(
             self.sizing_cfg.leverage

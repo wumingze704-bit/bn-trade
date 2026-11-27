@@ -41,12 +41,23 @@ class RollingConfig(BaseModel):
 
 
 class BootstrapConfig(BaseModel):
-    """日分块 bootstrap（docs/13 §7）。"""
+    """移动块 bootstrap（docs/13 §7：块长按 UTC 日计）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     iters: int = Field(ge=100, le=100_000)
     seed: int = Field(ge=0)
+    # 块长（UTC 自然日）：所有 bootstrap 一律用同一设置（1 号 B 第 15 条 m 款）
+    block_days: int = Field(ge=1, le=60)
+
+
+class ShuffleConfig(BaseModel):
+    """shuffle 情景的种子集合（docs/13 §7、1 号第七部分第 5 条 g 款）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seed: int = Field(ge=0)
+    n_seeds: int = Field(ge=1, le=100)
 
 
 class ExecutionConfig(BaseModel):
@@ -118,7 +129,7 @@ class EquityConfig(BaseModel):
         return self
 
 
-_RISK_TIER_NAMES = ("standard", "progressive", "aggressive")
+_RISK_TIER_NAMES = ("standard", "progressive", "aggressive", "extreme")
 
 
 class RiskTierConfig(BaseModel):
@@ -151,6 +162,7 @@ class ResearchConfig(BaseModel):
     paths: ResearchPaths
     rolling: RollingConfig
     bootstrap: BootstrapConfig
+    shuffle: ShuffleConfig
     execution: ExecutionConfig
     portfolio: PortfolioConfig
     quality: QualityConfig
@@ -178,20 +190,21 @@ def load_research_config(path: Path) -> ResearchConfig:
 
 
 class ResearchSizingConfig(SizingConfig):
-    """`configs/sizing_research.yaml` 的模型：风险包络 + 三个风险档位（docs/13 §2）。
+    """`configs/sizing_research.yaml` 的模型：风险包络 + 四个风险档位（docs/13 §2）。
 
-    顶层各项是研究默认（标准档）的取值；`risk_tiers` 给出三档参数，研究默认 `tier: standard`，
-    冻结候选时按 1 号第九部分第 2 条在三档中选择实盘用的档位（红线 5：数值由使用者确定）。
+    顶层各项是研究默认（标准档）的取值；`risk_tiers` 给出四档参数，研究默认 `tier: standard`，
+    冻结候选时按 1 号第九部分第 2 条在满足可执行性检查的档位中选择实盘用的档位
+    （红线 5：数值由使用者确定）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    tier: str = Field(pattern=r"^(standard|progressive|aggressive)$")
+    tier: str = Field(pattern=r"^(standard|progressive|aggressive|extreme)$")
     risk_tiers: dict[str, RiskTierConfig]
 
     @model_validator(mode="after")
     def _check_tiers(self) -> ResearchSizingConfig:
-        """三个档位必须齐全且不得有多余档位（docs/13 §2）。"""
+        """四个档位必须齐全且不得有多余档位（docs/13 §2）。"""
         missing = [name for name in _RISK_TIER_NAMES if name not in self.risk_tiers]
         if missing:
             raise ValueError(f"risk_tiers 缺少档位：{missing}（docs/13 §2）")

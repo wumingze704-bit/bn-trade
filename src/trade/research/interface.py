@@ -44,5 +44,27 @@ class Strategy(Protocol):
 
 
 def rebalance_due(ts_ms: int, rebalance_hours: int) -> bool:
-    """UTC 整点对齐的调仓时刻判断（8h → 00/08/16）。"""
-    return ts_ms % (rebalance_hours * HOUR_MS) == 0
+    """调仓时刻判断：8h / 24h 锚定 UTC 00 点，168h 锚定 UTC 周一 00 点（docs/13 §5）。
+
+    168h 不能用 Unix 纪元取模：纪元从周四 00:00 UTC 起算，取模会落在周四。
+
+    Args:
+        ts_ms: 当前 K 线 `open_time`（UTC 毫秒）。
+        rebalance_hours: 调仓周期（小时）。
+
+    Returns:
+        是否为调仓时刻。
+
+    Raises:
+        ValueError: 周期不能整除 24 小时（无法锚定 UTC 整点）。
+    """
+    if rebalance_hours <= 0 or (rebalance_hours != 168 and 24 % rebalance_hours != 0):
+        raise ValueError(f"调仓周期必须整除 24 小时：{rebalance_hours}（docs/13 §5）")
+    hour_ms = HOUR_MS
+    day_ms = 24 * hour_ms
+    if ts_ms % hour_ms != 0:
+        return False
+    if rebalance_hours == 168:
+        # 1970-01-01 是周四：加 4 天偏移使取模对齐到周一 00:00 UTC
+        return ts_ms % day_ms == 0 and (ts_ms // day_ms + 4) % 7 == 0
+    return ts_ms % (rebalance_hours * hour_ms) == 0
