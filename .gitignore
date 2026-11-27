@@ -11,6 +11,7 @@ __pycache__/
 .tmp_smoke/
 build/
 dist/
+/*.bundle
 /data/
 /artifacts/
 /指令/
