@@ -23,6 +23,15 @@
 
 ## X0
 
-启动：2026-11-27 14:00 UTC（服务器 `HEAD = d5ed53e`）。
+启动：2026-11-27 13:52 UTC（服务器 `HEAD = d5ed53e`，`tmux` 会话 `X0`，
+`nice -n 10`，日志 `artifacts/reports/X0.log`）。
 
-结果：运行中，结束后写入本节（含选中参数、拼接曲线指标、七项情景、四档可执行性与判定）。
+状态（2026-11-27 14:00 UTC 检查）：进程运行中，服务器内存 used 1.6 GB / 3.65 GB（含看板与系统），
+尚无 `artifacts/reports/X0/groups/` 结果文件（数据加载与第 1 组运行中）。本次会话在上下文耗尽前
+停止，结果与判定由下一次会话接着做：
+
+- 检查 `tmux ls` 与 `artifacts/reports/X0/groups/`；两个组的 JSON 落盘即代表该组完成。
+- 完成后运行 `tail -40 artifacts/reports/X0.log`，把数字追加到本节与 `rounds/X0.md` 的“结果”一节，
+  并把 `ledger` 的 X0 `status` 改为 `reported_pass` / `reported_fail`、`trials` 改为
+  `EXPERIMENTS.log` 中本轮新增的 `kind=tuning` 条数（2 组 = 2 条）。
+- `trials_used` 同步为 `EXPERIMENTS.log` 的 `kind=tuning` 总条数。
