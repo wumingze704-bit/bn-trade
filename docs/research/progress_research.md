@@ -3,12 +3,12 @@
 ## 当前状态（2026-11-27 16:10 UTC）
 
 - 研究重置后首次进入普通研究轮次。迁移 M1~M7 全部完成（见 `progress_migration.md`）。
-- `ledger`：`trials_used: 2`（= X0 的 2 组 `kind=tuning`）、`global_trial_budget: 400`；
-  X0 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
+- `ledger`：`trials_used: 8`（X0 的 2 组 + X1 的 6 组 `kind=tuning`）、`global_trial_budget: 400`；
+  X0、X1 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
   `void_history` 记录研究重置前作废的 153 次试验。
 - 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 纯做空探索轨最先 → R3 → R1、R2、R4、R5 →
   R6~R10 → R11、R12。
-- 当前轮次：**X1**（`configs/strategies/round_X1.yaml`，6 组，模式 B）。
+- 当前轮次：**X2**（`configs/strategies/round_X2.yaml`，4 组，模式 B），X1 已判定 `reported_fail`。
 - 数据：`data/klines_1h`、`klines_1d`、`funding`、`klines_1h_flow`、`premium_1h`、`mark_1h`、
   `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、`research_end = 2026-07-31`。
 - 服务器 `HEAD = d5ed53e`（代码树与本地一致；本地只多出 `.gitignore` 与 `docs/research/` 提交）。
@@ -26,10 +26,21 @@
   于是仍按缺数据抛错。已改为“已收盘根数不足且最早一根日线晚于 `now − count` 天”才视为预热段，
   并补回归测试 `test_X1日线从决策时刻才开始时按预热处理`；`pytest -q` = `1 failed, 911 passed, 3 skipped`
   （唯一失败为本机无 CUDA 的既有测试），已提交并同步到服务器。
-- 第三次启动（2026-11-27 16:18 UTC，`HEAD = c62626e`）：进程运行中，日志重定向到
-  `artifacts/reports/X1.log`（Python 缓冲，结束时才输出汇总）；16:28 UTC 检查仍在运行、越过首个决策点。
-  本地随后的提交 `2ecb670` 只改本文件，代码与 `c62626e` 相同，服务器保持 `c62626e` 运行。
-  结果与判定在执行完毕后追加。
+- 第三次启动（2026-11-27 16:18 UTC，`HEAD = c62626e`）：运行 1 小时 10 分，17:28 UTC 结束。
+- 结果（信号口径 10,000 USDT，`artifacts/reports/X1/grid.json`）：选中参数随折变化
+  （200/10、200/20、50/20、50/20、100/10；M / N），拼接曲线年化夏普 **−0.1244**、净 **−38.62%**、
+  复合月化 −0.9013%、最大回撤 59.29%、最长水下 1,506 天、最差月 −27.88%、最差单周 −15.83%；
+  交易 1,078 笔、换手 117.3、成本 586.61（占毛收益 0.178）、资金费 +6.11、空头毛 −3,291.89、
+  实现 β −0.3878、alpha 夏普 0.1588、DSR 0.00324、bootstrap 90% [−0.000819, +0.000563]。
+- 5 折净收益 +3.23% / −9.57% / +3.78% / **−39.19%** / +4.19%（3/5 为正）；情景：cost2x −41.83%、
+  nohalt +19.01%、delay1 +3.87%（≤ base + 0.30，通过）、shuffle 不适用。
+- 四档 500 USDT：标准 夏普 0.0369 / 月化 −0.451% / 丢弃 59.9%；进取 0.1429 / −1.179% / 34.0%；
+  激进 0.0212 / −3.020% / 72.9%；极限 0.2379 / −2.429% / 73.8% → `qualified_exec_tiers = []`。
+- 达标：仅 b（3/5 折为正）与 g（shuffle 不适用 + delay1）通过；a、c、d、e、h、i、l 均不通过 →
+  `reported_fail`。扣除 X0（N = 20）后的超额年化夏普 −0.2368（l 款）。诊断：BTC 熊市过滤把持仓集中在
+  下跌后的反弹窗口，轧空损失更大（第 4 折 −39.19%、空头毛 −3,713.70）；详见 `rounds/X1.md`。
+- 试验登记：`EXPERIMENTS.log` 新增 6 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 2 改为 8。
+  哈希：`code_hash b74a3478…`、`config_hash a419c687…`、`data_hash c847434d…`。
 
 ## X0
 
