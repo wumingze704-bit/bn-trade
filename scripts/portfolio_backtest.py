@@ -108,6 +108,8 @@ def _smoke(
     end_month: str,
     months: int,
     sizing_mode: str,
+    with_flow: bool = False,
+    with_premium: bool = False,
 ) -> int:
     """最小规模运行：1 个方向 × 1 组参数 × `months` 个月，核对两种口径与记录字段。
 
@@ -126,6 +128,8 @@ def _smoke(
         end_ms=end_ms,
         start_month=start_month,
         end_month=end_month,
+        with_flow=with_flow or str(grid["family"]) in {"short_taker_exhaustion"},
+        with_premium=with_premium or str(grid["family"]) in {"short_premium_rich"},
     )
     report: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -267,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
             end_month=research_end[:7],
             months=args.smoke_months,
             sizing_mode=args.smoke_sizing_mode or research_sizing.sizing_mode,
+            with_flow=args.with_flow,
+            with_premium=args.with_premium,
         )
     workers = args.workers if args.workers is not None else _default_workers()
     out_dir = _ROOT / config.paths.artifacts / "reports"
