@@ -1,0 +1,9 @@
+# X2 多头拥挤的短期暴涨做空（docs/13 §10；1 号第八部分 X2）
+round: X2
+family: short_crowded_pump
+exposure: directional
+params:
+  - {lookback_days: 3, top_k: 3, sizing_mode: vol_target}
+  - {lookback_days: 3, top_k: 5, sizing_mode: vol_target}
+  - {lookback_days: 7, top_k: 3, sizing_mode: vol_target}
+  - {lookback_days: 7, top_k: 5, sizing_mode: vol_target}

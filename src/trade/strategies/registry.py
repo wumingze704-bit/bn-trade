@@ -5,11 +5,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trade.research.interface import Strategy
+from trade.strategies.alt_short_btc_long import build as build_alt_short_btc_long
 from trade.strategies.btc_hedged_momentum import build as build_btc_hedged
 from trade.strategies.ensemble import build as build_ensemble
 from trade.strategies.funding_adj_momentum import build as build_funding_momentum
 from trade.strategies.funding_carry_ls import build as build_funding
 from trade.strategies.liquidity_tiered_momentum import build as build_liquidity_tiered
+from trade.strategies.short_basket_baseline import build as build_short_basket
+from trade.strategies.short_basket_btc_regime import build as build_short_basket_regime
+from trade.strategies.short_crowded_pump import build as build_short_crowded_pump
+from trade.strategies.short_premium_rich import build as build_short_premium_rich
+from trade.strategies.short_seasoned_listing import build as build_short_seasoned_listing
+from trade.strategies.short_taker_exhaustion import build as build_short_taker_exhaustion
 from trade.strategies.ts_trend import build as build_trend
 from trade.strategies.vol_timed_momentum import build as build_vol_timed
 from trade.strategies.xs_low_vol_ls import build as build_low_vol
@@ -27,6 +34,13 @@ _BUILDERS = {
     "vol_timed_momentum": build_vol_timed,
     "btc_hedged_momentum": build_btc_hedged,
     "liquidity_tiered_momentum": build_liquidity_tiered,
+    "short_seasoned_listing": build_short_seasoned_listing,
+    "alt_short_btc_long": build_alt_short_btc_long,
+    "short_basket_baseline": build_short_basket,
+    "short_basket_btc_regime": build_short_basket_regime,
+    "short_crowded_pump": build_short_crowded_pump,
+    "short_premium_rich": build_short_premium_rich,
+    "short_taker_exhaustion": build_short_taker_exhaustion,
 }
 
 

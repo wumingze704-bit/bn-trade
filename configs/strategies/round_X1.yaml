@@ -1,0 +1,11 @@
+# X1 BTC 熊市状态才做空篮子（docs/13 §10；1 号第八部分 X1）
+round: X1
+family: short_basket_btc_regime
+exposure: directional
+params:
+  - {ma_days: 50, basket_n: 10, sizing_mode: vol_target}
+  - {ma_days: 50, basket_n: 20, sizing_mode: vol_target}
+  - {ma_days: 100, basket_n: 10, sizing_mode: vol_target}
+  - {ma_days: 100, basket_n: 20, sizing_mode: vol_target}
+  - {ma_days: 200, basket_n: 10, sizing_mode: vol_target}
+  - {ma_days: 200, basket_n: 20, sizing_mode: vol_target}

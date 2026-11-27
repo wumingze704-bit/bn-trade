@@ -1,0 +1,8 @@
+# X0 无条件做空山寨篮子（基准，docs/13 §10；1 号第八部分 X0）
+# 仓位模式只用 B（1 号第八部分 X 轨通用要求）；只出报告，不冻结
+round: X0
+family: short_basket_baseline
+exposure: directional
+params:
+  - {basket_n: 10, sizing_mode: vol_target}
+  - {basket_n: 20, sizing_mode: vol_target}

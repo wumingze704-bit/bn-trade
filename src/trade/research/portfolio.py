@@ -203,16 +203,22 @@ def plan_positions(
 def _truncate_alternating(
     planned: list[PlannedPosition], max_positions: int
 ) -> list[PlannedPosition]:
-    """按多空交替顺序截断（每侧至多 ⌊max_positions ÷ 2⌋，docs/13 §3 第 6 条）。"""
-    per_side = max(1, max_positions // 2)
-    longs = [position for position in planned if position.side > 0][:per_side]
-    shorts = [position for position in planned if position.side < 0][:per_side]
+    """按多空交替顺序截断到 `max_positions` 个（docs/13 §3 第 6 条）。
+
+    不得先排满多头再截断空头（1 号第五部分 B 第 15 条 d 款）：两侧逐个交替取，任一侧取完后
+    继续取另一侧，直到达到 `max_positions`。不对每侧设固定对称上限，否则预登记的
+    “1 个多头腿 + N 个空头腿”方向（R12，N + 1 ≤ max_positions）会被系统性截断成一侧。
+    """
+    longs = [position for position in planned if position.side > 0]
+    shorts = [position for position in planned if position.side < 0]
     result: list[PlannedPosition] = []
-    for index in range(max(len(longs), len(shorts))):
+    index = 0
+    while len(result) < max_positions and (index < len(longs) or index < len(shorts)):
         if index < len(longs):
             result.append(longs[index])
-        if index < len(shorts):
+        if len(result) < max_positions and index < len(shorts):
             result.append(shorts[index])
+        index += 1
     return result
 
 
@@ -388,7 +394,13 @@ def _vol_target_positions(
         if not np.isfinite(sigma) or sigma <= 0.0:
             _drop_without_vol(stats, "no_vol")
             continue
-        weights[symbol] = 1.0 / sigma
+        # 相对权重 = 策略给出的权重 ÷ 波动率（docs/13 §3 第 2 条；R8 的波动择时权重、
+        # R12 的 BTC 对冲腿都通过 target.weight 表达，不能忽略）
+        target_weight = float(candidate.target.weight)
+        if not np.isfinite(target_weight) or target_weight <= 0.0:
+            stats.dropped += 1
+            continue
+        weights[symbol] = target_weight / sigma
         candidates_by_symbol[symbol] = candidate
     if not weights:
         return []

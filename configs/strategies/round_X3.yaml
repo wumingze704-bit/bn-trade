@@ -1,0 +1,9 @@
+# X3 永续持续溢价做空（docs/13 §10；1 号第八部分 X3）
+round: X3
+family: short_premium_rich
+exposure: directional
+params:
+  - {window_hours: 24, top_k: 3, sizing_mode: vol_target}
+  - {window_hours: 24, top_k: 5, sizing_mode: vol_target}
+  - {window_hours: 72, top_k: 3, sizing_mode: vol_target}
+  - {window_hours: 72, top_k: 5, sizing_mode: vol_target}

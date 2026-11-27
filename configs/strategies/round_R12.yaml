@@ -1,0 +1,14 @@
+# R12 山寨篮子做空、BTC 做多（docs/13 §5；1 号第八部分 R12）
+# 仓位模式只用 B（同 R11）；中性策略，β 中性由组合层按 docs/13 §3 做
+round: R12
+family: alt_short_btc_long
+exposure: neutral
+params:
+  - {short_n: 5, drop_negative_funding: 0, alt_index_filter: 0, sizing_mode: vol_target}
+  - {short_n: 5, drop_negative_funding: 0, alt_index_filter: 1, sizing_mode: vol_target}
+  - {short_n: 5, drop_negative_funding: 1, alt_index_filter: 0, sizing_mode: vol_target}
+  - {short_n: 5, drop_negative_funding: 1, alt_index_filter: 1, sizing_mode: vol_target}
+  - {short_n: 9, drop_negative_funding: 0, alt_index_filter: 0, sizing_mode: vol_target}
+  - {short_n: 9, drop_negative_funding: 0, alt_index_filter: 1, sizing_mode: vol_target}
+  - {short_n: 9, drop_negative_funding: 1, alt_index_filter: 0, sizing_mode: vol_target}
+  - {short_n: 9, drop_negative_funding: 1, alt_index_filter: 1, sizing_mode: vol_target}

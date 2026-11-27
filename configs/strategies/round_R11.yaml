@@ -1,0 +1,14 @@
+# R11 上线后半年内的山寨做空（docs/13 §5；1 号第八部分 R11）
+# 仓位模式只用 B（1 号第八部分 R11 通用要求：收益来源是持续数周的供给压力，宽止损会让仓位低于最小下单额）
+round: R11
+family: short_seasoned_listing
+exposure: directional
+params:
+  - {age_max: 120, top_k: 3, btc_ma_filter: 0, sizing_mode: vol_target}
+  - {age_max: 120, top_k: 3, btc_ma_filter: 1, sizing_mode: vol_target}
+  - {age_max: 120, top_k: 5, btc_ma_filter: 0, sizing_mode: vol_target}
+  - {age_max: 120, top_k: 5, btc_ma_filter: 1, sizing_mode: vol_target}
+  - {age_max: 180, top_k: 3, btc_ma_filter: 0, sizing_mode: vol_target}
+  - {age_max: 180, top_k: 3, btc_ma_filter: 1, sizing_mode: vol_target}
+  - {age_max: 180, top_k: 5, btc_ma_filter: 0, sizing_mode: vol_target}
+  - {age_max: 180, top_k: 5, btc_ma_filter: 1, sizing_mode: vol_target}

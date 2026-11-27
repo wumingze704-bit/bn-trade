@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 
@@ -147,3 +147,56 @@ def top_volume_universe(view: View, symbols: frozenset[str], top_n: int) -> list
             scored.append((value, symbol))
     scored.sort(reverse=True)
     return [symbol for _, symbol in scored[:top_n]]
+
+
+# 纯做空轨与 R11 的可交易集合不含 BTC、ETH（docs/13 §10）
+MAJOR_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
+# R11、X 轨的通用挤空保护与资金费过滤（1 号第八部分 R11 通用要求）
+SHORT_MIN_LISTING_DAYS = 60
+SHORT_FUNDING_HOURS = 7 * 24
+
+
+def alt_universe(view: View, top_n: int = 30) -> list[str]:
+    """当月 U(R) 中 30 天成交额前 `top_n` 的山寨（不含 BTCUSDT、ETHUSDT，docs/13 §10）。"""
+    symbols = frozenset(symbol for symbol in view.universe_symbols() if symbol not in MAJOR_SYMBOLS)
+    return top_volume_universe(view, symbols, top_n)
+
+
+def short_exclusions(
+    view: View,
+    symbols: Sequence[str],
+    *,
+    funding_hours: int = SHORT_FUNDING_HOURS,
+    min_listing_days: int = SHORT_MIN_LISTING_DAYS,
+) -> set[str]:
+    """R11 与 X 轨通用的空头排除集合（docs/13 §10、1 号第八部分 R11）。
+
+    排除两类币：过去 `funding_hours` 小时平均小时化资金费低于截面 10% 分位且为负（空头拥挤，
+    持有要付资金费）；上线天数不足 `min_listing_days`（新币容易被轧空）。
+
+    Args:
+        view: 决策时刻视角。
+        symbols: 待检查的币（通常是当月成交额前 30 的山寨）。
+        funding_hours: 资金费窗口（小时）。
+        min_listing_days: 最小上线天数。
+
+    Returns:
+        需要排除的币集合。
+    """
+    funding: dict[str, float] = {}
+    for symbol in symbols:
+        rate = view.funding_hourly_mean(symbol, funding_hours)
+        if rate is not None:
+            funding[symbol] = rate
+    low, _high = funding_quantiles(funding)
+    excluded = {symbol for symbol, rate in funding.items() if rate < low and rate < 0.0}
+    for symbol in symbols:
+        age = view.listing_age_days(symbol)
+        if age is None or age < float(min_listing_days):
+            excluded.add(symbol)
+    return excluded
+
+
+def flat_stop_targets(symbols: Sequence[str], side: int, sl: float) -> list[Target]:
+    """等权目标仓位（模式 B 的权重由组合层按波动率倒数决定，docs/13 §3 第 2 条）。"""
+    return [Target(symbol=symbol, side=side, sl=sl, weight=1.0) for symbol in symbols]

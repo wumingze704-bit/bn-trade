@@ -62,6 +62,9 @@ _MIN_ALPHA_SHARPE = 0.6
 _MIN_SHORT_EXCESS_SHARPE = 0.6
 # X 轨与 R11、R12 的 Deflated Sharpe 主口径包含作废旧试验（docs/13 §7）
 _VOID_IN_MAIN_ROUNDS = frozenset({"R11", "R12"})
+# 需要额外数据源的方向（docs/13 §1、§10）：评估时自动加载，不依赖命令行开关
+_FLOW_FAMILIES = frozenset({"short_taker_exhaustion"})
+_PREMIUM_FAMILIES = frozenset({"short_premium_rich"})
 # shuffle 不适用的方向（打分不决定选币与方向，docs/13 §7）
 _SHUFFLE_NOT_APPLICABLE = frozenset(
     {"short_basket_baseline", "short_basket_btc_regime", "alt_short_btc_long"}
@@ -211,6 +214,9 @@ def _worker_init(payload: dict[str, Any]) -> None:
         end_ms=int(payload["end_ms"]),
         start_month=str(payload["start_month"]),
         end_month=str(payload["end_month"]),
+        # 工作进程必须与主进程加载同一批数据源（X3 用溢价指数、X4 用主动买入成交）
+        with_flow=bool(payload.get("with_flow", False)),
+        with_premium=bool(payload.get("with_premium", False)),
     )
 
 
@@ -239,7 +245,8 @@ def _execute_task(market, ctx: Mapping[str, Any], task: Mapping[str, Any]) -> Pa
             family=str(task["family"]),
             params=task["params"],
             folds=task["folds"],
-            components_by_fold=task["components_by_fold"],
+            components_by_fold=task.get("components_by_fold"),
+            components_by_mode=task.get("components_by_mode"),
             end_ms=int(task["end_ms"]),
         )
     return run_param(
@@ -692,6 +699,7 @@ def ensure_groups(
     end_ms: int,
     register: bool = True,
     components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+    components_by_mode: Mapping[str, Sequence[Mapping[str, Mapping[str, object]]]] | None = None,
 ) -> dict[tuple[str, str], GroupResult]:
     """取得每组参数的训练曲线与自身拼接曲线：命中缓存直接复用，否则重跑并落盘。
 
@@ -712,18 +720,29 @@ def ensure_groups(
         start_ms: 研究起点。
         end_ms: 研究终点（不含）。
         register: 是否登记 `kind=tuning` 试验（R5 的成分复用其它轮次已登记的组时为 False）。
-        components_by_fold: R5 的逐折成分参数；给出时训练曲线按折分别运行
+        components_by_fold: R5 的逐折成分参数（所有组同一套）；给出时训练曲线按折分别运行
             （该折之前的数据 + 该折成分参数），自身拼接曲线也在折边界切换成分参数
             （1 号第八部分 R5）。
+        components_by_mode: 按仓位模式给出的逐折成分参数（1 号第五部分 B 第 15 条 k 款）：
+            每组用自己 `sizing_mode` 对应的那一套；与 `components_by_fold` 二选一。
 
     Returns:
         {(family, params_key): GroupResult}。
 
     Raises:
-        ValueError: 参数重复（同一 family 下同一组参数出现两次）；成分参数折数不一致。
+        ValueError: 参数重复（同一 family 下同一组参数出现两次）；成分参数折数不一致；
+            某组的仓位模式没有对应的成分参数。
     """
+    if components_by_mode is not None and components_by_fold is not None:
+        raise ValueError("components_by_mode 与 components_by_fold 只能给出一个（docs/13 §5）")
     if components_by_fold is not None and len(components_by_fold) != len(folds):
         raise ValueError(f"成分参数折数 {len(components_by_fold)} 与验证折数 {len(folds)} 不一致")
+    if components_by_mode is not None:
+        for mode, values in components_by_mode.items():
+            if len(values) != len(folds):
+                raise ValueError(
+                    f"仓位模式 {mode} 的成分参数折数 {len(values)} 与验证折数 {len(folds)} 不一致"
+                )
     results: dict[tuple[str, str], GroupResult] = {}
     fresh: list[tuple[str, dict[str, object]]] = []
     for family, params in pairs:
@@ -741,9 +760,17 @@ def ensure_groups(
     if not fresh:
         return results
     tasks: list[dict[str, Any]] = []
-    stride = 2 if components_by_fold is None else len(folds) + 1
+    strides: list[int] = []
     for family, params in fresh:
-        if components_by_fold is None:
+        per_fold = components_by_fold
+        if components_by_mode is not None:
+            mode = str(params.get("sizing_mode", "fixed_risk"))
+            if mode not in components_by_mode:
+                raise ValueError(
+                    f"{family} 的仓位模式 {mode} 没有对应成分参数（1 号第五部分 B 第 15 条 k 款）"
+                )
+            per_fold = components_by_mode[mode]
+        if per_fold is None:
             tasks.append(
                 {
                     "family": family,
@@ -762,6 +789,7 @@ def ensure_groups(
                     "end_ms": end_ms,
                 }
             )
+            strides.append(2)
             continue
         for index, fold in enumerate(folds):
             tasks.append(
@@ -771,7 +799,7 @@ def ensure_groups(
                     "options": {"name": "base"},
                     "start_ms": start_ms,
                     "end_ms": fold.start_ms,
-                    "components": components_by_fold[index],
+                    "components": per_fold[index],
                 }
             )
         tasks.append(
@@ -780,16 +808,19 @@ def ensure_groups(
                 "family": family,
                 "params": params,
                 "folds": list(folds),
-                "components_by_fold": list(components_by_fold),
+                "components_by_fold": list(per_fold),
                 "end_ms": end_ms,
             }
         )
+        strides.append(len(folds) + 1)
     runs = _run_tasks(tasks, payload=payload, workers=workers, market=market)
     entries: list[dict[str, Any]] = []
     now = datetime.now(UTC).isoformat()
-    for index, (family, params) in enumerate(fresh):
-        chunk = runs[index * stride : (index + 1) * stride]
-        if components_by_fold is None:
+    offset = 0
+    for (family, params), stride in zip(fresh, strides, strict=True):
+        chunk = runs[offset : offset + stride]
+        offset += stride
+        if stride == 2:
             train = chunk[0]
             own = chunk[1]
             group = GroupResult(
@@ -855,12 +886,30 @@ def build_segments(
     params_by_key: Mapping[str, Mapping[str, object]],
     config: ResearchConfig,
     components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+    components_by_mode: Mapping[str, Sequence[Mapping[str, Mapping[str, object]]]] | None = None,
 ) -> list[Segment]:
-    """按折构造连续路径的段（折边界换参数，不在边界额外强平，docs/13 §6）。"""
+    """按折构造连续路径的段（折边界换参数，不在边界额外强平，docs/13 §6）。
+
+    Args:
+        components_by_fold: 所有折同一套成分参数（旧路径）。
+        components_by_mode: 按仓位模式的逐折成分参数；每折用该折选中参数的 `sizing_mode`
+            对应的那一套（1 号第五部分 B 第 15 条 k 款）。
+
+    Raises:
+        ValueError: 某折选中参数的仓位模式没有对应的成分参数。
+    """
     segments: list[Segment] = []
     for index, (fold, choice) in enumerate(zip(folds, choices, strict=True)):
-        components = None if components_by_fold is None else components_by_fold[index]
         params = dict(params_by_key[choice.params_key])
+        mode = str(params.get("sizing_mode", "fixed_risk"))
+        components = None if components_by_fold is None else components_by_fold[index]
+        if components_by_mode is not None:
+            if mode not in components_by_mode:
+                raise ValueError(
+                    f"{family} 第 {index + 1} 折的仓位模式 {mode} 没有对应成分参数"
+                    "（1 号第五部分 B 第 15 条 k 款）"
+                )
+            components = components_by_mode[mode][index]
         strategy = build_strategy(
             family,
             params,
@@ -873,7 +922,7 @@ def build_segments(
                 end_ms=fold.end_ms,
                 strategy=strategy,
                 label=choice.params_key,
-                sizing_mode=str(params.get("sizing_mode", "fixed_risk")),
+                sizing_mode=mode,
             )
         )
     return segments
@@ -919,12 +968,14 @@ def run_path_param(
     family: str,
     params: Mapping[str, object],
     folds: Sequence[Fold],
-    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]],
     end_ms: int,
+    components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+    components_by_mode: Mapping[str, Sequence[Mapping[str, Mapping[str, object]]]] | None = None,
 ) -> ParamRun:
     """同一组参数按折切换成分参数的“自身拼接曲线”（R5 专用）。
 
-    规格：1 号第八部分 R5（第 k 折的成分参数由该折之前的数据选出，折边界切换）。
+    规格：1 号第八部分 R5（第 k 折的成分参数由该折之前的数据选出，折边界切换）；
+    `components_by_mode` 时按该组 `sizing_mode` 取对应模式的成分（1 号第五部分 B 第 15 条 k 款）。
 
     Args:
         market: 市场数据。
@@ -935,17 +986,26 @@ def run_path_param(
         family: 方向（组合为 `ensemble`）。
         params: 该组参数（各折相同）。
         folds: 验证折。
-        components_by_fold: 每折的成分参数，长度必须与 `folds` 相同。
         end_ms: 路径终点（不含）。
+        components_by_fold: 每折的成分参数（所有组同一套），长度必须与 `folds` 相同。
+        components_by_mode: 按仓位模式的逐折成分参数。
 
     Returns:
         ParamRun（该组的自身拼接曲线）。
 
     Raises:
-        ValueError: 成分参数折数与验证折数不一致。
+        ValueError: 成分参数折数与验证折数不一致，或没有给出任何成分参数。
     """
-    if len(components_by_fold) != len(folds):
+    if components_by_fold is None and components_by_mode is None:
+        raise ValueError("R5 的自身拼接曲线需要成分参数（1 号第八部分 R5）")
+    if components_by_fold is not None and len(components_by_fold) != len(folds):
         raise ValueError(f"成分参数折数 {len(components_by_fold)} 与验证折数 {len(folds)} 不一致")
+    if components_by_mode is not None:
+        for mode, values in components_by_mode.items():
+            if len(values) != len(folds):
+                raise ValueError(
+                    f"仓位模式 {mode} 的成分参数折数 {len(values)} 与验证折数 {len(folds)} 不一致"
+                )
     key = params_key(params)
     choices = [
         FoldChoice(fold=fold, params_key=key, train_sharpe=0.0, train_trades=0) for fold in folds
@@ -957,6 +1017,7 @@ def run_path_param(
         params_by_key={key: dict(params)},
         config=config,
         components_by_fold=components_by_fold,
+        components_by_mode=components_by_mode,
     )
     result = run_selected_path(
         market,
@@ -971,16 +1032,18 @@ def run_path_param(
 
 
 def _component_param_sets(
-    root: Path, mapping: Mapping[str, object]
+    root: Path, mapping: Mapping[str, object], *, sizing_mode: str | None = None
 ) -> dict[str, list[dict[str, object]]]:
-    """读取 R5 成分网格的参数集合（去掉 `sizing_mode` 维度并去重）。
+    """读取 R5 成分网格的参数集合。
 
-    1 号第八部分开头要求 R1~R10 的网格乘以仓位模式 {A, B}；R5 的仓位模式由 R5 自己的网格决定，
-    成分方向只提供信号参数，因此这里的 `sizing_mode` 不参与逐折选参。
+    1 号第五部分 B 第 15 条 k 款：R5 每组的 `sizing_mode` 为 A 时，三个成分取各自网格中模式 A 的组
+    为该折选出的参数；为 B 时取模式 B 的组。给出 `sizing_mode` 时只保留该模式的参数（保留
+    `sizing_mode` 字段供运行使用）；未给出时去掉该维度并去重（旧行为）。
 
     Args:
         root: 仓库根目录（解析 `component_grids` 的相对路径）。
         mapping: `{family: 网格文件相对路径}`。
+        sizing_mode: 仓位模式（`fixed_risk` / `vol_target`）；None 表示不区分模式。
 
     Returns:
         `{family: [参数字典, ...]}`，顺序与网格文件一致（去重后）。
@@ -997,7 +1060,12 @@ def _component_param_sets(
         cleaned: list[dict[str, object]] = []
         seen: set[tuple[tuple[str, object], ...]] = set()
         for item in raw:
-            params = {key: value for key, value in dict(item).items() if key != "sizing_mode"}
+            params = dict(item)
+            mode = str(params.get("sizing_mode", "fixed_risk"))
+            if sizing_mode is None:
+                params = {key: value for key, value in params.items() if key != "sizing_mode"}
+            elif mode != sizing_mode:
+                continue
             signature = tuple(sorted(params.items()))
             if signature in seen:
                 continue
@@ -1025,11 +1093,16 @@ def component_params_by_fold(
     start_ms: int,
     end_ms: int,
     root: Path,
+    sizing_mode: str,
 ) -> list[dict[str, dict[str, object]]] | None:
     """R5 的成分参数逐折选择（1 号第八部分 R5、docs/13 §5）。
 
-    每个成分方向取其第一次网格、只用该折开始之前的数据按年化夏普选参；成分参数的评估已在各自
-    轮次登记，这里复用结果、不重复登记试验。
+    每个成分方向取其第一次网格中与 R5 本组同仓位模式的参数（1 号第五部分 B 第 15 条 k 款），
+    只用该折开始之前的数据按年化夏普选参；成分参数的评估已在各自轮次登记，这里复用结果、
+    不重复登记试验。
+
+    Args:
+        sizing_mode: R5 本组的仓位模式，决定成分只从该模式的组里选（k 款）。
 
     Returns:
         每折一个 `{family: params}` 映射；网格没有 `component_grids` 时返回 None。
@@ -1037,7 +1110,13 @@ def component_params_by_fold(
     mapping = grid.get("component_grids")
     if not isinstance(mapping, Mapping) or not mapping:
         return None
-    params_by_family = _component_param_sets(root, mapping)
+    params_by_family = _component_param_sets(root, mapping, sizing_mode=sizing_mode)
+    empty = sorted(family for family, values in params_by_family.items() if not values)
+    if empty:
+        raise ValueError(
+            f"R5 的成分网格在仓位模式 {sizing_mode} 下没有参数：{empty}"
+            "（1 号第五部分 B 第 15 条 k 款）"
+        )
     pairs: list[tuple[str, Mapping[str, object]]] = []
     for family, params_list in params_by_family.items():
         pairs.extend((family, params) for params in params_list)
@@ -1081,6 +1160,7 @@ def select_choices(
     folds: Sequence[Fold],
     start_ms: int,
     components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+    components_by_mode: Mapping[str, Sequence[Mapping[str, Mapping[str, object]]]] | None = None,
 ) -> list[FoldChoice]:
     """按第七部分第 3 条为每一折选参（组合方向用该折成分参数下的训练曲线）。
 
@@ -1091,6 +1171,8 @@ def select_choices(
         folds: 验证折。
         start_ms: 研究起点（训练期起点）。
         components_by_fold: 组合方向的逐折成分参数；为 None 时用各折共用的训练曲线。
+        components_by_mode: 组合方向按仓位模式的逐折成分参数（只需非空即按折选参，
+            训练曲线本身已由 `ensure_groups` 按模式计算）。
 
     Returns:
         每折一个 FoldChoice。
@@ -1098,7 +1180,7 @@ def select_choices(
     Raises:
         ValueError: 某折没有满足训练期交易数下限的参数。
     """
-    if components_by_fold is None:
+    if components_by_fold is None and components_by_mode is None:
         train_runs = {key: groups[(family, key)].as_param_run() for key in params_by_key}
         return [select_for_fold(train_runs, fold, start_ms) for fold in folds]
     choices: list[FoldChoice] = []
@@ -1440,6 +1522,9 @@ def evaluate_grid(
     """
     family = str(grid["family"])
     exposure = str(grid.get("exposure", "neutral"))
+    # 方向需要的数据源自动加载（docs/13 §1、§10）：X3 用溢价指数、X4 用主动买入成交
+    with_flow = with_flow or family in _FLOW_FAMILIES
+    with_premium = with_premium or family in _PREMIUM_FAMILIES
     params_list = [dict(item) for item in grid["params"]]
     folds = fold_windows(
         start_ms, end_ms, train_months=config.rolling.train_months, folds=config.rolling.folds
@@ -1483,6 +1568,8 @@ def evaluate_grid(
         "end_ms": end_ms,
         "start_month": start_month,
         "end_month": end_month,
+        "with_flow": with_flow,
+        "with_premium": with_premium,
     }
     market = None
     if workers <= 1:
@@ -1497,25 +1584,34 @@ def evaluate_grid(
         )
     group_dir = out_dir / round_id / "groups"
     components_by_fold = None
+    components_by_mode: dict[str, list[dict[str, dict[str, object]]]] | None = None
     if family == "ensemble":
-        components_by_fold = component_params_by_fold(
-            grid=grid,
-            config=config,
-            market=market,
-            sizing=signal_sizing,
-            fee_taker=fee_taker,
-            risk_limits=risk_limits,
-            payload=payload,
-            workers=workers,
-            group_dir=group_dir / "components",
-            log_path=log_path,
-            hashes=hashes,
-            round_id=round_id,
-            folds=folds,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            root=root,
-        )
+        # R5 的成分按 R5 本组的仓位模式分组（1 号第五部分 B 第 15 条 k 款）
+        modes = sorted({str(params.get("sizing_mode", "fixed_risk")) for params in params_list})
+        components_by_mode = {}
+        for mode in modes:
+            fold_components = component_params_by_fold(
+                grid=grid,
+                config=config,
+                market=market,
+                sizing=signal_sizing,
+                fee_taker=fee_taker,
+                risk_limits=risk_limits,
+                payload=payload,
+                workers=workers,
+                group_dir=group_dir / "components",
+                log_path=log_path,
+                hashes=hashes,
+                round_id=round_id,
+                folds=folds,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                root=root,
+                sizing_mode=mode,
+            )
+            if fold_components is None:
+                raise ValueError("R5 缺少 component_grids（docs/13 §5）")
+            components_by_mode[mode] = fold_components
     groups = ensure_groups(
         market=market,
         config=config,
@@ -1533,6 +1629,7 @@ def evaluate_grid(
         start_ms=start_ms,
         end_ms=end_ms,
         components_by_fold=components_by_fold,
+        components_by_mode=components_by_mode,
     )
     params_by_key = {params_key(params): params for params in params_list}
     try:
@@ -1543,6 +1640,7 @@ def evaluate_grid(
             folds=folds,
             start_ms=start_ms,
             components_by_fold=components_by_fold,
+            components_by_mode=components_by_mode,
         )
     except ValueError as error:
         return _no_selection_report(
@@ -1583,6 +1681,7 @@ def evaluate_grid(
         out_dir=out_dir,
         root=root,
         components_by_fold=components_by_fold,
+        components_by_mode=components_by_mode,
     )
 
 
@@ -1614,6 +1713,7 @@ def _evaluate_selected(
     out_dir: Path,
     root: Path,
     components_by_fold: Sequence[Mapping[str, Mapping[str, object]]] | None = None,
+    components_by_mode: Mapping[str, Sequence[Mapping[str, Mapping[str, object]]]] | None = None,
 ) -> dict[str, Any]:
     """按折选中参数跑连续路径、四个档位的 500 USDT 口径与全部情景，并汇总达标项。"""
 
@@ -1625,6 +1725,7 @@ def _evaluate_selected(
             params_by_key=params_by_key,
             config=config,
             components_by_fold=components_by_fold,
+            components_by_mode=components_by_mode,
         )
 
     def _run(
@@ -1742,7 +1843,9 @@ def _evaluate_selected(
             str(fold.index + 1): choice.params_key
             for fold, choice in zip(folds, choices, strict=True)
         },
-        "component_params": components_by_fold,
+        "component_params": components_by_mode
+        if components_by_mode is not None
+        else components_by_fold,
         "segments": signal_path.segments,
         "selected_metrics": metrics,
         "dsr_sensitivity": dsr_sensitivity,

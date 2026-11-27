@@ -500,3 +500,55 @@ ValueError: R5 的成分参数必须逐折给出（1 号第八部分 R5）
 - 质量命令：`ruff format --check .`、`ruff check .`、`mypy --strict src/trade/common src/trade/backtest src/trade/live`、
   `mypy src/trade/dashboard` 通过；`pytest -q` = `1 failed, 883 passed, 3 skipped`，唯一失败为本机无 CUDA 的既有测试。
 
+## 2026-11-27 13:37 UTC M4/M5 未完成子项（D19、新方向、View 访问器、截断）复核与修复
+
+复核对象：`src/trade/research/`（`d891327`）、`src/trade/strategies/`（`d891327`）、
+`configs/strategies/`（`d891327`）、`tests/research/`（`d891327`）、`docs/13-研究框架.md`。
+逐项对照 1 号第五部分 B 第 1~15 条、第八部分 R11/R12 与 X0~X4、0 号调度第六部分 M4/M5：
+
+- B1 数据层与 `View` 访问器 **符合（补做后）**：新增 `premium_mean`、`taker_buy_ratio`
+  （窗口内 `klines_1h_flow` 与 `klines_1h` 时间轴不一致即抛错）、`daily_closes`、
+  `daily_close_below_ma`；全部只用已收盘数据，缺数据返回 `None` 而不是 0。
+- B2/B3/B4/B5/B6/B7 **符合**（D1~D7、D14~D17 修复保持不变；本轮未改动执行口径）。
+- B15 k 款（D19）**不符合 → 已修复**：`_component_param_sets` 原先去掉 `sizing_mode` 并去重，
+  模式 A 与模式 B 的 R5 组共用同一批成分参数。
+- 第八部分 R11、R12、X0~X4 **不符合（缺失）→ 已补齐**：新增 7 个策略模块与 7 个网格文件，
+  注册表追加条目（既有家族名与构造函数未改动）。
+- 第八部分 R12 与 §3 第 6 条 **不符合（冲突）→ 已修复**（D23）。
+- §3 第 2 条模式 B **不符合 → 已修复**（D24）：`_vol_target_positions` 忽略 `target.weight`，
+  R8 的波动择时权重与 R12 的 BTC 对冲腿都失效。
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :--- | :--- | :--- | :--- | :--- |
+| D19 | CLOSED | 1 号第五部分 B 第 15 条 k 款（R5 成分取与 R5 本组同模式的组） | `_component_param_sets` 删掉 `sizing_mode` 后去重，两种模式共用成分参数 | R5 的 A/B 两组会用同一批成分参数选参，与 k 款不一致 |
+| D23 | CLOSED | 1 号第八部分 R12（N + 1 ≤ max_positions）与第五部分 B 第 15 条 d 款（不得先排满多头再截断空头） | `_truncate_alternating` 对每侧设 ⌊max_positions ÷ 2⌋ 上限，1 个 BTC + 9 个山寨被截成 1 + 5 | R12 的 N = 9 网格实际只持 5 个空头腿，网格与规格不符 |
+| D24 | CLOSED | docs/13 §3 第 2 条与 §5（R8 权重、R12 BTC 腿）与 1 号第五部分 B 第 15 条 j 款 | `_vol_target_positions` 用 `1 ÷ σ`，完全不读 `Target.weight` | R8 的波动择时权重、R12 的 β 中性初始名义都不生效；R12 的 BTC 腿与山寨腿等权，β 中性只能靠截断 |
+
+修复（提交见本次推送）：
+
+- D19：`_component_param_sets(..., sizing_mode=...)` 按模式过滤；`component_params_by_fold` 增加
+  `sizing_mode`；`ensure_groups` / `build_segments` / `select_choices` / `run_path_param`
+  新增 `components_by_mode`，按各组/各折自身的 `sizing_mode` 取成分参数；`evaluate_grid`
+  为 R5 网格出现的每个模式各算一套逐折成分参数。复现测试：
+  `tests/research/test_component_mode.py::test_成分参数按仓位模式过滤`、
+  `::test_缺少该模式的成分参数时抛出异常`、`tests/research/test_truncation_and_segments.py::test_分段按选中参数的仓位模式取成分`。
+- D23：`_truncate_alternating` 改为按多空交替顺序取到 `max_positions` 个，不设每侧固定上限。
+  复现测试：`tests/research/test_truncation_and_segments.py::test_一个多头腿加N个空头腿不会被截断成一侧`、
+  `::test_截断按多空交替顺序而不先排满多头`。
+- D24：模式 B 的相对权重改为 `max(0, weight) ÷ σ`，权重 ≤ 0 的目标丢弃并计数；
+  R12 的 BTC 腿权重按 `σ_btc × Σ(β_i ÷ σ_i)` 计算（`docs/13` §5 已写公式），数据不足直接抛错。
+  复现测试：`tests/research/test_vol_target_weight.py::test_模式B的名义与策略权重成正比`、
+  `::test_权重为零的目标被丢弃并计数`、
+  `tests/research/test_short_strategies.py::test_R12的BTC腿权重使事前β为0`。
+- 新方向（X0~X4、R11、R12）：`configs/strategies/round_X0~X4.yaml`、`round_R11.yaml`、
+  `round_R12.yaml`（组数 2 / 6 / 4 / 4 / 4 / 8 / 8，全部只用模式 B）；`trade.research.pipeline`
+  按方向自动加载 `premium_1h`（X3）与 `klines_1h_flow`（X4），工作进程同样加载（原先只有主进程生效）。
+  测试：`tests/research/test_short_strategies.py`（12 项）、`tests/research/test_view_accessors.py`（5 项）。
+
+质量命令（本次）：`ruff format --check .`（382 files）、`ruff check .`、`mypy --strict src/trade/common
+src/trade/backtest src/trade/live`（56 files）、`mypy src/trade/dashboard`（8 files）通过；
+`pytest -q tests/research tests/strategies` → 110 passed。
+
+结论：D19、D23、D24 已 CLOSED；新方向与访问器补齐后 M4/M5 的代码子项全部符合，
+剩余“服务器最小规模运行”与 `engine.md` 复核在本次会话继续执行。
+

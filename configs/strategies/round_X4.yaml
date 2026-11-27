@@ -1,0 +1,9 @@
+# X4 主动买入衰竭做空（docs/13 §10；1 号第八部分 X4）
+round: X4
+family: short_taker_exhaustion
+exposure: directional
+params:
+  - {window_days: 1, top_k: 3, sizing_mode: vol_target}
+  - {window_days: 1, top_k: 5, sizing_mode: vol_target}
+  - {window_days: 3, top_k: 3, sizing_mode: vol_target}
+  - {window_days: 3, top_k: 5, sizing_mode: vol_target}

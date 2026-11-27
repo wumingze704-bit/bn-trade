@@ -178,6 +178,109 @@ class View:
         """过去 `hours` 小时是否有资金费结算记录（1 号 B 第 1 条：没有则不允许开仓）。"""
         return self.funding_hourly_mean(symbol, hours) is not None
 
+    def premium_mean(self, symbol: str, hours: int) -> float | None:
+        """过去 `hours` 根已收盘溢价指数 K 线的收盘均值（docs/13 §1、§5 X3）。
+
+        Args:
+            symbol: 币种。
+            hours: 窗口小时数。
+
+        Returns:
+            溢价指数均值（比例，0.0001 = 1bp）；该币没有溢价指数数据或已收盘根数不足时返回 None
+            （调用方不得按 0 计，红线 12）。
+        """
+        bars = self.market.premium_bars(symbol)
+        if bars is None:
+            return None
+        count = int(np.searchsorted(bars.open_time, self.now_ms - HOUR_MS, side="right"))
+        if count < hours:
+            return None
+        values = np.asarray(bars.close[count - hours : count], dtype="float64")
+        if values.size == 0 or not np.all(np.isfinite(values)):
+            return None
+        return float(np.mean(values))
+
+    def taker_buy_ratio(self, symbol: str, days: int) -> float | None:
+        """过去 `days` 天主动买入成交额占比（docs/13 §1、§5 X4）。
+
+        主动买入占比 = Σ `taker_buy_quote_volume` ÷ Σ `quote_volume`，只用已收盘的 1h K 线；
+        `klines_1h_flow` 与 `klines_1h` 的时间轴在窗口内必须逐行一致。
+
+        Args:
+            symbol: 币种。
+            days: 窗口天数。
+
+        Returns:
+            占比（0~1）；该币没有主动买入数据或已收盘根数不足时返回 None。
+
+        Raises:
+            ValueError: 窗口内两条时间轴不一致（docs/13 §1）。
+        """
+        flow = self.market.flow_bars(symbol)
+        if flow is None:
+            return None
+        bars, count = self.closed_index(symbol)
+        hours = days * 24
+        if count < hours:
+            return None
+        start_ts = int(bars.open_time[count - hours])
+        end_ts = int(bars.open_time[count - 1]) + HOUR_MS
+        lo = int(np.searchsorted(flow.open_time, start_ts, side="left"))
+        hi = int(np.searchsorted(flow.open_time, end_ts, side="left"))
+        window_times = flow.open_time[lo:hi]
+        hourly_times = bars.open_time[count - hours : count]
+        if window_times.size != hourly_times.size or not np.array_equal(window_times, hourly_times):
+            raise ValueError(
+                f"{symbol} 的 klines_1h_flow 与 klines_1h 在决策时刻 {self.now_ms} 前的 "
+                f"{days} 天窗口内时间轴不一致（docs/13 §1，红线 12）"
+            )
+        total = float(np.sum(bars.quote_volume[count - hours : count]))
+        if total <= 0.0:
+            return None
+        bought = float(np.sum(flow.taker_buy_quote_volume[lo:hi]))
+        return bought / total
+
+    def daily_closes(self, symbol: str, count: int) -> tuple[np.ndarray, np.ndarray] | None:
+        """最近 `count` 根已收盘日线的 (open_time, close)（docs/13 §5 X1、R11、R12）。
+
+        只有 `open_time + 1d <= now_ms` 的日线才视为已收盘（红线 1）。
+
+        Args:
+            symbol: 币种。
+            count: 需要的根数。
+
+        Returns:
+            (open_time 数组, 收盘价数组)；日线缺失或不足 `count` 根时返回 None。
+        """
+        bars = self.market.daily.get(symbol)
+        if bars is None:
+            return None
+        closed = int(np.searchsorted(bars.open_time, self.now_ms - DAY_MS, side="right"))
+        if closed < count or count <= 0:
+            return None
+        return (
+            np.asarray(bars.open_time[closed - count : closed], dtype=np.int64),
+            np.asarray(bars.close[closed - count : closed], dtype="float64"),
+        )
+
+    def daily_close_below_ma(self, symbol: str, days: int) -> bool | None:
+        """最近一根已收盘日线收盘价是否低于过去 `days` 根日线收盘价的简单均线。
+
+        Args:
+            symbol: 币种。
+            days: 均线长度（含最近一根）。
+
+        Returns:
+            True 表示低于均线；日线不足 `days` 根时返回 None（调用方不得当作 False，红线 12）。
+        """
+        data = self.daily_closes(symbol, days)
+        if data is None:
+            return None
+        _times, closes = data
+        if closes.size < days or not np.all(np.isfinite(closes)):
+            return None
+        return bool(closes[-1] < float(np.mean(closes)))
+
     def has(self, symbol: str) -> bool:
         """研究数据中是否有该币。"""
         return symbol in self.market.hourly
