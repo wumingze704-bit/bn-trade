@@ -76,3 +76,6 @@
 - `python scripts/check_docs_sections.py`：退出码 0，“检查通过：8 份文档的标题、数字、配置键与全仓库章节引用一致（基线已有的失效引用 19 条，无基线而跳过的文档 0 份）”。19 条失效引用全部在 `src/trade/**` 的代码注释里（07 §6.4~§6.11、§12，11 §4.4~§5.6），与本次删除无关，基线中同样存在。
 - `python -m pytest -q tests/test_agent_rules.py tests/test_check_docs_sections.py`：`9 passed`。未修改任何测试断言。
 - 未修改源代码、测试、配置（`src/`、`scripts/`、`tests/`、`configs/`）；`data/` 未动；未运行任何研究、网格或回测。
+- 使用者随后的补正指示（解决残留失效引用）已记入 `decisions.md` 的“自行决定的记录”，涉及
+  `docs/00-当前目标.md` §4、`docs/10-可视化看板.md` §2、`docs/13-研究框架.md` §10，以及
+  `docs/research/review_log.md`、`docs/research/progress_migration.md` 开头的说明段（历史正文未改）。

@@ -102,6 +102,16 @@
   `R`/`X`），未移动、未删除。
 - 依据研究重置指令授权自行决定：删除 `docs/research/` 文件后，若 `scripts/check_docs_sections.py` 或
   `docs/research/` 下的交接文件出现失效引用，只修改交接文件或检查脚本的数据目录配置，不改测试断言与设计书。
+- 使用者后续指示（2026-11-27，重置完成报告第 8 点）：要求解决两处遗留引用，已按此执行，覆盖研究重置指令的
+  第三部分第 2 条（不改设计书）与第 6 条（`review_log.md`、`progress_migration.md` 保留不动）：
+  - `docs/00-当前目标.md` §4 把交接文件拆成两行：常驻文件（`ledger.yaml`、`hypotheses_R1_R10.md`、`engine.md`、
+    `decisions.md`、`review_log.md`、`RESET_DONE.md`、`progress_*.md`）与产出物（`rounds/<轮次>.md`、
+    `short_report.md`、`candidates/`、`final/`、`shadow/`、`live/`，由对应阶段按需创建）；
+  - `docs/10-可视化看板.md` §2 写明 `docs/research/rounds/*.md` 目录存在时读取、不存在时轮次结论列为空（与
+    `src/trade/dashboard/app.py` 的 `is_dir()` 判断一致）；
+  - `docs/13-研究框架.md` §10 注明 `docs/research/short_report.md` 由 X 轨运行时创建；
+  - `docs/research/review_log.md`、`docs/research/progress_migration.md` 在开头各加一段说明：文中对 `rounds/` 与
+    `progress_research.md` 的引用属于重置前记录，对应文件已删除，全文只在 git 历史中可查。历史正文一行未改。
 
 ## 2026-11-23 一次性准备（00_一次性准备_最先发这个.txt）
 

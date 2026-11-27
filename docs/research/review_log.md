@@ -2,6 +2,9 @@
 
 同一复核对象的最新提交哈希与上次相同时，只写一行“未变化，沿用某时间的结论”。
 
+> 本文件是研究重置前的复核记录，文中对 `rounds/R1.md`~`R10.md` 与 `progress_research.md` 的引用对应的文件已在研究重置中删除
+> （旧结果按 D1~D16 口径缺陷作废），全文与数字只在 git 历史中可查；重置记录见 `decisions.md` 与 `RESET_DONE.md`。
+
 ## 2026-11-24 10:45 UTC 会话级一致性检查（0 号调度第五部分第 1 条）
 
 - 总账：`docs/research/ledger.yaml` 的 `trials_used = 65`；rounds 的 trials 之和
