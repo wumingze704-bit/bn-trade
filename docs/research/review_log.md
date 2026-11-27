@@ -632,3 +632,39 @@ ValueError: 1612137600000 BTCUSDT 日线不足 50 根，无法判断 X1 的市�
   `mypy --strict`（56 files）、`mypy src/trade/dashboard`（8 files）通过；
   `pytest -q` = `1 failed, 910 passed, 3 skipped`（唯一失败为本机无 CUDA 的既有测试）。
 
+## 2026-11-27 16:40 UTC 前置复核（执行 1 号之前，对象为 D25 修复与 X0 判定）
+
+复核对象与最新提交（`git log -1 --format=%h -- <路径>`）：`src/trade/research`（`c62626e`）、
+`src/trade/strategies`（`edcaafd`）、`scripts/portfolio_backtest.py`（`d5ed53e`）、
+`configs/research.yaml`（`d891327`）、`configs/strategies`（`64dc8f7`）、`tests/research`（`c62626e`）、
+`docs/13-研究框架.md`（`edcaafd`）。
+
+方法：读 D25 修复代码（`View.daily_warmup` 与 X1 / R11 / R12 的调用点）、读 `docs/13` §5 的预热规格、
+读服务器原始输出（`artifacts/reports/X0/grid.json`、`artifacts/reports/EXPERIMENTS.log`）；本地运行 §8 质量命令与
+`tests/research tests/strategies`。未读取任何最终检验窗口数据，未读取密钥。
+
+逐项结论：
+
+- B 第 14 条结果可信度测试（含 h 款复现测试）：`python -m pytest -q tests/research tests/strategies` → **114 passed** → **符合**。
+- D25 修复：`View.daily_warmup(symbol, count)` 用“已收盘根数不足 **且** 最早日线 open_time 晚于
+  `now − count` 天”判定预热段；`short_basket_btc_regime`（X1）、`short_seasoned_listing`（R11）、
+  `alt_short_btc_long`（R12 的山寨指数与对冲腿）在预热段返回空目标，缺数据时仍抛带币种与时间的异常
+  （红线 12）；`docs/13` §5 有对应规格一条 → **符合** 1 号第五部分 B 第 10 条 a 款与红线 12。
+- 1 号第五部分 B 第 15 条 a~n 款：`src/trade/research` 与 `src/trade/strategies` 自 13:37 UTC 复核
+  （`64dc8f7`/`d5ed53e`）以来只有 `edcaafd`、`c62626e` 两个提交，内容仅为预热段判定与相应测试/文档 →
+  沿用 13:37 UTC 的“符合”结论。
+- 服务器代码与本地一致：`git diff --name-only c62626e..HEAD -- src scripts configs tests deploy` 输出为空
+  （本地此后 3 个提交只改 `docs/research/`）；服务器 `git rev-parse HEAD` = `c62626e` → **符合**。
+- 已完成轮次数字核对（X0）：`rounds/X0.md` 的选中参数（5 折全部 `basket_n=20`）、分折净收益
+  +24.83% / +4.88% / −24.23% / …、base 年化夏普 0.1243、净 −10.50%、cost2x −22.29%、四档 500 USDT
+  夏普 0.1179 / −0.2681 / −0.4938 / −0.1501 与丢弃比例 20.2% / 54.6% / 78.2% / 77.7%、`checks` 各项
+  与 `qualified_exec_tiers = []` 均与 `artifacts/reports/X0/grid.json` 逐值一致 → **符合**。
+- 试验登记一致性（会话开始的整体检查）：`ledger.trials_used = 2` = `Σ rounds[].trials`（X0 的 2 组）+ 冻结仓位
+  选择试验 0；服务器 `artifacts/reports/EXPERIMENTS.log` 共 6 行，其中 `kind=tuning` 2 条（X0 的 `basket_n`
+  10 / 20）、`kind=exec` 4 条（四档）→ **一致**。
+- 1 号第七部分第 5 条判定实现：`pipeline.py` 的 a~l 各款阈值与 16:10 UTC 复核（`d5ed53e`）相同，
+  之后无改动 → **符合**。
+
+处理方式：未发现新缺陷，`review_log.md` 无新增 OPEN 项。结论：**前置复核全部符合**，
+按 0 号调度第四部分第 8 条 a 款执行 1 号（当前 X1 在服务器运行中，`HEAD = c62626e`）。
+
