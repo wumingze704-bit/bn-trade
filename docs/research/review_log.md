@@ -731,3 +731,29 @@ ValueError: 1612137600000 BTCUSDT 日线不足 50 根，无法判断 X1 的市�
 其余无新增缺陷。结论：**前置复核通过（D26 已修复）**，按 0 号调度第四部分第 8 条 a 款执行 1 号，
 写 R3 判定后继续 R1。
 
+
+
+## 2026-11-28 10:55 UTC 缺陷登记与修复：D27（R1 运行崩溃）
+
+发现方式：R1 于 2026-11-28 08:59 UTC 在服务器启动，10:53 UTC 进程退出，
+`artifacts/reports/R1.log`：
+
+```text
+File "/home/ubuntu/trade/src/trade/research/engine.py", line 647, in _check_stops
+    self._close(position, ts, "stop", explicit_price=fill)
+File "/home/ubuntu/trade/src/trade/research/engine.py", line 525, in _close
+    del self.positions[position.symbol]
+KeyError: 'YFIIUSDT'
+```
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :-- | :-- | :-- | :-- | :-- |
+| D27 | CLOSED | 1 号第五部分 B 第 15 条 d 款（一侧被止损清空时同一时刻平掉另一侧）与红线 12（不得以崩溃代替正确平仓） | `_check_stops` 遍历 `list(self.positions.values())` 的快照：第一笔止损触发 `_close` 后调用 `_flatten_neutral_other_side` 把另一侧平掉，循环继续到快照里的旧对象；若旧对象的止损同样在本根触发（`_close` 前没有“已平仓”判断），就会再平一次 → `del self.positions[symbol]` 抛 `KeyError` | 中性策略（R1、R2、R4、R5、R6、R7、R9、R12）在“两侧同一根 K 线都触发止损”时整轮崩溃。R1 因此中断，崩溃前 `ensure_groups` 未完成、`EXPERIMENTS.log` 未新增记录（仍 36 条 `kind=tuning`、60 行），试验次数不计；已完成的 X0~X4 与 R3 没有触发该情形（进程正常结束），数字不受影响 |
+
+修复：`_check_stops` 的循环开头增加“该币不在 `self.positions` 时跳过”的判断（同一根 K 线已按中性规则平掉，
+快照里的旧对象不再处理）。复现测试
+`tests/research/test_engine.py::test_中性策略一止損另一侧被平掉时同一根K线不重复平仓`
+（两侧漂移 −3%/h 与 +3%/h、止损 3%，两侧同一根 K 线都触发止损；在 `e29fd20` 的 `engine.py` 上运行
+→ `1 failed`：`KeyError: 'BBBUSDT'`；修复后 `tests/research/test_engine.py` 6 passed）。
+1 号第五部分 B 第 15 条 d 款的规格未变，`docs/13` 无需改动。
+处理方式：按 0 号调度第五部分第 5 条 b 款修复；R1 在服务器以新提交重新启动（旧运行未产生任何结果）。

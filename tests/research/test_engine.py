@@ -17,7 +17,7 @@ from trade.common.risk_rules import RiskLimits
 from trade.common.sizing import SizingConfig
 from trade.research.data import HOUR_MS, MarkBars, MarketData
 from trade.research.engine import Engine, ScenarioOptions
-from trade.research.interface import EXPOSURE_DIRECTIONAL, Decision, Target
+from trade.research.interface import EXPOSURE_DIRECTIONAL, EXPOSURE_NEUTRAL, Decision, Target
 from trade.research.view import View
 
 
@@ -116,6 +116,50 @@ def test_净敞口分布按每根K线收盘记录() -> None:
     assert result.net_exposure[0] > 0.0
     # 路径末尾全部平仓，最后一根的净敞口为 0
     assert result.net_exposure[-1] == pytest.approx(0.0, abs=1e-12)
+
+
+class AlwaysNeutralPair:
+    """测试用：同时做多一个币、做空另一个币（中性）。"""
+
+    name = "test_neutral_pair"
+    exposure = EXPOSURE_NEUTRAL
+    rebalance_hours = 8
+
+    def __init__(self, long_symbol: str = "AAAUSDT", short_symbol: str = "BBBUSDT") -> None:
+        self.long_symbol = long_symbol
+        self.short_symbol = short_symbol
+
+    def decide(self, view: View, held: Mapping[str, int]) -> Decision:
+        if view.close(self.long_symbol) is None or view.close(self.short_symbol) is None:
+            return Decision((), EXPOSURE_NEUTRAL)
+        return Decision(
+            (
+                Target(self.long_symbol, 1, 0.03),
+                Target(self.short_symbol, -1, 0.03),
+            ),
+            EXPOSURE_NEUTRAL,
+        )
+
+
+def test_中性策略一止損另一侧被平掉时同一根K线不重复平仓() -> None:
+    """中性策略两侧同一根 K 线都止损时，残留的快照对象不得再平一次（红线 12）。
+
+    修复前：`_check_stops` 遍历 `list(self.positions.values())` 的快照，第一笔止损触发后
+    `_flatten_neutral_other_side` 已把另一侧平掉，循环再用旧对象调用 `_close` →
+    `KeyError`（服务器 R1 实测 `KeyError: 'YFIIUSDT'`）。
+    """
+    market = make_market(n=160, drift_by_symbol={"AAAUSDT": -0.03, "BBBUSDT": 0.03})
+    engine = _engine(market, AlwaysNeutralPair())
+    start = START_MS + 72 * HOUR_MS
+    result = engine.run(start, START_MS + 140 * HOUR_MS)
+    stopped = [trade for trade in result.trades if trade.reason == "stop"]
+    flattened = [trade for trade in result.trades if trade.reason == "neutral_flatten"]
+    assert stopped
+    # 一侧止损的同一根 K 线里，另一侧被中性规则平掉
+    assert any(trade.exit_ts == stopped[0].exit_ts for trade in flattened)
+    # 没有仓位被平两次
+    exits = [(trade.symbol, trade.exit_ts) for trade in result.trades]
+    assert len(exits) == len(set(exits))
 
 
 def test_止损触发按止损价加滑点成交并进入冷却() -> None:

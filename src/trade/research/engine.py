@@ -607,6 +607,10 @@ class Engine:
         加 `stop_slip_mult` 倍滑点再加半价差；缺标记价格时退回成交价 K 线并计数。
         """
         for position in list(self.positions.values()):
+            if position.symbol not in self.positions:
+                # 同一根 K 线的前一笔止损 / 强平已按中性规则把这一侧平掉（docs/13 §3 第 4 条），
+                # 快照里的旧对象不再处理，否则会重复平仓（D27）
+                continue
             bars = self.market.bars(position.symbol)
             index = bars.bar_index(ts)
             if index is None:
