@@ -1,5 +1,5 @@
 global_trial_budget: 400
-trials_used: 20
+trials_used: 36
 void_history: {trials: 153, rounds: "R1~R10 首次运行", log: "artifacts/reports/_void_20261127T120139Z/EXPERIMENTS.log", reason: "D1~D16 口径缺陷，研究重置时作废"}
 research_start: "2021-02-01"
 research_end: "2026-07-31"
@@ -9,7 +9,7 @@ rounds:                           # 按列出的顺序执行：X 轨（纯做空
   - {id: X2, track: short_report, family: short_crowded_pump, status: reported_fail, trials: 4, result: "信号口径夏普 0.1522、净 +4.31%、最大回撤 37.60%、5 折 3 折为正；shuffle 20 种子全部低于 base、delay1 0.3292 通过；h、i 通过（标准/进取档）；cost2x -12.80%、扣除 X0 超额夏普 +0.0971 → reported_fail（rounds/X2.md）"}
   - {id: X3, track: short_report, family: short_premium_rich, status: reported_fail, trials: 4, result: "信号口径夏普 -0.0525、净 -13.23%、最大回撤 36.10%、5 折 2 折为正；shuffle 20 种子最高 +0.3186 > base（g 款不通过）、delay1 通过；四档净收益均为负、扣除 X0 超额夏普 -0.1367 → reported_fail（rounds/X3.md）"}
   - {id: X4, track: short_report, family: short_taker_exhaustion, status: reported_fail, trials: 4, result: "信号口径夏普 0.0325、净 -9.78%、最大回撤 46.54%、5 折 2 折为正；shuffle 20 种子全部低于 base、delay1 通过；成本/毛收益 1.867、四档净收益均为负、扣除 X0 超额夏普 -0.0758 → reported_fail（rounds/X4.md）"}
-  - {id: R3, family: ts_trend, status: pending, trials: 0, result: null}
+  - {id: R3, family: ts_trend, status: failed, trials: 16, result: "信号口径夏普 −0.1768、净 −56.48%、复合月化 −1.531%、最大回撤 67.71%、5 折 2 折为正；仅 g 款通过（shuffle 20 种子最高 −0.3514 < base、delay1 −0.2826）；四档净收益 −60.91% ~ −93.70%、丢弃 61.6%~84.9% → failed，不做修订（rounds/R3.md）"}
   - {id: R1, family: xs_momentum_ls, status: pending, trials: 0, result: null}
   - {id: R2, family: funding_carry_ls, status: pending, trials: 0, result: null}
   - {id: R4, family: xs_reversal_ls, status: pending, trials: 0, result: null}

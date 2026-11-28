@@ -668,3 +668,66 @@ ValueError: 1612137600000 BTCUSDT 日线不足 50 根，无法判断 X1 的市�
 处理方式：未发现新缺陷，`review_log.md` 无新增 OPEN 项。结论：**前置复核全部符合**，
 按 0 号调度第四部分第 8 条 a 款执行 1 号（当前 X1 在服务器运行中，`HEAD = c62626e`）。
 
+
+## 2026-11-28 09:52 UTC 前置复核（执行 1 号之前，对象为 R3 判定与 X1~X4 结果）
+
+复核对象与最新提交（`git log -1 --format=%h -- <路径>`）：`src/trade/research`（`c62626e`）、
+`src/trade/strategies`（`edcaafd`）、`scripts/portfolio_backtest.py`（`d5ed53e`）、
+`configs/research.yaml`（`d891327`）、`configs/strategies`（`64dc8f7`）、`tests/research`（`c62626e`）、
+`docs/13-研究框架.md`（`edcaafd`）。
+
+方法：读 `docs/research/ledger.yaml`、`progress_research.md`、`rounds/X0.md`~`X4.md`、`R3.md`；
+读研究框架代码（`engine.py` 的净敞口与记录路径、`pipeline.py` 的 a~l 款判定与 i 款实现、
+`portfolio.py` 的丢弃计数）；拉取服务器原始输出 `artifacts/reports/{X1,X2,X3,X4,R3}/grid.json`
+与 `EXPERIMENTS.log` 逐值比对；本地运行 `pytest -q tests/research tests/strategies`。
+未读取任何最终检验窗口数据，未读取或输出密钥。
+
+逐项结论：
+
+- 1 号第五部分 B 第 14 条结果可信度测试（含 h 款口径回归与第 15 条 a~n 款复现测试）：
+  `pytest -q tests/research tests/strategies` → **114 passed** → **符合**。
+- 第五部分 B 第 1~15 条代码实现：`src/trade/research`、`src/trade/strategies`、`scripts/portfolio_backtest.py`、
+  `configs/research.yaml`、`tests/research` 自 2026-11-27 16:40 UTC 复核（`c62626e`/`edcaafd`/`d5ed53e`/
+  `d891327`）以来没有代码改动（本地其后的提交只改 `docs/research/`）→ 沿用该次“符合”结论；
+  本次另按第 9 条逐项核对指标清单，发现缺项 D26（见下表）。
+- 服务器代码与本地一致：`git diff --name-only c62626e..HEAD -- src scripts configs tests deploy` 为空
+  （`c62626e..HEAD` 只有 `docs/research/` 的 9 个文件）；服务器 `git rev-parse HEAD` = `c62626e` → **符合**。
+- 已完成轮次数字核对（X1~X4，逐值对照 `grid.json`）：
+  - X1：夏普 −0.1244、净 −38.62%、复合月化 −0.901%、最大回撤 59.29%、最长水下 1,506 天、
+    最差月 −27.88%、最差单周 −15.83%、交易 1,078、换手 117.3、成本 586.61（占毛收益 0.178）、
+    资金费 +6.11、空头毛 −3,291.89、β −0.3878、alpha 0.1588、DSR 0.00324、
+    bootstrap [−0.000819, +0.000563]、分折 +3.23/−9.57/+3.78/−39.19/+4.19% → 与 `rounds/X1.md` 一致。
+  - X2：夏普 +0.1522、净 +4.31%、回撤 37.60%、DSR 0.01345、成本 2,050.13（1.476）、资金费 −1,010.55、
+    空头毛 +1,388.85、delay1 0.3292 / +23.84%、cost2x −12.80%、`exec_tiers = ['standard','progressive']`
+    → 与 `rounds/X2.md` 一致。
+  - X3：夏普 −0.0525、净 −13.23%、资金费 −1,080.67、shuffle 最高 +0.3186 > base、四档净收益均负 → 一致。
+  - X4：夏普 +0.0325、净 −9.78%、成本 3,084.43（1.867）、资金费 −423.00、delay1 −0.7768 / −63.10%、
+    shuffle 20 个种子最高 −0.2273 → 一致。
+  - 一处标注不精确（不是数字错误）：`rounds/X1.md` 第 137、151、169 行与 `progress_research.md` 的 X1 段
+    把网格里的 `dropped`（含缺资金费、缺价格、单边为空等全部丢弃原因）当作 i 款的“丢弃比例”；
+    i 款代码（`pipeline._tier_passes`）用的是 `dropped_min_notional`（最小下单额与取整）。X1 标准档
+    两个值分别为 1,100/1,836 = 59.9% 与 873/1,836 = 47.5%，都 > 25%，X1 的 i 款结论不变；
+    X2 的 `dropped_min_notional` 为 0，也仍满足 ≤ 25%。已在 `rounds/X1.md` 与 R3 报告中同时列出两个数。
+  - `progress_research.md` 的 X1 行把 delay1 写成“+3.87%”，原始输出是 delay1 年化夏普 0.0387、
+    净 −21.27%；`rounds/X1.md` 第 123 行本身正确 → 已修正进度文件。
+- 试验登记一致性（会话开始的整体检查）：服务器 `EXPERIMENTS.log` 60 行 = 36 条 `kind=tuning` +
+  24 条 `kind=exec`；其中 R3 的 16 条 tuning 与 4 条 exec 已由 `portfolio_backtest.py` 登记，
+  但 ledger 仍为 `trials_used: 20`（`progress_research.md` 已声明“结果未写、判定未做、trials_used 未加”）。
+  本次补上 R3 判定后：20 + 16 = 36 = 服务器 tuning 条数，`Σ rounds[].trials` = 36、冻结选档试验 0 → **一致**。
+- 1 号第七部分第 5 条判定实现：`pipeline._checks` 的 a~l 各款阈值（0.8 / 3 折 / DSR 0.50 / delay1 +0.30 /
+  β 0.30 / alpha 0.6 / X0 超额 0.6）与 `docs/13` §7 第 1~11 条一致，h 款中性用 `spread_gross`（1 号 B 第 15 条 a 款）
+  → **符合**。
+- 新缺陷（本次登记并修复）：
+
+| 编号 | 状态 | 违反的规定 | 现状证据 | 影响 |
+| :-- | :-- | :-- | :-- | :-- |
+| D26 | CLOSED | 1 号第五部分 B 第 9 条（指标须含净敞口分布） | `engine.py` 的 `self.net_exposure` 只在 `_reset_state` 初始化为空列表，`run_path` 每根 K 线只记录权益、从未 append，`RunResult.net_exposure` 恒为空 → `metrics.py` 的 `net_exposure_mean` / `net_exposure_abs_p95` 恒为 0（R3、X0~X4 的 `grid.json` 均为 0） | 报告缺“净敞口分布”，净敞口超限也无法从事后指标发现；不影响任何达标判定（判定不读这两个字段） |
+
+处理方式：按 0 号调度第五部分第 5 条 b 款修复 D26 ——
+`engine.py` 新增 `_net_exposure_at(ts, equity)`，每根 K 线收盘记录 `Σ 带方向名义 ÷ 权益`，
+路径末尾全部平仓后最后一根记 0；`docs/13` §7 增加“净敞口分布”规格一条；
+复现测试 `tests/research/test_engine.py::test_净敞口分布按每根K线收盘记录`
+（在 `8eabd13` 的 `engine.py` 上运行 → 1 failed：`net_exposure` 长度与权益不等；修复后 5 passed）。
+其余无新增缺陷。结论：**前置复核通过（D26 已修复）**，按 0 号调度第四部分第 8 条 a 款执行 1 号，
+写 R3 判定后继续 R1。
+

@@ -98,6 +98,26 @@ def test_决策时刻所在K线开盘成交且含成本() -> None:
     assert first.entry_price > float(bars.open[entry_index])
 
 
+def test_净敞口分布按每根K线收盘记录() -> None:
+    """净敞口分布 = Σ 带方向名义 ÷ 权益，每根 1h K 线收盘记一次（1 号第五部分 B 第 9 条）。"""
+    market = make_market(n=160, drift_by_symbol={"AAAUSDT": 0.0005})
+    engine = _engine(market, AlwaysLong())
+    start = START_MS + 72 * HOUR_MS
+    result = engine.run(start, START_MS + 140 * HOUR_MS)
+    assert result.trades
+    # 修复前 net_exposure 从未写入（恒为空列表 → 指标恒为 0），这里断言长度与逐值
+    assert len(result.net_exposure) == len(result.equity)
+    first = result.trades[0]
+    bars = market.bars("AAAUSDT")
+    entry_index = int(np.searchsorted(bars.open_time, first.entry_ts))
+    qty = first.notional / first.entry_price
+    expected = qty * float(bars.close[entry_index]) / float(result.equity[0])
+    assert result.net_exposure[0] == pytest.approx(expected, rel=1e-9)
+    assert result.net_exposure[0] > 0.0
+    # 路径末尾全部平仓，最后一根的净敞口为 0
+    assert result.net_exposure[-1] == pytest.approx(0.0, abs=1e-12)
+
+
 def test_止损触发按止损价加滑点成交并进入冷却() -> None:
     market = make_market(n=160)
     bars = make_bars("AAAUSDT", n=160, drift=0.0, amplitude=0.002)

@@ -267,15 +267,19 @@ class Engine:
             self._check_stops(ts)
             # 7) 下架 / 断档
             self._handle_gaps(ts)
-            # 8) 收盘盯市并记录权益
+            # 8) 收盘盯市并记录权益与净敞口
+            equity_close = self._mark_at(ts)
             self.equity_ts.append(ts)
-            self.equity.append(self._mark_at(ts))
+            self.equity.append(equity_close)
+            self.net_exposure.append(self._net_exposure_at(ts, equity_close))
             self.last_funding_ts = ts
         if self.positions:
             last_ts = int(self.equity_ts[-1])
             for position in list(self.positions.values()):
                 self._close(position, last_ts, "end")
             self.equity[-1] = self._mark_at(last_ts)
+            # 路径末尾已全部平仓，最后一根的净敞口为 0
+            self.net_exposure[-1] = 0.0
         benchmark_ts, benchmark_close = self._benchmark_arrays(end_ms)
         return RunResult(
             trades=self.trades,
@@ -378,6 +382,31 @@ class Engine:
             return float(mark.close[index])
         last = mark.last_index_before(ts + 1)
         return float(mark.close[last]) if last >= 0 else None
+
+    def _net_exposure_at(self, ts: int, equity: float) -> float:
+        """当前净敞口 = Σ 带方向名义 ÷ 权益（docs/13 §7 第 9 条）。
+
+        Args:
+            ts: 当前 K 线收盘时刻，毫秒。
+            equity: 该时刻的盯市权益，USDT。
+
+        Returns:
+            净敞口比例（多为正、空为负）；权益 ≤ 0 时返回 0。
+
+        Raises:
+            ValueError: 持仓币在 `ts` 之前没有任何可用收盘价（红线 12）。
+        """
+        if equity <= 0.0:
+            return 0.0
+        net = 0.0
+        for position in self.positions.values():
+            price = self._price_at(position.symbol, ts)
+            if price is None:
+                raise ValueError(
+                    f"{position.symbol} 在 {ts} 没有可用收盘价，无法记录净敞口（红线 12）"
+                )
+            net += position.side * position.qty * price
+        return net / equity
 
     def _open(self, planned: PlannedPosition, ts: int, equity: float) -> None:
         """在 `open_time = ts` 的 K 线开盘成交，并按入场标记价格设止损价（docs/13 §4）。"""

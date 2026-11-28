@@ -1,17 +1,17 @@
 # 研究循环进度（1 号自动研究循环）
 
-## 当前状态（2026-11-27 16:10 UTC）
+## 当前状态（2026-11-28 09:55 UTC）
 
-- 研究重置后首次进入普通研究轮次。迁移 M1~M7 全部完成（见 `progress_migration.md`）。
-- `ledger`：`trials_used: 20`（X0 2 + X1 6 + X2 4 + X3 4 + X4 4 组 `kind=tuning`）、
-  `global_trial_budget: 400`；X0~X4 已判定 `reported_fail`（X 轨全部结束，汇总见 `short_report.md`），
-  其余轮次 pending；`qualified_pool: []`、`candidates: []`；`void_history` 记录研究重置前作废的 153 次试验。
-- 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 纯做空探索轨最先 → R3 → R1、R2、R4、R5 →
+- 研究重置后第 3 轮：X0~X4 全部 `reported_fail`（`short_report.md` 第一行 `结论：REPORT`），
+  R3 已判定 `failed`（`rounds/R3.md`），下一轮 **R1**（`configs/strategies/round_R1.yaml`，24 组 = 12 × {A, B}）。
+- `ledger`：`trials_used: 36`（X0 2 + X1 6 + X2 4 + X3 4 + X4 4 + R3 16 组 `kind=tuning`），
+  `global_trial_budget: 400`；`qualified_pool: []`、`candidates: []`。
+- 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 → R3（已完成）→ R1、R2、R4、R5 →
   R6~R10 → R11、R12。
-- 当前轮次：**R3**（`configs/strategies/round_R3.yaml`，16 组 = 8 × {A, B}），X0~X4 全部 `reported_fail`。
 - 数据：`data/klines_1h`、`klines_1d`、`funding`、`klines_1h_flow`、`premium_1h`、`mark_1h`、
   `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、`research_end = 2026-07-31`。
-- 服务器 `HEAD = d5ed53e`（代码树与本地一致；本地只多出 `.gitignore` 与 `docs/research/` 提交）。
+- 服务器 `HEAD = c62626e`（代码与本地一致）；本地此后只改 `docs/research/` 与研究框架的 D26 修复
+  （净敞口记录，判定不受影响，见 `review_log.md` 2026-11-28 09:52 UTC），运行 R1 前需把该提交同步到服务器。
 
 ## X1
 
@@ -33,26 +33,36 @@
   交易 1,078 笔、换手 117.3、成本 586.61（占毛收益 0.178）、资金费 +6.11、空头毛 −3,291.89、
   实现 β −0.3878、alpha 夏普 0.1588、DSR 0.00324、bootstrap 90% [−0.000819, +0.000563]。
 - 5 折净收益 +3.23% / −9.57% / +3.78% / **−39.19%** / +4.19%（3/5 为正）；情景：cost2x −41.83%、
-  nohalt +19.01%、delay1 +3.87%（≤ base + 0.30，通过）、shuffle 不适用。
-- 四档 500 USDT：标准 夏普 0.0369 / 月化 −0.451% / 丢弃 59.9%；进取 0.1429 / −1.179% / 34.0%；
-  激进 0.0212 / −3.020% / 72.9%；极限 0.2379 / −2.429% / 73.8% → `qualified_exec_tiers = []`。
+  nohalt +19.01%、delay1 年化夏普 0.0387 / 净 −21.27%（≤ base + 0.30，通过）、shuffle 不适用。
+- 四档 500 USDT：标准 夏普 0.0369 / 月化 −0.451% / 丢弃（全部原因）59.9%；进取 0.1429 / −1.179% / 34.0%；
+  激进 0.0212 / −3.020% / 72.9%；极限 0.2379 / −2.429% / 73.8% → `qualified_exec_tiers = []`
+  （i 款口径的最小下单额/取整丢弃比例为 47.5% / 17.6% / 64.8% / 65.6%，标准档仍 > 25%）。
 - 达标：仅 b（3/5 折为正）与 g（shuffle 不适用 + delay1）通过；a、c、d、e、h、i、l 均不通过 →
   `reported_fail`。扣除 X0（N = 20）后的超额年化夏普 −0.2368（l 款）。诊断：BTC 熊市过滤把持仓集中在
   下跌后的反弹窗口，轧空损失更大（第 4 折 −39.19%、空头毛 −3,713.70）；详见 `rounds/X1.md`。
 - 试验登记：`EXPERIMENTS.log` 新增 6 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 2 改为 8。
   哈希：`code_hash b74a3478…`、`config_hash a419c687…`、`data_hash c847434d…`。
 
-## R3（运行中）
+## R3（已完成，failed）
 
-- 启动 2026-11-28 01:50:32 UTC（服务器 `HEAD = c62626e`，代码与本地 `db234fa` 相同，后者只改文档），
-  命令 `nice -n 10 /home/ubuntu/trade-venv/bin/python -u scripts/portfolio_backtest.py --grid
-  configs/strategies/round_R3.yaml`，tmux 会话 `R3`，日志 `artifacts/reports/R3.log`。
-- 网格 16 组（`L ∈ {10,20,40,80}` × `btc_filter ∈ {0,1}` × `sizing_mode ∈ {A,B}`）；假设与预检见 `rounds/R3.md`。
-- 本次会话在 R3 运行中用尽上下文而停止：**结果未写、判定未做、`trials_used` 未加**。
-  下次继续的步骤：等服务器 R3 进程结束 → 读 `artifacts/reports/R3/grid.json` 与 `EXPERIMENTS.log`
-  （预计新增 16 条 `kind=tuning` + 4 条 `kind=exec`）→ 按 1 号第七部分写 `rounds/R3.md` 结果与判定 →
-  `ledger` 的 R3 行改为 `failed`/`qualified` 并把 `trials_used` 加 16（当前 20 → 36）→ 提交推送 →
-  按第八部分顺序继续 R1。
+- 启动 2026-11-28 01:50:32 UTC、结束 07:43 UTC（服务器 `HEAD = c62626e`，与本地代码同一提交），
+  网格 16 组（`L ∈ {10,20,40,80}` × `btc_filter ∈ {0,1}` × `sizing_mode ∈ {A,B}`）。
+- 结果（信号口径 10,000 USDT，`artifacts/reports/R3/grid.json`）：5 折全部选中模式 B
+  （L40/bf0、L20/bf0、L40/bf1、L20/bf0、L40/bf1），拼接曲线年化夏普 **−0.1768**、净 **−56.48%**、
+  复合月化 −1.531%、最大回撤 67.71%、最长水下 1,621 天、最差月 −22.08%、最差单周 −14.46%；
+  交易 1,760 笔、换手 169.7、成本 848.48（占毛收益 0.208）、资金费 +725.69、多头毛 −989.04、
+  空头毛 −3,096.49、实现 β −0.0376、alpha 夏普 −0.1574、DSR 0.06886、
+  bootstrap 90% [−0.001159, +0.000762]、强平 1 次。
+- 5 折净收益 −52.52% / +11.21% / +0.35% / −6.73% / −11.93%（2/5 为正）；情景：cost2x −64.83%、
+  delay1 −63.85%（夏普 −0.2826）、nohalt −38.23%、long_only −18.75%、short_only −36.76%、
+  shuffle 20 个种子 −0.3514 ~ −1.3130 全部低于 base。
+- 四档 500 USDT：标准 −0.4038 / −1.763% / 丢弃 62.3%；进取 −0.1386 / −2.680% / 61.6%；
+  激进 −0.1554 / −4.489% / 76.9%；极限 −0.1503 / −5.095% / 84.9% → `qualified_exec_tiers = []`。
+- 达标：仅 g 通过；a、b、c、d、e、h、i 均不通过 → `failed`。诊断：多空两侧同亏（毛收益 −4,085.53），
+  成本与资金费都不是主因；折 1 亏 52.5%（训练期趋势段不能外推）；5 折全部选模式 B。
+  不做修订（与 a 款差 0.98 个夏普、h 款两侧都亏，单条规则无法修复）；详见 `rounds/R3.md`。
+- 试验登记：`EXPERIMENTS.log` 新增 16 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 20 改为 36。
+  哈希：`code_hash d6d674f7…`、`config_hash 062d8751…`、`data_hash c847434d…`。
 
 ## X4
 
