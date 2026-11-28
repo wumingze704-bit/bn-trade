@@ -3,12 +3,12 @@
 ## 当前状态（2026-11-27 16:10 UTC）
 
 - 研究重置后首次进入普通研究轮次。迁移 M1~M7 全部完成（见 `progress_migration.md`）。
-- `ledger`：`trials_used: 16`（X0 2 + X1 6 + X2 4 + X3 4 组 `kind=tuning`）、`global_trial_budget: 400`；
-  X0~X3 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
-  `void_history` 记录研究重置前作废的 153 次试验。
+- `ledger`：`trials_used: 20`（X0 2 + X1 6 + X2 4 + X3 4 + X4 4 组 `kind=tuning`）、
+  `global_trial_budget: 400`；X0~X4 已判定 `reported_fail`（X 轨全部结束，汇总见 `short_report.md`），
+  其余轮次 pending；`qualified_pool: []`、`candidates: []`；`void_history` 记录研究重置前作废的 153 次试验。
 - 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 纯做空探索轨最先 → R3 → R1、R2、R4、R5 →
   R6~R10 → R11、R12。
-- 当前轮次：**X4**（`configs/strategies/round_X4.yaml`，4 组，模式 B），X1~X3 已判定 `reported_fail`。
+- 当前轮次：**R3**（`configs/strategies/round_R3.yaml`，16 组 = 8 × {A, B}），X0~X4 全部 `reported_fail`。
 - 数据：`data/klines_1h`、`klines_1d`、`funding`、`klines_1h_flow`、`premium_1h`、`mark_1h`、
   `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、`research_end = 2026-07-31`。
 - 服务器 `HEAD = d5ed53e`（代码树与本地一致；本地只多出 `.gitignore` 与 `docs/research/` 提交）。
@@ -41,6 +41,24 @@
   下跌后的反弹窗口，轧空损失更大（第 4 折 −39.19%、空头毛 −3,713.70）；详见 `rounds/X1.md`。
 - 试验登记：`EXPERIMENTS.log` 新增 6 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 2 改为 8。
   哈希：`code_hash b74a3478…`、`config_hash a419c687…`、`data_hash c847434d…`。
+
+## X4
+
+- 启动 2026-11-28 00:14 UTC（`HEAD = c62626e`），结束 01:44 UTC（约 1 小时 30 分，含 20 个种子 shuffle）。
+- 结果（信号口径 10,000 USDT）：选中参数 D1/K3、D3/K3、D1/K3、D3/K3、D3/K3，拼接曲线年化夏普
+  **+0.0325**、净 **−9.78%**、复合月化 −0.1906%、最大回撤 46.54%、最长水下 1,311 天、
+  最差月 −20.47%、最差单周 −9.39%；交易 3,068 笔、换手 616.9、成本 3,084.43（成本/毛收益 1.867）、
+  资金费 −423.00、空头毛 +1,652.31、实现 β −0.2938、alpha 夏普 0.3910、DSR 0.00699、
+  bootstrap 90% [−0.000499, +0.000550]。
+- 5 折净收益 +31.05% / −13.51% / −16.65% / −12.60% / +9.26%（2/5 为正）；情景：cost2x −42.15%、
+  nohalt −16.50%、delay1 −63.10%（夏普 −0.7768 ≤ base + 0.30，通过）、shuffle 20 个种子最高 −0.2273（通过）。
+- 四档 500 USDT：标准 0.0579 / −0.153% / 丢弃 8.9%；进取 0.0588 / −0.821% / 8.8%；
+  激进 0.0461 / −1.798% / 8.6%；极限 0.0139 / −2.785% / 8.9% → `qualified_exec_tiers = []`。
+- 达标：仅 g 通过；a、b、c、d、e、h、i、l 均不通过 → `reported_fail`。诊断：毛收益 +1,652.31 被成本
+  3,084.43 与资金费 −423.00 吃光，换手 616.9 倍为四轮最高；详见 `rounds/X4.md`。
+- 试验登记：`EXPERIMENTS.log` 新增 4 条 `kind=tuning` + 4 条 `kind=exec`（32 → 40 行）；
+  `trials_used` 由 16 改为 20。哈希：`code_hash c2085148…`、`config_hash eaef1ed5…`、`data_hash c847434d…`。
+- X 轨全部结束，汇总报告写入 `docs/research/short_report.md`（第一行“结论：REPORT”）。
 
 ## X3
 
