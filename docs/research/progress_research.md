@@ -3,12 +3,12 @@
 ## 当前状态（2026-11-27 16:10 UTC）
 
 - 研究重置后首次进入普通研究轮次。迁移 M1~M7 全部完成（见 `progress_migration.md`）。
-- `ledger`：`trials_used: 12`（X0 2 + X1 6 + X2 4 组 `kind=tuning`）、`global_trial_budget: 400`；
-  X0~X2 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
+- `ledger`：`trials_used: 16`（X0 2 + X1 6 + X2 4 + X3 4 组 `kind=tuning`）、`global_trial_budget: 400`；
+  X0~X3 已判定 `reported_fail`，其余轮次 pending；`qualified_pool: []`、`candidates: []`；
   `void_history` 记录研究重置前作废的 153 次试验。
 - 执行顺序（1 号第八部分与 0 号调度 M7 第 3 条）：X0~X4 纯做空探索轨最先 → R3 → R1、R2、R4、R5 →
   R6~R10 → R11、R12。
-- 当前轮次：**X3**（`configs/strategies/round_X3.yaml`，4 组，模式 B），X1、X2 已判定 `reported_fail`。
+- 当前轮次：**X4**（`configs/strategies/round_X4.yaml`，4 组，模式 B），X1~X3 已判定 `reported_fail`。
 - 数据：`data/klines_1h`、`klines_1d`、`funding`、`klines_1h_flow`、`premium_1h`、`mark_1h`、
   `universe_hist` 均已在服务器（M3 完成）；`research_start = 2021-02-01`、`research_end = 2026-07-31`。
 - 服务器 `HEAD = d5ed53e`（代码树与本地一致；本地只多出 `.gitignore` 与 `docs/research/` 提交）。
@@ -41,6 +41,25 @@
   下跌后的反弹窗口，轧空损失更大（第 4 折 −39.19%、空头毛 −3,713.70）；详见 `rounds/X1.md`。
 - 试验登记：`EXPERIMENTS.log` 新增 6 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 2 改为 8。
   哈希：`code_hash b74a3478…`、`config_hash a419c687…`、`data_hash c847434d…`。
+
+## X3
+
+- 启动 2026-11-27 18:47 UTC（`HEAD = c62626e`），结束 19:33 UTC（约 46 分钟，含 20 个种子 shuffle）。
+- 结果（信号口径 10,000 USDT）：选中参数 W72/K3（四折）与 W24/K3（第三折），拼接曲线年化夏普
+  **−0.0525**、净 **−13.23%**、复合月化 −0.2630%、最大回撤 36.10%、最长水下 1,314 天、
+  最差月 −18.19%、最差单周 −8.71%；交易 935 笔、换手 163.6、成本 817.78（占毛收益 0.516）、
+  资金费 **−1,080.67**（净支出）、空头毛 −1,586.35、实现 β −0.1778、alpha 夏普 0.1723、
+  DSR 0.00418、bootstrap 90% [−0.000470, +0.000417]。
+- 5 折净收益 −3.82% / −3.29% / −14.83% / +7.45% / +1.92%（2/5 为正）；情景：cost2x −18.74%、
+  nohalt −22.03%、delay1 +6.42%（夏普 0.1687 ≤ base + 0.30，通过）、shuffle 20 个种子最高 **+0.3186**
+  高于 base（g 款不通过）。
+- 四档 500 USDT：标准 −0.0443 / −0.248% / 丢弃 19.1%；进取 0.0384 / −0.548% / 18.6%；
+  激进 −0.2738 / −2.549% / 19.0%；极限 −0.1925 / −2.818% / 19.0% → `qualified_exec_tiers = []`。
+- 达标：仅 delay1 一项通过；a、b、c、d、e、g（shuffle）、h、i、l 均不通过 → `reported_fail`。
+  诊断：溢价排序没有信息（随机替换标的的 shuffle 种子夏普更高），资金费净支出 −1,080.67；详见
+  `rounds/X3.md`。
+- 试验登记：`EXPERIMENTS.log` 新增 4 条 `kind=tuning` + 4 条 `kind=exec`（24 → 32 行）；
+  `trials_used` 由 12 改为 16。哈希：`code_hash 3dff846e…`、`config_hash aec8ae56…`、`data_hash c847434d…`。
 
 ## X2
 
