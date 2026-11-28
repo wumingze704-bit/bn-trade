@@ -42,6 +42,18 @@
 - 试验登记：`EXPERIMENTS.log` 新增 6 条 `kind=tuning` + 4 条 `kind=exec`；`trials_used` 由 2 改为 8。
   哈希：`code_hash b74a3478…`、`config_hash a419c687…`、`data_hash c847434d…`。
 
+## R3（运行中）
+
+- 启动 2026-11-28 01:50:32 UTC（服务器 `HEAD = c62626e`，代码与本地 `db234fa` 相同，后者只改文档），
+  命令 `nice -n 10 /home/ubuntu/trade-venv/bin/python -u scripts/portfolio_backtest.py --grid
+  configs/strategies/round_R3.yaml`，tmux 会话 `R3`，日志 `artifacts/reports/R3.log`。
+- 网格 16 组（`L ∈ {10,20,40,80}` × `btc_filter ∈ {0,1}` × `sizing_mode ∈ {A,B}`）；假设与预检见 `rounds/R3.md`。
+- 本次会话在 R3 运行中用尽上下文而停止：**结果未写、判定未做、`trials_used` 未加**。
+  下次继续的步骤：等服务器 R3 进程结束 → 读 `artifacts/reports/R3/grid.json` 与 `EXPERIMENTS.log`
+  （预计新增 16 条 `kind=tuning` + 4 条 `kind=exec`）→ 按 1 号第七部分写 `rounds/R3.md` 结果与判定 →
+  `ledger` 的 R3 行改为 `failed`/`qualified` 并把 `trials_used` 加 16（当前 20 → 36）→ 提交推送 →
+  按第八部分顺序继续 R1。
+
 ## X4
 
 - 启动 2026-11-28 00:14 UTC（`HEAD = c62626e`），结束 01:44 UTC（约 1 小时 30 分，含 20 个种子 shuffle）。
