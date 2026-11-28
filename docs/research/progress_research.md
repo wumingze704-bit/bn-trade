@@ -13,21 +13,25 @@
 - 服务器 `HEAD = c62626e`（代码与本地一致）；本地此后只改 `docs/research/` 与研究框架的 D26 修复
   （净敞口记录，判定不受影响，见 `review_log.md` 2026-11-28 09:52 UTC），运行 R1 前需把该提交同步到服务器。
 
-## R1（运行中）
+## R1（运行中，第二次启动）
 
-- 启动 2026-11-28 08:59 UTC（服务器 `HEAD = b243098`，与本地同一提交），命令
+- 第一次启动 2026-11-28 08:59 UTC（服务器 `HEAD = b243098`）在 10:53 UTC 崩溃：
+  `KeyError: 'YFIIUSDT'`（`engine._close`），已登记缺陷 **D27**（中性策略两侧同一根 K 线都触发止损时，
+  快照里的旧对象被重复平仓）并修复，见 `review_log.md` 2026-11-28 10:55 UTC。崩溃日志保留为
+  `artifacts/reports/R1_crash_20261128T1053Z.log`。崩溃发生在 `ensure_groups` 完成之前，
+  `EXPERIMENTS.log` 未新增记录（仍 36 条 `kind=tuning`、60 行），`trials_used` 不变（36）。
+- 第二次启动 2026-11-28 10:16 UTC（服务器 `HEAD = e90711e`，含 D26、D27 修复），命令
   `nice -n 10 /home/ubuntu/trade-venv/bin/python -u scripts/portfolio_backtest.py --grid
   configs/strategies/round_R1.yaml`，tmux 会话 `R1`，日志 `artifacts/reports/R1.log`。
 - 网格 24 组（`L ∈ {7,14,28}` × `K ∈ {3,5}` × 调仓 `{8h,24h}` × `sizing_mode ∈ {A,B}`）；假设、补充规格与
   可执行性预检见 `rounds/R1.md`。
 - 已知耗时特征：`ensure_groups` 先按顺序跑完全部组的基础运行（24 组 × 2 次全期运行 = 48 次）才落盘
-  `groups/`，服务器 `workers = 1`，R3 实测约 11 分钟/次 → 预计 8~10 小时（约 2026-11-28 17:00~19:00 UTC 结束）。
+  `groups/`，服务器 `workers = 1`，R3 实测约 11 分钟/次 → 预计 6~9 小时（约 2026-11-28 16:00~19:00 UTC 结束）。
   运行期间 `groups/` 为空属正常。
 - 下次继续的步骤：等 R1 进程结束 → 读 `artifacts/reports/R1/grid.json` 与 `EXPERIMENTS.log`
   （预期新增 24 条 `kind=tuning` + 4 条 `kind=exec`）→ 按 1 号第七部分在 `rounds/R1.md` 写结果与判定 →
   `ledger` 的 R1 行改为 `failed` / `qualified` 并把 `trials_used` 加 24（36 → 60）→ 提交推送 →
   按第八部分顺序继续 R2。
-- 判定时注意：研究框架已在 `c4ec9cc` 修复 D26（净敞口逐根记录），`code_hash` 与 X0~X4 / R3 不同是预期的。
 
 
 

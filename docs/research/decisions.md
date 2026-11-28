@@ -243,6 +243,11 @@ tmux 会话 `trade` 只有一个空闲 bash）：
 - 文档与原始输出不一致的两处（按第五部分第 5 条 a 款以原始输出为准修正）：`rounds/X1.md` 与
   `progress_research.md` 把网格的 `dropped`（含缺资金费、缺价格、单边为空等全部丢弃原因）当作 i 款的
   丢弃比例，i 款口径为 `dropped_min_notional`（X1 标准档 47.5%，全部原因 59.9%，两者都 > 25%，结论不变），
+- R1 第一次运行（2026-11-28 08:59 UTC，服务器 `HEAD = b243098`）在 10:53 UTC 崩溃于
+  `KeyError: 'YFIIUSDT'`：已登记并修复缺陷 D27（`review_log.md` 2026-11-28 10:55 UTC），
+  R1 以 `HEAD = e90711e` 重新启动。崩溃前没有任何试验登记，`trials_used` 仍为 36。
+  崩溃日志保留为 `artifacts/reports/R1_crash_20261128T1053Z.log`（移动，不删除）。
+
   两处已同时列出两个数；`progress_research.md` 的 X1 段原写“delay1 +3.87%”，原始输出为 delay1 年化夏普
   0.0387、净 −21.27%，已更正。
 - 依据自动研究循环指令授权自行决定：R3 不做第七部分第 6 条的一次修订。理由：与 a 款差 0.98 个夏普，
